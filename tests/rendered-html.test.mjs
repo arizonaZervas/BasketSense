@@ -31,20 +31,22 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /<title>BasketSense — Our Costco companion<\/title>/i);
   assert.match(html, /Our Costco companion/);
   assert.match(html, /This Saturday/);
-  assert.match(html, /Patterns worth seeing/);
+  assert.match(html, /Receipts suggest timing\. You decide need\./);
   assert.match(html, /Sample household/);
+  assert.match(html, /Edits do not sync back to this prototype/);
+  assert.doesNotMatch(html, /automatically versioned|Saved just now|share this link/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
-test("renders the five approved product surfaces", async () => {
+test("renders the four focused household destinations", async () => {
   const response = await render();
   const html = await response.text();
 
-  for (const label of ["Overview", "Spending", "Products", "This Week", "Review"]) {
+  for (const label of ["Saturday", "Insights", "Products", "Review"]) {
     assert.match(html, new RegExp(label));
   }
 
   assert.match(html, /Added receipt history|Add receipts/i);
-  assert.match(html, /System suggestion/);
-  assert.match(html, /Receipt facts first|Costco this year/);
+  assert.match(html, /Suggested from 24 purchases/);
+  assert.match(html, /Share a snapshot/);
 });

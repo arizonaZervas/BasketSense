@@ -1,10 +1,11 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 
 type Tab = "overview" | "spending" | "products" | "week" | "review";
 type Period = "Month" | "Quarter" | "Year";
 type ReviewStatus = "open" | "resolved";
+type PrimaryTab = Exclude<Tab, "spending">;
 
 type Product = {
   id: string;
@@ -47,13 +48,26 @@ type ReviewItem = {
   answer?: string;
 };
 
-const tabs: { id: Tab; label: string; short: string }[] = [
-  { id: "overview", label: "Overview", short: "O" },
-  { id: "spending", label: "Spending", short: "$" },
-  { id: "products", label: "Products", short: "P" },
-  { id: "week", label: "This Week", short: "W" },
-  { id: "review", label: "Review", short: "R" },
+type StoredHouseholdState = {
+  listItems: ListItem[];
+  reviewItems: ReviewItem[];
+  notes: Record<string, string>;
+};
+
+type ResolvedReview = {
+  id: string;
+  title: string;
+  answer: string;
+};
+
+const primaryTabs: { id: PrimaryTab; label: string; symbol: string }[] = [
+  { id: "week", label: "Saturday", symbol: "✓" },
+  { id: "overview", label: "Insights", symbol: "↗" },
+  { id: "products", label: "Products", symbol: "▤" },
+  { id: "review", label: "Review", symbol: "?" },
 ];
+
+const STORAGE_KEY = "basketsense-household-v1";
 
 const monthlySpend = [
   { month: "Jan", current: 1080, previous: 948, trips: 4 },
@@ -393,17 +407,20 @@ function EvidenceBadge({ label }: { label: ReviewItem["badge"] | "Household conf
 }
 
 export function BasketSenseDashboard() {
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [activeTab, setActiveTab] = useState<Tab>("week");
   const [period, setPeriod] = useState<Period>("Year");
-  const [categoryFilter, setCategoryFilter] = useState("All categories");
+  const [spendingCategoryFilter, setSpendingCategoryFilter] = useState("All categories");
+  const [productCategoryFilter, setProductCategoryFilter] = useState("All categories");
   const [productSearch, setProductSearch] = useState("");
   const [selectedProductId, setSelectedProductId] = useState("milk");
   const [listItems, setListItems] = useState(initialList);
   const [reviewItems, setReviewItems] = useState(initialReviewItems);
+  const [lastResolvedReview, setLastResolvedReview] = useState<ResolvedReview | null>(null);
   const [newItem, setNewItem] = useState("");
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
-  const [dataLabel, setDataLabel] = useState("Sample household · 100 receipts");
+  const [dataLabel, setDataLabel] = useState("Sample household · prototype");
+  const [storageAvailable, setStorageAvailable] = useState<boolean | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({
     dumplings: "Easy lunch; our child liked them too.",
@@ -416,10 +433,40 @@ export function BasketSenseDashboard() {
     const query = productSearch.trim().toLowerCase();
     return products.filter((product) => {
       const matchesQuery = !query || [product.name, product.rawName, product.category, product.brand].some((value) => value.toLowerCase().includes(query));
-      const matchesCategory = categoryFilter === "All categories" || product.category === categoryFilter;
+      const matchesCategory = productCategoryFilter === "All categories" || product.category === productCategoryFilter;
       return matchesQuery && matchesCategory;
     });
-  }, [productSearch, categoryFilter]);
+  }, [productSearch, productCategoryFilter]);
+
+  useEffect(() => {
+    let parsed: Partial<StoredHouseholdState> | null = null;
+    let available = true;
+    try {
+      const stored = window.localStorage.getItem(STORAGE_KEY);
+      if (stored) parsed = JSON.parse(stored) as Partial<StoredHouseholdState>;
+    } catch {
+      available = false;
+    }
+
+    queueMicrotask(() => {
+      if (parsed) {
+        if (Array.isArray(parsed.listItems)) setListItems(parsed.listItems);
+        if (Array.isArray(parsed.reviewItems)) setReviewItems(parsed.reviewItems);
+        if (parsed.notes && typeof parsed.notes === "object") setNotes(parsed.notes);
+      }
+      setStorageAvailable(available);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (storageAvailable !== true) return;
+    try {
+      const state: StoredHouseholdState = { listItems, reviewItems, notes };
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      queueMicrotask(() => setStorageAvailable(false));
+    }
+  }, [listItems, notes, reviewItems, storageAvailable]);
 
   function flash(message: string) {
     setToast(message);
@@ -428,12 +475,12 @@ export function BasketSenseDashboard() {
 
   function changeTab(tab: Tab) {
     setActiveTab(tab);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0 });
   }
 
   function toggleIncluded(id: string) {
     setListItems((items) => items.map((item) => item.id === id ? { ...item, included: !item.included, checked: false } : item));
-    flash("List updated and saved automatically");
+    flash(storageAvailable === true ? "List updated on this device" : "List updated for this tab");
   }
 
   function toggleChecked(id: string) {
@@ -462,8 +509,18 @@ export function BasketSenseDashboard() {
   }
 
   function resolveReview(id: string, answer: string) {
+    const item = reviewItems.find((candidate) => candidate.id === id);
+    if (!item) return;
+    setLastResolvedReview({ id, title: item.title, answer });
     setReviewItems((items) => items.map((item) => item.id === id ? { ...item, status: "resolved", answer } : item));
-    flash("Saved — future suggestions will use that context");
+    flash(storageAvailable === true ? "Answer saved on this device" : "Answer kept for this tab");
+  }
+
+  function undoReview() {
+    if (!lastResolvedReview) return;
+    setReviewItems((items) => items.map((item) => item.id === lastResolvedReview.id ? { ...item, status: "open", answer: undefined } : item));
+    setLastResolvedReview(null);
+    flash("Answer returned to review");
   }
 
   async function copyList() {
@@ -513,7 +570,7 @@ export function BasketSenseDashboard() {
   return (
     <div className="app-shell">
       <aside className="side-rail" aria-label="Primary navigation">
-        <button className="brand" onClick={() => changeTab("overview")} aria-label="BasketSense overview">
+        <button className="brand" onClick={() => changeTab("week")} aria-label="Open this Saturday’s list">
           <span className="brand-mark" aria-hidden="true">B</span>
           <span>
             <strong>BasketSense</strong>
@@ -522,20 +579,23 @@ export function BasketSenseDashboard() {
         </button>
 
         <nav className="desktop-nav">
-          {tabs.map((tab) => (
-            <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => changeTab(tab.id)} aria-current={activeTab === tab.id ? "page" : undefined}>
-              <span className="nav-glyph" aria-hidden="true">{tab.short}</span>
+          {primaryTabs.map((tab) => {
+            const isActive = activeTab === tab.id || (activeTab === "spending" && tab.id === "overview");
+            return (
+            <button key={tab.id} className={isActive ? "active" : ""} onClick={() => changeTab(tab.id)} aria-current={isActive ? "page" : undefined}>
+              <span className="nav-glyph" aria-hidden="true">{tab.symbol}</span>
               <span>{tab.label}</span>
               {tab.id === "review" && openReviewCount > 0 ? <span className="nav-count">{openReviewCount}</span> : null}
             </button>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="rail-footer">
           <div className="household-row">
             <span className="avatar avatar-one">HH</span>
             <span className="avatar avatar-two">SH</span>
-            <span><strong>Our household</strong><small>Private to 2 people</small></span>
+            <span><strong>Our household</strong><small>Prototype · 2 roles</small></span>
           </div>
           <button className="text-button" onClick={() => setIsImportOpen(true)}>Data & privacy</button>
         </div>
@@ -543,9 +603,9 @@ export function BasketSenseDashboard() {
 
       <main className="main-canvas">
         <header className="topbar">
-          <div>
+          <div className="topbar-context">
             <span className="mobile-kicker">BasketSense</span>
-            <p className="data-label"><span className="status-dot" /> {dataLabel}</p>
+            <p className="data-label">{dataLabel}</p>
           </div>
           <div className="topbar-actions">
             <div className="avatar-stack" aria-label="Household members HH and SH">
@@ -553,6 +613,7 @@ export function BasketSenseDashboard() {
               <span className="avatar avatar-two">SH</span>
             </div>
             <button className="secondary-button import-button" onClick={() => setIsImportOpen(true)}>Add receipts</button>
+            <button className="mobile-receipt-button" onClick={() => setIsImportOpen(true)} aria-label="Add receipt files"><span aria-hidden="true">＋</span> Receipt</button>
           </div>
         </header>
 
@@ -561,21 +622,21 @@ export function BasketSenseDashboard() {
         ) : null}
 
         {activeTab === "spending" ? (
-          <SpendingTab period={period} setPeriod={setPeriod} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} />
+          <SpendingTab period={period} setPeriod={setPeriod} categoryFilter={spendingCategoryFilter} setCategoryFilter={setSpendingCategoryFilter} changeTab={changeTab} />
         ) : null}
 
         {activeTab === "products" ? (
           <ProductsTab
             search={productSearch}
             setSearch={setProductSearch}
-            categoryFilter={categoryFilter}
-            setCategoryFilter={setCategoryFilter}
+            categoryFilter={productCategoryFilter}
+            setCategoryFilter={setProductCategoryFilter}
             products={filteredProducts}
             selected={selectedProduct}
             setSelectedProductId={setSelectedProductId}
             note={notes[selectedProduct.id] ?? ""}
             setNote={(value) => setNotes((all) => ({ ...all, [selectedProduct.id]: value }))}
-            onSaveNote={() => flash("Household note saved")}
+            onSaveNote={() => flash(storageAvailable === true ? "Note saved on this device" : "Note kept for this tab")}
           />
         ) : null}
 
@@ -588,22 +649,27 @@ export function BasketSenseDashboard() {
             onToggleIncluded={toggleIncluded}
             onToggleChecked={toggleChecked}
             onCopy={copyList}
+            storageAvailable={storageAvailable}
+            onOpenImport={() => setIsImportOpen(true)}
           />
         ) : null}
 
         {activeTab === "review" ? (
-          <ReviewTab items={reviewItems} onResolve={resolveReview} />
+          <ReviewTab items={reviewItems} onResolve={resolveReview} lastResolved={lastResolvedReview} onUndo={undoReview} storageAvailable={storageAvailable} />
         ) : null}
       </main>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
-        {tabs.map((tab) => (
-          <button key={tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => changeTab(tab.id)} aria-current={activeTab === tab.id ? "page" : undefined}>
-            <span className="nav-glyph" aria-hidden="true">{tab.short}</span>
-            <span>{tab.label === "This Week" ? "Week" : tab.label}</span>
+        {primaryTabs.map((tab) => {
+          const isActive = activeTab === tab.id || (activeTab === "spending" && tab.id === "overview");
+          return (
+          <button key={tab.id} className={isActive ? "active" : ""} onClick={() => changeTab(tab.id)} aria-current={isActive ? "page" : undefined}>
+            <span className="nav-glyph" aria-hidden="true">{tab.symbol}</span>
+            <span>{tab.label}</span>
             {tab.id === "review" && openReviewCount > 0 ? <span className="mobile-count">{openReviewCount}</span> : null}
           </button>
-        ))}
+          );
+        })}
       </nav>
 
       {isImportOpen ? (
@@ -621,38 +687,18 @@ function OverviewTab({ changeTab, openReviewCount }: { changeTab: (tab: Tab) => 
   return (
     <div className="page page-overview">
       <section className="page-heading">
-        <p className="eyebrow">Monday, July 13</p>
-        <h1>Good evening, household.</h1>
-        <p>Here’s what your Costco history can help with next.</p>
+        <p className="section-label">Household history</p>
+        <h1>Insights</h1>
+        <p>Understand the pattern without turning the trip into a scorecard.</p>
       </section>
 
-      <section className="hero-grid">
-        <article className="saturday-card">
-          <div className="saturday-topline">
-            <span className="pill pill-light">This Saturday</span>
-            <span className="auto-saved">Automatically saved</span>
-          </div>
-          <h2>Your useful list is already taking shape.</h2>
-          <p>Three essentials look due, one supply check could prevent a duplicate, and a favorite discovery is waiting in Consider.</p>
-          <div className="saturday-stats">
-            <span><strong>3</strong> essentials</span>
-            <span><strong>2</strong> suggestions</span>
-            <span><strong>1</strong> quick check</span>
-          </div>
-          <button className="light-button" onClick={() => changeTab("week")}>Review Saturday’s list</button>
-        </article>
-
-        <article className="next-step-card card">
-          <div className="card-heading compact">
-            <div>
-              <p className="eyebrow">Next useful step</p>
-              <h2>{openReviewCount} items can teach the dashboard</h2>
-            </div>
-            <span className="round-number">{openReviewCount}</span>
-          </div>
-          <p className="muted">One receipt match, one possible duplicate, and two discovery questions. Answer any three—or leave them unknown.</p>
-          <button className="secondary-button" onClick={() => changeTab("review")}>Open review</button>
-        </article>
+      <section className="insights-action-row" aria-label="Next useful action">
+        <div>
+          <p className="section-label">Next useful step</p>
+          <h2>{openReviewCount} short questions can improve future suggestions</h2>
+          <p>Answer one now, leave the rest for later, or keep them unknown.</p>
+        </div>
+        <button className="secondary-button" onClick={() => changeTab("review")}>Open review</button>
       </section>
 
       <section className="metrics-strip" aria-label="Costco year-to-date summary">
@@ -677,7 +723,7 @@ function OverviewTab({ changeTab, openReviewCount }: { changeTab: (tab: Tab) => 
         <article className="card spend-card">
           <div className="card-heading">
             <div>
-              <p className="eyebrow">Movement</p>
+              <p className="section-label">Spending movement</p>
               <h2>Monthly Costco spending</h2>
               <p>Net receipt totals · Jan–Jul</p>
             </div>
@@ -689,7 +735,7 @@ function OverviewTab({ changeTab, openReviewCount }: { changeTab: (tab: Tab) => 
         <article className="card category-card">
           <div className="card-heading">
             <div>
-              <p className="eyebrow">Where it went</p>
+              <p className="section-label">Where it went</p>
               <h2>Category mix</h2>
               <p>$8,420 classified · sample data</p>
             </div>
@@ -698,31 +744,28 @@ function OverviewTab({ changeTab, openReviewCount }: { changeTab: (tab: Tab) => 
         </article>
       </section>
 
-      <section className="card learning-section">
+      <section className="learning-section">
         <div className="card-heading">
           <div>
-            <p className="eyebrow">Patterns worth seeing</p>
-            <h2>Useful, not judgmental</h2>
+            <p className="section-label">Patterns worth seeing</p>
+            <h2>Useful signals, not judgments</h2>
           </div>
           <EvidenceBadge label="System suggestion" />
         </div>
         <div className="learning-grid">
           <button className="insight-card" onClick={() => changeTab("products") }>
             <span className="insight-icon sage">7–9</span>
-            <strong>Milk has a steady rhythm</strong>
-            <p>Usually repurchased every 7–9 days; last bought 8 days ago.</p>
+            <span className="insight-copy"><strong>Milk has a steady rhythm</strong><p>Usually repurchased every 7–9 days; last bought 8 days ago.</p></span>
             <span className="insight-link">See evidence →</span>
           </button>
           <button className="insight-card" onClick={() => changeTab("spending") }>
             <span className="insight-icon apricot">+28</span>
-            <strong>Household items moved up</strong>
-            <p>Package spending is 28% above the same sample period last year.</p>
+            <span className="insight-copy"><strong>Household items moved up</strong><p>Package spending is 28% above the same sample period last year.</p></span>
             <span className="insight-link">Explore category →</span>
           </button>
           <button className="insight-card" onClick={() => changeTab("review") }>
             <span className="insight-icon lilac">7</span>
-            <strong>New products became repeats</strong>
-            <p>Seven discoveries were purchased again; four still need context.</p>
+            <span className="insight-copy"><strong>New products became repeats</strong><p>Seven discoveries were purchased again; four still need context.</p></span>
             <span className="insight-link">Review discoveries →</span>
           </button>
         </div>
@@ -731,13 +774,14 @@ function OverviewTab({ changeTab, openReviewCount }: { changeTab: (tab: Tab) => 
   );
 }
 
-function SpendingTab({ period, setPeriod, categoryFilter, setCategoryFilter }: { period: Period; setPeriod: (value: Period) => void; categoryFilter: string; setCategoryFilter: (value: string) => void }) {
+function SpendingTab({ period, setPeriod, categoryFilter, setCategoryFilter, changeTab }: { period: Period; setPeriod: (value: Period) => void; categoryFilter: string; setCategoryFilter: (value: string) => void; changeTab: (tab: Tab) => void }) {
   const shownCategories = categoryFilter === "All categories" ? categories : categories.filter((category) => category.name === categoryFilter);
+  const periodData = period === "Month" ? monthlySpend.slice(-1) : period === "Quarter" ? monthlySpend.slice(-3) : monthlySpend;
   return (
     <div className="page">
       <section className="page-heading with-controls">
         <div>
-          <p className="eyebrow">Explore</p>
+          <button className="back-button" onClick={() => changeTab("overview")}>← Insights</button>
           <h1>Spending</h1>
           <p>Receipt facts first. Household judgment stays with you.</p>
         </div>
@@ -764,17 +808,17 @@ function SpendingTab({ period, setPeriod, categoryFilter, setCategoryFilter }: {
         <article className="card spend-card">
           <div className="card-heading">
             <div>
-              <p className="eyebrow">Trend</p>
+              <p className="section-label">Trend</p>
               <h2>Monthly net spending</h2>
-              <p>Current period versus the same months last year</p>
+              <p>{period} view versus the same period last year</p>
             </div>
           </div>
-          <MonthlyBarChart />
+          <MonthlyBarChart data={periodData} />
         </article>
         <article className="card category-card">
           <div className="card-heading">
             <div>
-              <p className="eyebrow">Composition</p>
+              <p className="section-label">Composition</p>
               <h2>Category breakdown</h2>
               <p>Every bar starts at zero</p>
             </div>
@@ -793,7 +837,7 @@ function SpendingTab({ period, setPeriod, categoryFilter, setCategoryFilter }: {
       <section className="card trip-table-card">
         <div className="card-heading">
           <div>
-            <p className="eyebrow">Receipt trail</p>
+            <p className="section-label">Receipt trail</p>
             <h2>Recent trips</h2>
             <p>Gross purchases, discounts, returns, and total remain separate.</p>
           </div>
@@ -839,7 +883,7 @@ function ProductsTab({ search, setSearch, categoryFilter, setCategoryFilter, pro
     <div className="page">
       <section className="page-heading with-controls product-heading">
         <div>
-          <p className="eyebrow">Search the household history</p>
+          <p className="section-label">Household history</p>
           <h1>Products</h1>
           <p>Prices, rhythms, raw receipt names, and what worked for your household.</p>
         </div>
@@ -867,7 +911,7 @@ function ProductsTab({ search, setSearch, categoryFilter, setCategoryFilter, pro
 
         <article className="product-detail card">
           <div className="product-detail-top">
-            <div><p className="eyebrow">{selected.category}</p><h2>{selected.name}</h2><p>{selected.brand} · item {selected.itemNumber}</p></div>
+            <div><p className="section-label">{selected.category}</p><h2>{selected.name}</h2><p>{selected.brand} · item {selected.itemNumber}</p></div>
             <span className="household-label">{selected.householdLabel}</span>
           </div>
           <div className="detail-metrics">
@@ -894,14 +938,14 @@ function ProductsTab({ search, setSearch, categoryFilter, setCategoryFilter, pro
             <span>Household note</span>
             <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="What should the two of you remember?" />
           </label>
-          <div className="detail-actions"><button className="secondary-button" onClick={onSaveNote}>Save note</button><button className="text-button">Pause suggestions</button></div>
+          <div className="detail-actions"><button className="secondary-button" onClick={onSaveNote}>Save note on this device</button></div>
         </article>
       </section>
     </div>
   );
 }
 
-function ThisWeekTab({ items, newItem, setNewItem, onAdd, onToggleIncluded, onToggleChecked, onCopy }: {
+function ThisWeekTab({ items, newItem, setNewItem, onAdd, onToggleIncluded, onToggleChecked, onCopy, storageAvailable, onOpenImport }: {
   items: ListItem[];
   newItem: string;
   setNewItem: (value: string) => void;
@@ -909,22 +953,24 @@ function ThisWeekTab({ items, newItem, setNewItem, onAdd, onToggleIncluded, onTo
   onToggleIncluded: (id: string) => void;
   onToggleChecked: (id: string) => void;
   onCopy: () => void;
+  storageAvailable: boolean | null;
+  onOpenImport: () => void;
 }) {
   const included = items.filter((item) => item.included);
   const estimated = included.reduce((sum, item) => sum + item.price, 0);
   const sections: ListItem["section"][] = ["Essentials", "Suggested", "Check first", "Consider"];
+  const storageTitle = storageAvailable === true ? "Saved on this device" : storageAvailable === false ? "Changes last for this tab" : "Checking this device";
+  const storageCopy = storageAvailable === true ? "Your edits survive refresh here, but they do not sync between phones yet." : storageAvailable === false ? "Copy the list before closing if you want to keep it." : "BasketSense is checking whether private device storage is available.";
   return (
     <div className="page week-page">
       <section className="page-heading with-controls">
-        <div><p className="eyebrow">Saturday, July 18</p><h1>This Week</h1><p>One shared list, automatically versioned as either of you edits it.</p></div>
+        <div><p className="section-label">Weekly plan</p><h1>This Saturday</h1><p>Start with what looks due. You decide what belongs in the cart.</p></div>
         <button className="secondary-button" onClick={onCopy}>Copy list</button>
       </section>
 
-      <section className="week-summary">
-        <div><span>On the list</span><strong>{included.length} items</strong></div>
-        <div><span>Approximate total</span><strong>{preciseMoney.format(estimated)}</strong><small>Last known package prices</small></div>
-        <div><span>Discovery room</span><strong>$30</strong><small>Optional, not a target</small></div>
-        <div className="save-state"><span className="status-dot" /><strong>Saved just now</strong><small>HH + SH share this link</small></div>
+      <section className={`device-notice ${storageAvailable === false ? "warning" : ""}`} aria-live="polite">
+        <span className="device-notice-mark" aria-hidden="true">{storageAvailable === true ? "✓" : storageAvailable === false ? "!" : "…"}</span>
+        <div><strong>{storageTitle}</strong><p>{storageCopy}</p></div>
       </section>
 
       <form className="quick-add" onSubmit={onAdd}>
@@ -933,21 +979,27 @@ function ThisWeekTab({ items, newItem, setNewItem, onAdd, onToggleIncluded, onTo
         <button className="primary-button" type="submit">Add item</button>
       </form>
 
+      <section className="week-summary" aria-label="Saturday list summary">
+        <div><span>On the list</span><strong>{included.length} items</strong></div>
+        <div><span>Approximate total</span><strong>{preciseMoney.format(estimated)}</strong><small>Last known package prices</small></div>
+        <div><span>Discovery room</span><strong>Optional</strong><small>No required target</small></div>
+      </section>
+
       <div className="week-layout">
         <section className="list-card card">
           {sections.map((section) => {
             const sectionItems = items.filter((item) => item.section === section);
             return (
               <div className="list-section" key={section}>
-                <div className="list-section-heading"><div><h2>{section}</h2><p>{section === "Essentials" ? "Already on the shared list" : section === "Suggested" ? "Based on household rhythms" : section === "Check first" ? "A quick supply check may help" : "Optional favorites and ideas"}</p></div><span>{sectionItems.filter((item) => item.included).length}/{sectionItems.length}</span></div>
+                <div className="list-section-heading"><div><h2>{section}</h2><p>{section === "Essentials" ? "Already included for this trip" : section === "Suggested" ? "Based on household rhythms" : section === "Check first" ? "A quick supply check may help" : "Optional favorites and ideas"}</p></div><span>{sectionItems.filter((item) => item.included).length}/{sectionItems.length}</span></div>
                 <div className="list-rows">
                   {sectionItems.map((item) => (
                     <div className={`list-row ${item.included ? "included" : ""} ${item.checked ? "checked" : ""}`} key={item.id}>
                       {item.included ? (
-                        <button className="check-button" onClick={() => onToggleChecked(item.id)} aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.name}`}><span aria-hidden="true">{item.checked ? "✓" : ""}</span></button>
+                        <button type="button" className="check-button" onClick={() => onToggleChecked(item.id)} aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.name}`}><span aria-hidden="true">{item.checked ? "✓" : ""}</span></button>
                       ) : <span className="suggestion-dot" aria-hidden="true" />}
                       <div className="list-row-copy"><strong>{item.name}</strong><p>{item.reason}</p><small>{item.source}</small></div>
-                      <div className="list-row-actions"><span className="estimated-price">{item.price ? `~${preciseMoney.format(item.price)}` : "No estimate"}</span><button className={item.included ? "text-button" : "add-button"} onClick={() => onToggleIncluded(item.id)}>{item.included ? "Remove" : "Add"}</button></div>
+                      <div className="list-row-actions"><span className="estimated-price">{item.price ? `~${preciseMoney.format(item.price)}` : "No estimate"}</span><button type="button" className={item.included ? "text-button" : "add-button"} onClick={() => onToggleIncluded(item.id)}>{item.included ? "Remove" : "Add"}</button></div>
                     </div>
                   ))}
                 </div>
@@ -957,57 +1009,92 @@ function ThisWeekTab({ items, newItem, setNewItem, onAdd, onToggleIncluded, onTo
         </section>
 
         <aside className="week-rail">
-          <article className="card why-card"><p className="eyebrow">How suggestions work</p><h2>Receipts suggest timing. You decide need.</h2><p>Purchase rhythm, time since last purchase, and recent household feedback shape the list. Nothing is assumed to be empty or wasteful.</p><button className="text-button">See recommendation rules</button></article>
-          <article className="card share-card"><div className="avatar-stack"><span className="avatar avatar-one">HH</span><span className="avatar avatar-two">SH</span></div><h2>One household link</h2><p>Friday email opens this list. Copy it to Reminders or Keep when that is more convenient.</p><button className="secondary-button" onClick={onCopy}>Copy for sharing</button></article>
+          <article className="card why-card">
+            <p className="section-label">How suggestions work</p>
+            <h2>Receipts suggest timing. You decide need.</h2>
+            <p>Purchase rhythm, time since last purchase, and household feedback shape the list. Nothing is assumed empty or wasteful.</p>
+            <details className="rules-disclosure"><summary>See recommendation rules</summary><ul><li>Typical days between purchases</li><li>Time since the last matching receipt</li><li>Confidence based on repeat history</li><li>Your own additions and answers</li></ul></details>
+          </article>
+          <article className="card share-card">
+            <div className="avatar-stack"><span className="avatar avatar-one">HH</span><span className="avatar avatar-two">SH</span></div>
+            <h2>Share a snapshot</h2>
+            <p>Copy a clean text list to Reminders, Keep, or a message. Edits do not sync back to this prototype.</p>
+            <button className="secondary-button" onClick={onCopy}>Copy for sharing</button>
+            <button className="text-button" onClick={onOpenImport}>Add receipt after the trip</button>
+          </article>
         </aside>
       </div>
     </div>
   );
 }
 
-function ReviewTab({ items, onResolve }: { items: ReviewItem[]; onResolve: (id: string, answer: string) => void }) {
+function ReviewTab({ items, onResolve, lastResolved, onUndo, storageAvailable }: { items: ReviewItem[]; onResolve: (id: string, answer: string) => void; lastResolved: ResolvedReview | null; onUndo: () => void; storageAvailable: boolean | null }) {
+  const [showMoreAnswers, setShowMoreAnswers] = useState(false);
   const open = items.filter((item) => item.status === "open");
   const resolved = items.filter((item) => item.status === "resolved");
+  const current = open[0];
+  const visibleOptions = current ? (showMoreAnswers ? current.options : current.options.slice(0, 3)) : [];
+
+  function answerCurrent(answer: string) {
+    if (!current) return;
+    setShowMoreAnswers(false);
+    onResolve(current.id, answer);
+  }
+
   return (
     <div className="page review-page">
-      <section className="page-heading"><p className="eyebrow">Lightweight learning inbox</p><h1>Review</h1><p>Only questions whose answers could improve categories, matches, or future suggestions.</p></section>
-      <section className="notice-card gentle"><span className="notice-mark">3</span><p><strong>Three questions is enough.</strong> Unknown is a valid answer, and old questions can be left alone.</p></section>
+      <section className="page-heading"><p className="section-label">Lightweight learning inbox</p><h1>Review</h1><p>One useful question at a time. Unknown and later are always valid.</p></section>
+      <section className="notice-card gentle"><span className="notice-mark">1</span><p><strong>One answer is enough.</strong> In this prototype, answers are {storageAvailable === true ? "saved on this device" : storageAvailable === false ? "kept only for this tab" : "being checked for local saving"}.</p></section>
 
-      <section className="review-grid">
-        {open.map((item) => (
-          <article className="review-card card" key={item.id}>
-            <div className="review-top"><div><p className="eyebrow">{item.eyebrow}</p><h2>{item.title}</h2></div>{item.amount ? <strong className="review-amount">{preciseMoney.format(item.amount)}</strong> : null}</div>
-            <EvidenceBadge label={item.badge} />
-            <p className="review-context">{item.context}</p>
+      {lastResolved ? (
+        <section className="undo-row" role="status">
+          <div><strong>Answer recorded</strong><span>{lastResolved.title} · {lastResolved.answer}</span></div>
+          <button className="text-button" onClick={onUndo}>Undo</button>
+        </section>
+      ) : null}
+
+      <section className="review-flow">
+        {current ? (
+          <article className="review-card card" key={current.id}>
+            <div className="review-progress"><span>Question 1 of {open.length}</span><span>{resolved.length} answered</span></div>
+            <div className="review-top"><div><p className="section-label">{current.eyebrow}</p><h2>{current.title}</h2></div>{current.amount ? <strong className="review-amount">{preciseMoney.format(current.amount)}</strong> : null}</div>
+            <EvidenceBadge label={current.badge} />
+            <p className="review-context">{current.context}</p>
             <div className="review-options">
-              {item.options.map((option) => <button key={option} onClick={() => onResolve(item.id, option)}>{option}</button>)}
+              {visibleOptions.map((option) => <button key={option} onClick={() => answerCurrent(option)}>{option}</button>)}
+              {!showMoreAnswers && current.options.length > 3 ? <button className="more-answers" onClick={() => setShowMoreAnswers(true)}>More choices</button> : null}
+              <button className="not-sure-answer" onClick={() => answerCurrent("Not sure yet")}>Not sure yet</button>
             </div>
           </article>
-        ))}
-        {!open.length ? <div className="empty-state card"><span className="empty-check">✓</span><strong>Nothing needs attention</strong><p>The dashboard will ask again only when a new receipt or later product outcome can teach it something.</p></div> : null}
+        ) : <div className="empty-state card"><span className="empty-check">✓</span><strong>Nothing needs attention</strong><p>The dashboard will ask again only when a new receipt or later product outcome can teach it something.</p></div>}
       </section>
 
       {resolved.length ? (
-        <section className="resolved-section"><h2>Answered this session</h2>{resolved.map((item) => <div className="resolved-row" key={item.id}><span>✓</span><div><strong>{item.title}</strong><small>{item.answer}</small></div></div>)}</section>
+        <section className="resolved-section"><h2>{storageAvailable === true ? "Answered on this device" : "Answered in this tab"}</h2>{resolved.map((item) => <div className="resolved-row" key={item.id}><span>✓</span><div><strong>{item.title}</strong><small>{item.answer}</small></div></div>)}</section>
       ) : null}
     </div>
   );
 }
 
-function MonthlyBarChart({ compact = false }: { compact?: boolean }) {
-  const max = Math.max(...monthlySpend.map((item) => item.current));
+function MonthlyBarChart({ compact = false, data = monthlySpend }: { compact?: boolean; data?: typeof monthlySpend }) {
+  const max = Math.max(...data.flatMap((item) => [item.current, item.previous]));
+  const currentTotal = data.reduce((sum, item) => sum + item.current, 0);
+  const previousTotal = data.reduce((sum, item) => sum + item.previous, 0);
+  const tripTotal = data.reduce((sum, item) => sum + item.trips, 0);
+  const change = previousTotal ? Math.round(((currentTotal - previousTotal) / previousTotal) * 100) : 0;
   return (
     <div className={`bar-chart ${compact ? "compact" : ""}`}>
       <div className="chart-legend"><span><i className="legend-current" />2026</span><span><i className="legend-previous" />2025</span></div>
-      <div className="bars" role="img" aria-label="Monthly net Costco spending from January through July 2026 compared with 2025">
-        {monthlySpend.map((item) => (
+      <div className="bars" style={{ gridTemplateColumns: `repeat(${data.length}, minmax(44px, 1fr))` }} role="img" aria-label="Monthly net Costco spending in 2026 compared with 2025">
+        {data.map((item) => (
           <div className="bar-group" key={item.month} tabIndex={0} aria-label={`${item.month}: ${money.format(item.current)} in 2026, ${money.format(item.previous)} in 2025, ${item.trips} trips`}>
+            <span className="bar-value">{money.format(item.current)}</span>
             <div className="bar-pair"><span className="bar previous" style={{ height: `${Math.max(12, (item.previous / max) * 100)}%` }} /><span className="bar current" style={{ height: `${Math.max(12, (item.current / max) * 100)}%` }} /></div>
             <span className="bar-label">{item.month}</span>
           </div>
         ))}
       </div>
-      <p className="chart-summary">2026 sample total is $8,420 across 31 trips, about 12% above the same months in the comparison sample.</p>
+      <p className="chart-summary">2026 sample total is {money.format(currentTotal)} across {tripTotal} trips, {Math.abs(change)}% {change >= 0 ? "above" : "below"} the same period in 2025.</p>
     </div>
   );
 }
@@ -1032,8 +1119,8 @@ function ImportDialog({ status, onClose, onImport }: { status: string | null; on
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
       <section className="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title">
-        <div className="dialog-heading"><div><p className="eyebrow">Private household data</p><h2 id="import-title">Add receipt history</h2></div><button className="close-button" onClick={onClose} aria-label="Close receipt import">×</button></div>
-        <p className="dialog-intro">Upload receipt photos or receipts saved from Costco.com. BasketSense never asks for your Costco password.</p>
+        <div className="dialog-heading"><div><p className="section-label">Private household data</p><h2 id="import-title">Add receipt files</h2></div><button className="close-button" onClick={onClose} aria-label="Close receipt import">×</button></div>
+        <p className="dialog-intro">Choose receipt photos or exports. This prototype validates JSON and CSV locally; photos and PDFs are staged only. BasketSense never asks for your Costco password.</p>
 
         <label className="drop-zone">
           <span className="upload-mark" aria-hidden="true">＋</span>
