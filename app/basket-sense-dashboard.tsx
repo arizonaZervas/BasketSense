@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -12,10 +13,10 @@ import type {
   DashboardProduct,
   DashboardProductCategory,
   DashboardReceiptLine,
-  DashboardSuggestion,
   DashboardTransaction,
   DashboardViewData,
 } from "./dashboard-types";
+import type { HouseholdListResponse } from "./api/household/types";
 import {
   isProductCategoryKey,
   mergeHouseholdProductMetadata,
@@ -43,6 +44,8 @@ type ListItemSource =
   | "consider"
   | "in_store";
 type SyncStatus = "connecting" | "shared" | "refreshing" | "offline";
+type ThemePreference = "system" | "light" | "dark";
+type ResolvedTheme = "light" | "dark";
 
 type DashboardUser = {
   displayName: string;
@@ -140,6 +143,8 @@ const primaryTabs = [
   { id: "review", label: "Review", symbol: "?" },
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
 
+const THEME_STORAGE_KEY = "basketsense-color-theme";
+
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -221,17 +226,42 @@ function sourceLabel(source: ListItemSource) {
   return "Added during this trip";
 }
 
-function listSection(item: SharedListItem, status: TripStatus) {
+const IDEA_SECTIONS: readonly {
+  key: SharedListItem["section"];
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: "essentials",
+    label: "Essentials",
+    description: "Recurring staples and household additions",
+  },
+  {
+    key: "suggested",
+    label: "Recommended",
+    description: "Timely ideas from your exact purchase history",
+  },
+  {
+    key: "check_first",
+    label: "Check first",
+    description: "Confirm the fridge, pantry, or freezer before adding",
+  },
+  {
+    key: "consider",
+    label: "Seasonal",
+    description: "Optional favorites that may not be available every week",
+  },
+];
+
+function activeItemStatus(item: SharedListItem, status: TripStatus) {
   if (
     status === "frozen" &&
-    (item.addedAfterFreeze || (item.includedAtFreeze === false && item.included))
+    (item.addedAfterFreeze || item.includedAtFreeze === false)
   ) {
     return "Added during trip";
   }
-  if (item.section === "essentials") return "Essentials";
-  if (item.section === "suggested") return "Recommended";
-  if (item.section === "check_first") return "Check first";
-  return "Seasonal consider";
+  if (status === "frozen" && item.includedAtFreeze) return "Planned";
+  return sourceLabel(item.source);
 }
 
 function freezeEvidence(item: SharedListItem, status: TripStatus) {
@@ -372,17 +402,84 @@ export function BasketSenseDashboard({
   const [receiptFlowScope, setReceiptFlowScope] =
     useState<"current" | "latest">("current");
   const [toast, setToast] = useState<string | null>(null);
+  const [themePreference, setThemePreference] =
+    useState<ThemePreference>("system");
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>("light");
+  const [themeReady, setThemeReady] = useState(false);
   const refreshPromise = useRef<Promise<void> | null>(null);
+  const listRefreshPromise = useRef<Promise<void> | null>(null);
   const toastTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
   const productReturnFocus = useRef<string | null>(null);
+  const listMoveFocus = useRef<{
+    itemId: string;
+    destination: "active" | "ideas" | "active-heading";
+  } | null>(null);
   const effectiveViewData = useMemo(
     () => mergeHouseholdProductMetadata(viewData, household?.products ?? []),
     [household?.products, viewData],
   );
+  const resolvedTheme: ResolvedTheme =
+    themePreference === "system" ? systemTheme : themePreference;
+
+  useEffect(() => {
+    const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
+    const updateSystemTheme = () =>
+      setSystemTheme(colorScheme.matches ? "dark" : "light");
+    const syncStoredTheme = (event: StorageEvent) => {
+      if (event.key !== THEME_STORAGE_KEY) return;
+      setThemePreference(
+        event.newValue === "light" || event.newValue === "dark"
+          ? event.newValue
+          : "system",
+      );
+    };
+
+    const hydrateTheme = window.setTimeout(() => {
+      updateSystemTheme();
+      try {
+        const savedPreference = window.localStorage.getItem(THEME_STORAGE_KEY);
+        if (savedPreference === "light" || savedPreference === "dark") {
+          setThemePreference(savedPreference);
+        }
+      } catch {
+        // The system preference remains the safe default when storage is blocked.
+      }
+      setThemeReady(true);
+    }, 0);
+
+    colorScheme.addEventListener("change", updateSystemTheme);
+    window.addEventListener("storage", syncStoredTheme);
+    return () => {
+      window.clearTimeout(hydrateTheme);
+      colorScheme.removeEventListener("change", updateSystemTheme);
+      window.removeEventListener("storage", syncStoredTheme);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!themeReady) return;
+    if (themePreference === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.dataset.theme = themePreference;
+    }
+    document.documentElement.style.colorScheme = resolvedTheme;
+
+    try {
+      if (themePreference === "system") {
+        window.localStorage.removeItem(THEME_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+      }
+    } catch {
+      // Theme switching still works for this visit when storage is unavailable.
+    }
+  }, [resolvedTheme, themePreference, themeReady]);
 
   const refreshHousehold = useCallback(async (quiet = false, forceFresh = false) => {
+    if (listRefreshPromise.current) await listRefreshPromise.current;
     if (refreshPromise.current) {
       if (!forceFresh) return refreshPromise.current;
       await refreshPromise.current;
@@ -423,6 +520,71 @@ export function BasketSenseDashboard({
     return refresh;
   }, []);
 
+  const refreshHouseholdList = useCallback(
+    async (tripId: string) => {
+      if (refreshPromise.current) return refreshPromise.current;
+      if (listRefreshPromise.current) return listRefreshPromise.current;
+
+      let shouldRefreshFullSnapshot = false;
+      const refresh = (async () => {
+        try {
+          const response = await fetch(
+            `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}`,
+            {
+              headers: { Accept: "application/json" },
+              cache: "no-store",
+            },
+          );
+          const body = (await response.json().catch(() => null)) as unknown;
+          if (!response.ok) {
+            throw new Error(
+              apiErrorMessage(body, "The shared list could not be refreshed."),
+            );
+          }
+          if (
+            !body ||
+            typeof body !== "object" ||
+            !("currentTrip" in body) ||
+            !("listItems" in body) ||
+            !Array.isArray(body.listItems)
+          ) {
+            throw new Error("The shared list returned an unexpected response.");
+          }
+
+          const snapshot = body as HouseholdListResponse;
+          if (snapshot.currentTrip.id !== tripId) return;
+          setHousehold((current) =>
+            !current || current.currentTrip.id !== tripId
+              ? current
+              : {
+                  ...current,
+                  currentTrip: snapshot.currentTrip,
+                  listItems: snapshot.listItems,
+                },
+          );
+          setSyncStatus("shared");
+          setSyncError(null);
+          setLastSyncedAt(new Date());
+          shouldRefreshFullSnapshot = snapshot.currentTrip.status === "completed";
+        } catch (error) {
+          setSyncStatus("offline");
+          setSyncError(
+            error instanceof Error
+              ? error.message
+              : "The shared list could not be refreshed.",
+          );
+        }
+      })().finally(() => {
+        listRefreshPromise.current = null;
+        if (shouldRefreshFullSnapshot) void refreshHousehold(true, true);
+      });
+
+      listRefreshPromise.current = refresh;
+      return refresh;
+    },
+    [refreshHousehold],
+  );
+
   useEffect(() => {
     void refreshHousehold();
 
@@ -430,16 +592,37 @@ export function BasketSenseDashboard({
       if (document.visibilityState === "visible") void refreshHousehold(true);
     };
     const refreshOnFocus = () => void refreshHousehold(true);
-    const interval = window.setInterval(refreshWhenVisible, 15_000);
     window.addEventListener("focus", refreshOnFocus);
+    window.addEventListener("online", refreshOnFocus);
     document.addEventListener("visibilitychange", refreshWhenVisible);
 
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", refreshOnFocus);
+      window.removeEventListener("online", refreshOnFocus);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [refreshHousehold]);
+
+  useEffect(() => {
+    const refreshPeriodMs = activeTab === "week" ? 5_000 : 15_000;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || pendingWrites.size) return;
+      const tripId = household?.currentTrip.id;
+      if (activeTab === "week" && tripId) {
+        void refreshHouseholdList(tripId);
+      } else {
+        void refreshHousehold(true);
+      }
+    }, refreshPeriodMs);
+
+    return () => window.clearInterval(interval);
+  }, [
+    activeTab,
+    household?.currentTrip.id,
+    pendingWrites.size,
+    refreshHousehold,
+    refreshHouseholdList,
+  ]);
 
   useEffect(
     () => () => {
@@ -468,10 +651,36 @@ export function BasketSenseDashboard({
     return () => window.cancelAnimationFrame(frame);
   }, [activeTab, productDetailOpen]);
 
+  useEffect(() => {
+    const request = listMoveFocus.current;
+    if (!request || activeTab !== "week") return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const target =
+        request.destination === "active-heading"
+          ? document.getElementById("active-list-title")
+          : Array.from(
+              document.querySelectorAll<HTMLElement>("[data-list-item-focus]"),
+            ).find(
+              (element) =>
+                element.dataset.listItemFocus === request.itemId &&
+                element.dataset.listItemLocation === request.destination,
+            );
+      target?.focus();
+      listMoveFocus.current = null;
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, household?.listItems]);
+
   function flash(message: string) {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(null), 2_600);
+  }
+
+  function toggleTheme() {
+    setThemePreference(resolvedTheme === "dark" ? "light" : "dark");
   }
 
   function changeTab(tab: Tab) {
@@ -589,6 +798,17 @@ export function BasketSenseDashboard({
 
   function toggleIncluded(item: SharedListItem) {
     const key = `item-${item.id}`;
+    const nextIncluded = !item.included;
+    const shoppingStarted = household?.currentTrip.status === "frozen";
+    listMoveFocus.current = {
+      itemId: item.id,
+      destination: nextIncluded
+        ? "active"
+        : shoppingStarted &&
+            (item.includedAtFreeze === true || item.addedAfterFreeze)
+          ? "active-heading"
+          : "ideas",
+    };
     setHousehold((current) =>
       current
         ? {
@@ -598,7 +818,7 @@ export function BasketSenseDashboard({
                 ? {
                     ...candidate,
                     included: !item.included,
-                    checked: item.included ? false : candidate.checked,
+                    checked: false,
                   }
                 : candidate,
             ),
@@ -610,9 +830,13 @@ export function BasketSenseDashboard({
       body: {
         action: "set_item_included",
         itemId: item.id,
-        included: !item.included,
+        included: nextIncluded,
       },
-      successMessage: "Shared list updated",
+      successMessage: nextIncluded
+        ? `${item.label} added to the Active List`
+        : shoppingStarted
+          ? `${item.label} removed from the shopping list`
+          : `${item.label} moved to Ideas`,
     });
   }
 
@@ -646,6 +870,25 @@ export function BasketSenseDashboard({
     const label = newItem.trim();
     if (!label || !household) return;
     const catalogProduct = exactCatalogMatch(household.products, label);
+    const normalizedLabel = normalizedCatalogLabel(
+      catalogProduct?.canonicalName ?? label,
+    );
+    const existingItem = household.listItems.find((item) =>
+      catalogProduct
+        ? item.productId === catalogProduct.id
+        : normalizedCatalogLabel(item.label) === normalizedLabel,
+    );
+
+    if (existingItem) {
+      setNewItem("");
+      if (existingItem.included) {
+        flash(`${existingItem.label} is already on the active list`);
+      } else {
+        toggleIncluded(existingItem);
+      }
+      return;
+    }
+
     const request: WriteRequest = {
       method: "POST",
       body: {
@@ -685,29 +928,6 @@ export function BasketSenseDashboard({
     });
   }
 
-  function addSuggestion(suggestion: DashboardSuggestion) {
-    if (!household) return;
-    const product = household.products.find(
-      (candidate) => candidate.costcoItemNumber === suggestion.itemNumber,
-    );
-    void performWrite(`suggestion-${suggestion.id}`, {
-      method: "POST",
-      body: {
-        action: "add_list_item",
-        tripId: household.currentTrip.id,
-        label: suggestion.name,
-        productId: product?.id ?? null,
-        section: suggestion.section,
-        source: "predicted",
-        recommendationReason: suggestion.reason,
-        confidenceBps: suggestion.confidenceBps,
-        included: true,
-        estimatedPriceCents: suggestion.estimatedPriceCents,
-      },
-      successMessage: `${suggestion.name} added to the shared list`,
-    });
-  }
-
   function freezeTrip() {
     if (!household) return;
     void performWrite("freeze-trip", {
@@ -717,6 +937,18 @@ export function BasketSenseDashboard({
         tripId: household.currentTrip.id,
       },
       successMessage: "Shopping started — today’s planned list is captured",
+    });
+  }
+
+  function unfreezeTrip() {
+    if (!household) return;
+    void performWrite("unfreeze-trip", {
+      method: "PATCH",
+      body: {
+        action: "unfreeze_trip",
+        tripId: household.currentTrip.id,
+      },
+      successMessage: "Back in planning — the live list is ready to review",
     });
   }
 
@@ -843,6 +1075,38 @@ export function BasketSenseDashboard({
             </p>
           </div>
           <div className="topbar-actions">
+            <div className="theme-control" role="group" aria-label="Color theme">
+              <button
+                type="button"
+                className={`theme-toggle ${resolvedTheme}`}
+                onClick={toggleTheme}
+                aria-label={`Switch to ${resolvedTheme === "dark" ? "light" : "dark"} theme`}
+                aria-pressed={resolvedTheme === "dark"}
+                title={
+                  themePreference === "system"
+                    ? `Following this device’s ${resolvedTheme} preference`
+                    : `${resolvedTheme === "dark" ? "Dark" : "Light"} theme saved on this device`
+                }
+              >
+                <span className="theme-toggle-track" aria-hidden="true">
+                  <span className="theme-symbol">☀︎</span>
+                  <span className="theme-symbol">☾</span>
+                  <span className="theme-toggle-knob" />
+                </span>
+                <span className="theme-toggle-label">
+                  {resolvedTheme === "dark" ? "Dark" : "Light"}
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`theme-auto ${themePreference === "system" ? "active" : ""}`}
+                onClick={() => setThemePreference("system")}
+                aria-pressed={themePreference === "system"}
+                title="Follow this device’s color preference"
+              >
+                Auto
+              </button>
+            </div>
             <div
               className="avatar-stack"
               aria-label={
@@ -882,7 +1146,6 @@ export function BasketSenseDashboard({
             syncStatus={syncStatus}
             syncError={syncError}
             lastSyncedAt={lastSyncedAt}
-            suggestions={effectiveViewData.suggestions}
             suggestionPlanDate={effectiveViewData.suggestionPlanDate}
             newItem={newItem}
             setNewItem={setNewItem}
@@ -890,10 +1153,10 @@ export function BasketSenseDashboard({
             failedWrites={failedWrites}
             onRetry={retryWrite}
             onAdd={addManualItem}
-            onAddSuggestion={addSuggestion}
             onToggleIncluded={toggleIncluded}
             onToggleChecked={toggleChecked}
             onFreeze={freezeTrip}
+            onUnfreeze={unfreezeTrip}
             onCopy={copyList}
             onOpenReceipt={(step) => openReceiptFlow(step, "current")}
           />
@@ -1001,7 +1264,6 @@ function ThisWeekTab({
   syncStatus,
   syncError,
   lastSyncedAt,
-  suggestions,
   suggestionPlanDate,
   newItem,
   setNewItem,
@@ -1009,10 +1271,10 @@ function ThisWeekTab({
   failedWrites,
   onRetry,
   onAdd,
-  onAddSuggestion,
   onToggleIncluded,
   onToggleChecked,
   onFreeze,
+  onUnfreeze,
   onCopy,
   onOpenReceipt,
 }: {
@@ -1020,7 +1282,6 @@ function ThisWeekTab({
   syncStatus: SyncStatus;
   syncError: string | null;
   lastSyncedAt: Date | null;
-  suggestions: readonly DashboardSuggestion[];
   suggestionPlanDate: string;
   newItem: string;
   setNewItem: (value: string) => void;
@@ -1028,14 +1289,28 @@ function ThisWeekTab({
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => void;
-  onAddSuggestion: (suggestion: DashboardSuggestion) => void;
   onToggleIncluded: (item: SharedListItem) => void;
   onToggleChecked: (item: SharedListItem) => void;
   onFreeze: () => void;
+  onUnfreeze: () => void;
   onCopy: () => void;
   onOpenReceipt: (step?: ReceiptStep) => void;
 }) {
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [activeCatalogIndex, setActiveCatalogIndex] = useState(0);
+  const [unfreezeConfirmationKey, setUnfreezeConfirmationKey] = useState<
+    string | null
+  >(null);
+  const quickItemRef = useRef<HTMLInputElement>(null);
+  const unfreezeTriggerRef = useRef<HTMLButtonElement>(null);
+  const startShoppingRef = useRef<HTMLButtonElement>(null);
+  const previousTripState = useRef<{
+    id: string;
+    status: TripStatus;
+  } | null>(null);
   const trip = household?.currentTrip;
+  const tripId = trip?.id ?? null;
+  const tripStatus = trip?.status ?? null;
   const items = household?.listItems ?? [];
   const included = items.filter((item) => item.included);
   const pricedIncluded = included.filter(
@@ -1046,17 +1321,16 @@ function ThisWeekTab({
     (sum, item) => sum + (estimatedItemTotalCents(item) ?? 0),
     0,
   );
-  const sections = [
-    "Essentials",
-    "Recommended",
-    "Check first",
-    "Seasonal consider",
-    "Added during trip",
-  ];
+  const excluded = items.filter((item) => !item.included);
   const memberById = new Map(
     household?.members.map((member) => [member.id, member]) ?? [],
   );
   const shoppingStarted = trip?.status === "frozen";
+  const frozenContextKey = shoppingStarted
+    ? `${trip.id}:${trip.frozenAt ?? "pending"}`
+    : null;
+  const confirmUnfreeze =
+    frozenContextKey !== null && unfreezeConfirmationKey === frozenContextKey;
   const frozenEstimateCents = trip?.estimatedListTotalAtFreezeCents ?? null;
   const frozenPricedItemCount =
     trip?.estimatedPricedItemCountAtFreeze ?? null;
@@ -1094,44 +1368,148 @@ function ThisWeekTab({
           : `Started at ~${currency.format(frozenEstimateCents / 100)}${frozenCoverage}${estimateChangeCents
             ? ` · ${estimateChangeCents > 0 ? "+" : "−"}${currency.format(Math.abs(estimateChangeCents) / 100)} since then`
             : " · unchanged"}`;
-  const removedAfterStart = shoppingStarted
-    ? items.filter((item) => item.includedAtFreeze === true && !item.included)
-    : [];
-  const visibleItems = shoppingStarted
-    ? items.filter((item) => item.included || item.addedAfterFreeze)
-    : items;
-  const catalogOptions = (household?.products ?? []).filter(
-    (product) =>
-      product.latestRegularUnitPriceCents !== null &&
-      product.category !== "fuel" &&
-      product.category !== "optical_services",
+  const catalogOptions = useMemo(
+    () =>
+      [...(household?.products ?? [])]
+        .filter(
+          (product) =>
+            product.category !== "fuel" &&
+            product.category !== "optical_services",
+        )
+        .sort((left, right) => {
+          const dateOrder = (right.latestPurchasedAt ?? "").localeCompare(
+            left.latestPurchasedAt ?? "",
+          );
+          return dateOrder || left.canonicalName.localeCompare(right.canonicalName);
+        }),
+    [household?.products],
   );
-  const matchedCatalogProduct = exactCatalogMatch(catalogOptions, newItem);
-  const itemsBySection = new Map(
-    sections.map((section) => [
-      section,
-      visibleItems.filter(
-        (item) => listSection(item, trip?.status ?? "planning") === section,
-      ),
-    ]),
-  );
+  const catalogResults = useMemo(() => {
+    const normalizedQuery = normalizedCatalogLabel(newItem);
+    const queryTokens = normalizedQuery.split(/\s+/).filter(Boolean);
+    const matches = catalogOptions.filter((product) => {
+      if (!queryTokens.length) return true;
+      const searchableValues = [
+        product.canonicalName,
+        product.latestRawDescription ?? "",
+        product.costcoItemNumber ?? "",
+        catalogSelectionValue(product, catalogOptions),
+      ].map(normalizedCatalogLabel);
+      return queryTokens.every((token) =>
+        searchableValues.some((value) => value.includes(token)),
+      );
+    });
 
+    return matches
+      .sort((left, right) => {
+        if (!normalizedQuery) return 0;
+        const score = (product: SharedProduct) => {
+          const canonicalName = normalizedCatalogLabel(product.canonicalName);
+          const selection = normalizedCatalogLabel(
+            catalogSelectionValue(product, catalogOptions),
+          );
+          const rawDescription = normalizedCatalogLabel(
+            product.latestRawDescription ?? "",
+          );
+          if (canonicalName === normalizedQuery || selection === normalizedQuery) {
+            return 0;
+          }
+          if (canonicalName.startsWith(normalizedQuery)) return 1;
+          if (rawDescription.startsWith(normalizedQuery)) return 2;
+          return 3;
+        };
+        return score(left) - score(right);
+      })
+      .slice(0, 7);
+  }, [catalogOptions, newItem]);
+  const matchedCatalogProduct = exactCatalogMatch(catalogOptions, newItem);
+  const removedAfterStart = shoppingStarted
+    ? excluded.filter(
+        (item) => item.includedAtFreeze === true || item.addedAfterFreeze,
+      )
+    : [];
+  const removedAfterStartIds = new Set(removedAfterStart.map((item) => item.id));
+  const ideaItems = excluded.filter((item) => !removedAfterStartIds.has(item.id));
   const syncTitle =
     syncStatus === "connecting"
       ? "Connecting the household list"
       : syncStatus === "offline"
         ? "Shared list is temporarily unavailable"
         : shoppingStarted
-          ? "Shared list · shopping started"
-          : "Live shared household list";
+          ? "Live list · shopping started"
+          : "Live shared list · auto-updates";
   const syncCopy =
     syncStatus === "offline"
       ? `${syncError ?? "Try again shortly."} Nothing is stored only on this device.`
       : syncStatus === "connecting"
         ? "Loading the one list shared by both household members."
         : shoppingStarted
-          ? `Planned list captured${trip?.frozenAt ? ` at ${new Date(trip.frozenAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}. New finds stay visible as added during the trip.`
-          : `Changes appear on both phones. ${lastSyncedAt ? `Last checked ${lastSyncedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.` : ""}`;
+          ? `Planned list captured${trip?.frozenAt ? ` at ${new Date(trip.frozenAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}. Active changes reach both phones in about five seconds.`
+          : `Checks for changes every five seconds while this list is visible.${lastSyncedAt ? ` Last checked ${lastSyncedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}.` : ""}`;
+  const activeCatalogProduct = catalogResults[activeCatalogIndex] ?? null;
+  const showCatalogResults = Boolean(
+    catalogOpen && household && catalogResults.length,
+  );
+
+  useEffect(() => {
+    const previous = previousTripState.current;
+    if (
+      previous?.id === tripId &&
+      previous.status === "frozen" &&
+      tripStatus === "planning"
+    ) {
+      window.requestAnimationFrame(() => startShoppingRef.current?.focus());
+    }
+    previousTripState.current = tripId && tripStatus
+      ? { id: tripId, status: tripStatus }
+      : null;
+  }, [tripId, tripStatus]);
+
+  useEffect(() => {
+    if (!showCatalogResults || !activeCatalogProduct) return;
+    document
+      .getElementById(`catalog-option-${activeCatalogProduct.id}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeCatalogProduct, showCatalogResults]);
+
+  function selectCatalogProduct(product: SharedProduct) {
+    setNewItem(catalogSelectionValue(product, catalogOptions));
+    setCatalogOpen(false);
+    setActiveCatalogIndex(0);
+    window.requestAnimationFrame(() => quickItemRef.current?.focus());
+  }
+
+  function handleCatalogKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "ArrowDown" && catalogResults.length) {
+      event.preventDefault();
+      setCatalogOpen(true);
+      setActiveCatalogIndex((current) =>
+        catalogOpen ? (current + 1) % catalogResults.length : 0,
+      );
+      return;
+    }
+    if (event.key === "ArrowUp" && catalogResults.length) {
+      event.preventDefault();
+      setCatalogOpen(true);
+      setActiveCatalogIndex((current) =>
+        catalogOpen
+          ? (current - 1 + catalogResults.length) % catalogResults.length
+          : catalogResults.length - 1,
+      );
+      return;
+    }
+    if (event.key === "Enter" && catalogOpen && activeCatalogProduct) {
+      event.preventDefault();
+      selectCatalogProduct(activeCatalogProduct);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setCatalogOpen(false);
+      return;
+    }
+    if (event.key === "Tab") setCatalogOpen(false);
+  }
 
   return (
     <div className="page week-page">
@@ -1151,6 +1529,7 @@ function ThisWeekTab({
           </button>
           {!shoppingStarted ? (
             <button
+              ref={startShoppingRef}
               className="primary-button"
               onClick={onFreeze}
               disabled={!household || !included.length || pendingWrites.has("freeze-trip")}
@@ -1158,7 +1537,24 @@ function ThisWeekTab({
               {pendingWrites.has("freeze-trip") ? "Starting…" : "Start shopping"}
             </button>
           ) : (
-            <span className="frozen-pill">Shopping started</span>
+            <>
+              <span className="frozen-pill">Shopping started</span>
+              <button
+                ref={unfreezeTriggerRef}
+                type="button"
+                className="secondary-button unfreeze-trigger"
+                onClick={() =>
+                  setUnfreezeConfirmationKey((current) =>
+                    current === frozenContextKey ? null : frozenContextKey,
+                  )
+                }
+                aria-expanded={confirmUnfreeze}
+                aria-controls="unfreeze-confirmation"
+                disabled={pendingWrites.has("unfreeze-trip")}
+              >
+                Back to planning
+              </button>
+            </>
           )}
         </div>
       </section>
@@ -1169,6 +1565,52 @@ function ThisWeekTab({
         <li><span>3</span>Review</li>
       </ol>
 
+      {shoppingStarted && confirmUnfreeze ? (
+        <section
+          className="unfreeze-confirmation"
+          id="unfreeze-confirmation"
+          aria-labelledby="unfreeze-confirmation-title"
+        >
+          <span className="unfreeze-mark" aria-hidden="true">↶</span>
+          <div>
+            <strong id="unfreeze-confirmation-title">Return to planning?</strong>
+            <p>
+              Your live list changes stay. BasketSense removes this starting
+              snapshot, then creates a fresh one the next time you choose Start
+              shopping.
+            </p>
+          </div>
+          <div className="unfreeze-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => {
+                setUnfreezeConfirmationKey(null);
+                onUnfreeze();
+              }}
+              disabled={pendingWrites.has("unfreeze-trip")}
+            >
+              {pendingWrites.has("unfreeze-trip")
+                ? "Returning…"
+                : "Yes, back to planning"}
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                setUnfreezeConfirmationKey(null);
+                window.requestAnimationFrame(() =>
+                  unfreezeTriggerRef.current?.focus(),
+                );
+              }}
+              disabled={pendingWrites.has("unfreeze-trip")}
+            >
+              Keep shopping
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section
         className={`device-notice ${
           syncStatus === "offline"
@@ -1177,7 +1619,7 @@ function ThisWeekTab({
               ? "compact"
               : ""
         }`}
-        aria-live="polite"
+        aria-live={syncStatus === "shared" ? "off" : "polite"}
       >
         <span className="device-notice-mark" aria-hidden="true">
           {syncStatus === "offline" ? "!" : syncStatus === "connecting" ? "…" : "✓"}
@@ -1192,28 +1634,111 @@ function ThisWeekTab({
         failure={failedWrites["freeze-trip"]}
         onRetry={() => onRetry("freeze-trip")}
       />
+      <InlineWriteError
+        failure={failedWrites["unfreeze-trip"]}
+        onRetry={() => onRetry("unfreeze-trip")}
+      />
 
-      <form className="quick-add" onSubmit={onAdd}>
-        <label className="sr-only" htmlFor="quick-item">
-          Add an item
-        </label>
-        <input
-          id="quick-item"
-          list="household-product-catalog"
-          value={newItem}
-          onChange={(event) => setNewItem(event.target.value)}
-          placeholder={shoppingStarted ? "Add something found during the trip…" : "Add milk, fruit, diapers…"}
-          disabled={!household || pendingWrites.has("quick-add")}
-        />
-        <datalist id="household-product-catalog">
-          {catalogOptions.map((product) => (
-            <option
-              key={product.id}
-              value={catalogSelectionValue(product, catalogOptions)}
-              label={`${product.latestRawDescription ?? product.costcoItemNumber ?? "Past receipt item"} · ${currency.format((product.latestRegularUnitPriceCents ?? 0) / 100)}`}
-            />
-          ))}
-        </datalist>
+      <form
+        className="quick-add"
+        onSubmit={(event) => {
+          setCatalogOpen(false);
+          onAdd(event);
+        }}
+      >
+        <div className="catalog-combobox">
+          <label className="sr-only" htmlFor="quick-item">
+            Search all past warehouse products or add a new item
+          </label>
+          <input
+            ref={quickItemRef}
+            id="quick-item"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="household-product-catalog"
+            aria-expanded={showCatalogResults}
+            aria-activedescendant={
+              showCatalogResults && activeCatalogProduct
+                ? `catalog-option-${activeCatalogProduct.id}`
+                : undefined
+            }
+            aria-describedby="quick-add-catalog-hint"
+            autoComplete="off"
+            value={newItem}
+            onFocus={() => {
+              setCatalogOpen(true);
+              setActiveCatalogIndex(0);
+            }}
+            onChange={(event) => {
+              setNewItem(event.target.value);
+              setCatalogOpen(true);
+              setActiveCatalogIndex(0);
+            }}
+            onKeyDown={handleCatalogKeyDown}
+            onBlur={() => window.setTimeout(() => setCatalogOpen(false), 120)}
+            placeholder={
+              shoppingStarted
+                ? "Search past products or add something new…"
+                : "Search milk, strawberries, red onions…"
+            }
+            disabled={!household || pendingWrites.has("quick-add")}
+          />
+          {showCatalogResults ? (
+            <div
+              className="catalog-listbox"
+              id="household-product-catalog"
+              role="listbox"
+              aria-label="Past warehouse products"
+            >
+              {catalogResults.map((product, index) => {
+                const rawDescription = product.latestRawDescription?.trim();
+                const showRawDescription =
+                  rawDescription &&
+                  normalizedCatalogLabel(rawDescription) !==
+                    normalizedCatalogLabel(product.canonicalName);
+                return (
+                  <button
+                    type="button"
+                    role="option"
+                    id={`catalog-option-${product.id}`}
+                    key={product.id}
+                    className={index === activeCatalogIndex ? "active" : ""}
+                    aria-selected={index === activeCatalogIndex}
+                    tabIndex={-1}
+                    onPointerDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setActiveCatalogIndex(index)}
+                    onClick={() => selectCatalogProduct(product)}
+                  >
+                    <span className="catalog-option-copy">
+                      <strong>
+                        {catalogSelectionValue(product, catalogOptions)}
+                      </strong>
+                      <small>
+                        {showRawDescription
+                          ? rawDescription
+                          : product.costcoItemNumber
+                            ? `Costco item ${product.costcoItemNumber}`
+                            : "Matched from a past receipt"}
+                      </small>
+                    </span>
+                    <span className="catalog-option-price">
+                      <strong>
+                        {product.latestRegularUnitPriceCents === null
+                          ? "Price unavailable"
+                          : `~${currency.format(product.latestRegularUnitPriceCents / 100)}`}
+                      </strong>
+                      <small>
+                        {product.latestPurchasedAt
+                          ? `Last bought ${formatShortDate(product.latestPurchasedAt)}`
+                          : "Past receipt product"}
+                      </small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
         <button
           className="primary-button"
           type="submit"
@@ -1226,13 +1751,17 @@ function ThisWeekTab({
               : "Add item"}
         </button>
       </form>
-      <p className="quick-add-hint" aria-live="polite">
+      <p
+        className="quick-add-hint"
+        id="quick-add-catalog-hint"
+        aria-live="polite"
+      >
         {matchedCatalogProduct &&
         matchedCatalogProduct.latestRegularUnitPriceCents !== null
           ? `Estimate will use its latest regular package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}${matchedCatalogProduct.latestPurchasedAt ? ` from ${formatShortDate(matchedCatalogProduct.latestPurchasedAt)}` : ""}.`
           : newItem.trim()
             ? "Choose an exact past product to add its receipt-based estimate; genuinely new items can stay unpriced."
-            : `${catalogOptions.length} past warehouse products are available for quick add.`}
+            : `Search ${catalogOptions.length} past warehouse products. Select a match to reuse its latest regular package price.`}
       </p>
       <InlineWriteError
         failure={failedWrites["quick-add"]}
@@ -1275,181 +1804,170 @@ function ThisWeekTab({
 
       <div className="week-layout">
         <div className="weekly-list-stack">
-          <section className="list-card card" aria-label="Shared Saturday list">
+          <section className="list-card card" aria-labelledby="active-list-title">
+            <div className="list-section-heading active-list-heading">
+              <div>
+                <p className="section-label">This trip</p>
+                <h2 id="active-list-title" tabIndex={-1}>Active List</h2>
+                <p>Only items your household has chosen to buy.</p>
+              </div>
+              <span>
+                {included.length} {included.length === 1 ? "item" : "items"}
+              </span>
+            </div>
             {!household && syncStatus !== "offline" ? (
               <ListSkeleton />
-            ) : items.length ? (
-              <>
-              {sections.map((section) => {
-                const sectionItems = itemsBySection.get(section) ?? [];
-                if (!sectionItems.length) return null;
-                return (
-                  <div className="list-section" key={section}>
-                    <div className="list-section-heading">
-                      <div>
-                        <h2>{section}</h2>
-                        <p>
-                          {section === "Added during trip"
-                            ? "Kept separate from the list captured before shopping"
-                            : section === "Recommended"
-                              ? "Suggested from explainable purchase patterns"
-                              : section === "Check first"
-                                ? "A pantry or fridge check should decide"
-                              : section === "Seasonal consider"
-                                ? "Optional favorites that may be seasonal"
-                                : "Recurring essentials and household additions"}
-                        </p>
-                      </div>
-                      <span>
-                        {sectionItems.filter((item) => item.included).length}/
-                        {sectionItems.length}
-                      </span>
-                    </div>
-                    <div className="list-rows">
-                      {sectionItems.map((item) => {
-                        const key = `item-${item.id}`;
-                        const pending = pendingWrites.has(key);
-                        const addedBy = item.addedByMemberId
-                          ? memberById.get(item.addedByMemberId)?.displayName
-                          : null;
-                        const itemEstimateCents = estimatedItemTotalCents(item);
-                        const quantityLabel = (item.quantityMilli / 1000).toLocaleString(
-                          undefined,
-                          { maximumFractionDigits: 3 },
-                        );
-                        return (
-                          <div className="list-row-wrap" key={item.id}>
-                            <div
-                              className={`list-row ${item.included ? "included" : ""} ${item.checked ? "checked" : ""}`}
-                            >
-                              {item.included ? (
-                                <button
-                                  type="button"
-                                  className="check-button"
-                                  onClick={() => onToggleChecked(item)}
-                                  aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.label}`}
-                                  disabled={pending}
-                                >
-                                  <span aria-hidden="true">{item.checked ? "✓" : ""}</span>
-                                </button>
-                              ) : (
-                                <span className="suggestion-dot" aria-hidden="true" />
-                              )}
-                              <div className="list-row-copy">
-                                <strong>{item.label}</strong>
-                                {!shoppingStarted ? (
-                                  <>
-                                    <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                                    <small>
-                                      {[
-                                        cadenceConfidence(item.confidenceBps),
-                                        addedBy ? `Added by ${addedBy}` : null,
-                                      ]
-                                        .filter(Boolean)
-                                        .join(" · ") || sourceLabel(item.source)}
-                                    </small>
-                                  </>
-                                ) : (
-                                  <details className="item-evidence">
-                                    <summary>Why it is here</summary>
-                                    <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                                    <small>
-                                      {[
-                                        freezeEvidence(item, trip?.status ?? "planning"),
-                                        addedBy ? `Added by ${addedBy}` : null,
-                                      ]
-                                        .filter(Boolean)
-                                        .join(" · ")}
-                                    </small>
-                                  </details>
-                                )}
-                              </div>
-                              <div className="list-row-actions">
-                                <span className="estimated-price">
-                                  {item.estimatedPriceCents === null
-                                    ? "No estimate"
-                                    : item.quantityMilli === 1000
-                                      ? `~${currency.format(item.estimatedPriceCents / 100)}`
-                                      : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
-                                </span>
-                                <button
-                                  type="button"
-                                  className={item.included ? "text-button" : "add-button"}
-                                  onClick={() => onToggleIncluded(item)}
-                                  disabled={pending}
-                                  aria-label={`${item.included ? "Remove" : "Add"} ${item.label} ${item.included ? "from" : "to"} the list`}
-                                >
-                                  {pending ? "Saving…" : item.included ? "Remove" : "Add"}
-                                </button>
-                              </div>
-                            </div>
-                            <InlineWriteError
-                              failure={failedWrites[key]}
-                              onRetry={() => onRetry(key)}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-              {removedAfterStart.length ? (
-                <details className="removed-list">
-                  <summary>
-                    {removedAfterStart.length} planned {removedAfterStart.length === 1 ? "item" : "items"} removed · Undo
-                  </summary>
-                  <div className="removed-list-rows">
-                    {removedAfterStart.map((item) => {
-                      const key = `item-${item.id}`;
-                      return (
-                        <div className="removed-list-row" key={item.id}>
-                          <span>
-                            <strong>{item.label}</strong>
-                            <small>Was on the list when shopping started</small>
+            ) : included.length ? (
+              <div className="list-rows" role="list">
+                {included.map((item) => {
+                  const key = `item-${item.id}`;
+                  const pending = pendingWrites.has(key);
+                  const addedBy = item.addedByMemberId
+                    ? memberById.get(item.addedByMemberId)?.displayName
+                    : null;
+                  const itemEstimateCents = estimatedItemTotalCents(item);
+                  const quantityLabel = (item.quantityMilli / 1000).toLocaleString(
+                    undefined,
+                    { maximumFractionDigits: 3 },
+                  );
+                  return (
+                    <div
+                      className="list-row-wrap"
+                      key={item.id}
+                      role="listitem"
+                      tabIndex={-1}
+                      data-list-item-focus={item.id}
+                      data-list-item-location="active"
+                    >
+                      <div
+                        className={`list-row included ${item.checked ? "checked" : ""}`}
+                      >
+                        {shoppingStarted ? (
+                          <button
+                            type="button"
+                            className="check-button"
+                            onClick={() => onToggleChecked(item)}
+                            aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.label}`}
+                            disabled={pending}
+                          >
+                            <span aria-hidden="true">{item.checked ? "✓" : ""}</span>
+                          </button>
+                        ) : (
+                          <span className="active-list-mark" aria-hidden="true">✓</span>
+                        )}
+                        <div className="list-row-copy">
+                          <strong>{item.label}</strong>
+                          {!shoppingStarted ? (
+                            <>
+                              <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
+                              <small>
+                                {[
+                                  activeItemStatus(item, trip?.status ?? "planning"),
+                                  addedBy ? `Added by ${addedBy}` : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ") || sourceLabel(item.source)}
+                              </small>
+                            </>
+                          ) : (
+                            <details className="item-evidence">
+                              <summary>Why it is here</summary>
+                              <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
+                              <small>
+                                {[
+                                  freezeEvidence(item, trip?.status ?? "planning"),
+                                  addedBy ? `Added by ${addedBy}` : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </small>
+                            </details>
+                          )}
+                        </div>
+                        <div className="list-row-actions">
+                          <span className="estimated-price">
+                            {item.estimatedPriceCents === null
+                              ? "No estimate"
+                              : item.quantityMilli === 1000
+                                ? `~${currency.format(item.estimatedPriceCents / 100)}`
+                                : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
                           </span>
                           <button
                             type="button"
-                            className="add-button"
+                            className="text-button"
                             onClick={() => onToggleIncluded(item)}
-                            disabled={pendingWrites.has(key)}
-                            aria-label={`Add ${item.label} back to the list`}
+                            disabled={pending}
+                            aria-label={`Remove ${item.label} from the Active List`}
                           >
-                            {pendingWrites.has(key) ? "Saving…" : "Add back"}
+                            {pending ? "Saving…" : "Remove"}
                           </button>
-                          <InlineWriteError
-                            failure={failedWrites[key]}
-                            onRetry={() => onRetry(key)}
-                          />
                         </div>
-                      );
-                    })}
-                  </div>
-                </details>
-              ) : null}
-              </>
+                      </div>
+                      <InlineWriteError
+                        failure={failedWrites[key]}
+                        onRetry={() => onRetry(key)}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
-              <div className="empty-state">
-                <strong>Your shared list is empty</strong>
+              <div className="empty-state active-list-empty">
+                <strong>Your active list is empty</strong>
                 <p>
-                  Add an item above or accept one of the receipt-rhythm suggestions
-                  below. Nothing is included automatically.
+                  Search the household catalog above or add an idea below. The
+                  estimate only counts items moved here.
                 </p>
               </div>
             )}
+            {removedAfterStart.length ? (
+              <details className="removed-list">
+                <summary>
+                  {removedAfterStart.length} {removedAfterStart.length === 1 ? "item" : "items"} removed since shopping started · Undo
+                </summary>
+                <div className="removed-list-rows">
+                  {removedAfterStart.map((item) => {
+                    const key = `item-${item.id}`;
+                    return (
+                      <div className="removed-list-row" key={item.id}>
+                        <span>
+                          <strong>{item.label}</strong>
+                          <small>
+                            {item.includedAtFreeze
+                              ? "Was on the list when shopping started"
+                              : "Added during the trip, then removed"}
+                          </small>
+                        </span>
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => onToggleIncluded(item)}
+                          disabled={pendingWrites.has(key)}
+                          aria-label={`Add ${item.label} back to the Active List`}
+                        >
+                          {pendingWrites.has(key) ? "Saving…" : "Add back"}
+                        </button>
+                        <InlineWriteError
+                          failure={failedWrites[key]}
+                          onRetry={() => onRetry(key)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            ) : null}
           </section>
 
-          {!household || !household.listItems.length ? (
           <SuggestionShelf
-            suggestions={suggestions}
             suggestionPlanDate={suggestionPlanDate}
-              household={household}
-              pendingWrites={pendingWrites}
-              failedWrites={failedWrites}
-              onRetry={onRetry}
-              onAdd={onAddSuggestion}
-            />
-          ) : null}
+            household={household}
+            items={ideaItems}
+            pendingWrites={pendingWrites}
+            failedWrites={failedWrites}
+            onRetry={onRetry}
+            onAdd={onToggleIncluded}
+          />
         </div>
 
         <aside className="week-rail">
@@ -1477,8 +1995,8 @@ function ThisWeekTab({
             </div>
             <h2>One list, two phones</h2>
             <p>
-              The database is the shared source of truth. The list refreshes when
-              the app regains focus and every 15 seconds while visible.
+              The database is the shared source of truth. This list checks for
+              your spouse’s changes every five seconds while visible.
             </p>
             <button className="secondary-button" onClick={onCopy}>
               Copy a snapshot
@@ -1501,82 +2019,124 @@ function ListSkeleton() {
 }
 
 function SuggestionShelf({
-  suggestions,
   suggestionPlanDate,
   household,
+  items,
   pendingWrites,
   failedWrites,
   onRetry,
   onAdd,
 }: {
-  suggestions: readonly DashboardSuggestion[];
   suggestionPlanDate: string;
   household: HouseholdSnapshot | null;
+  items: readonly SharedListItem[];
   pendingWrites: Set<string>;
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
-  onAdd: (suggestion: DashboardSuggestion) => void;
+  onAdd: (item: SharedListItem) => void;
 }) {
+  const shoppingStarted = household?.currentTrip.status === "frozen";
+  const ideaGroups = IDEA_SECTIONS.map((section) => ({
+    ...section,
+    items: items.filter((item) => item.section === section.key),
+  })).filter((section) => section.items.length);
+
   return (
-    <section className="suggestion-shelf" aria-labelledby="suggestion-title">
-      <div className="card-heading">
+    <section className="suggestion-shelf" aria-labelledby="ideas-title">
+      <div className="card-heading ideas-heading">
         <div>
-          <p className="section-label">Explainable starting points</p>
-          <h2 id="suggestion-title">
+          <p className="section-label">
             Suggested starting points for {formatShortDate(household?.currentTrip.scheduledFor ?? suggestionPlanDate)}
-          </h2>
-          <p>Only recurring essentials start included; every other idea is optional</p>
+          </p>
+          <h2 id="ideas-title">Ideas</h2>
+          <p>
+            {shoppingStarted
+              ? "These were not on the starting list. Add one if it makes sense in the warehouse."
+              : "Nothing here affects the estimate until either spouse adds it to the Active List."}
+          </p>
         </div>
-        <EvidenceBadge label="Rule-based suggestion" tone="suggestion" />
+        <span className="ideas-count" aria-label={`${items.length} ideas`}>
+          {items.length}
+        </span>
       </div>
-      <div className="suggestion-list">
-        {suggestions.map((suggestion) => {
-          const matchingProduct = household?.products.find(
-            (product) => product.costcoItemNumber === suggestion.itemNumber,
-          );
-          const alreadyListed = household?.listItems.some(
-            (item) =>
-              item.productId === matchingProduct?.id ||
-              item.label.toLocaleLowerCase() === suggestion.name.toLocaleLowerCase(),
-          );
-          const key = `suggestion-${suggestion.id}`;
-          return (
-            <div className="suggestion-row" key={suggestion.id}>
-              <div className="suggestion-copy">
-                <strong>{suggestion.name}</strong>
-                <p>{suggestion.reason}</p>
-                <small>
-                  {suggestion.confidence} confidence · last receipt price{" "}
-                  {suggestion.estimatedPriceCents === null
-                    ? "not available"
-                    : currency.format(suggestion.estimatedPriceCents / 100)}
-                </small>
-              </div>
-              <button
-                type="button"
-                className="add-button"
-                onClick={() => onAdd(suggestion)}
-                disabled={!household || alreadyListed || pendingWrites.has(key)}
-                aria-label={
-                  alreadyListed
-                    ? `${suggestion.name} is already on the list`
-                    : `Add ${suggestion.name} to the list`
-                }
+      {!household ? (
+        <p className="ideas-loading" role="status">Loading household ideas…</p>
+      ) : ideaGroups.length ? (
+        <div className="idea-groups">
+          {ideaGroups.map((group) => {
+            const headingId = `idea-group-${group.key}`;
+            return (
+              <section
+                className="idea-group"
+                aria-labelledby={headingId}
+                key={group.key}
               >
-                {alreadyListed
-                  ? "On list"
-                  : pendingWrites.has(key)
-                    ? "Adding…"
-                    : "Add to list"}
-              </button>
-              <InlineWriteError
-                failure={failedWrites[key]}
-                onRetry={() => onRetry(key)}
-              />
-            </div>
-          );
-        })}
-      </div>
+                <div className="idea-group-heading">
+                  <div>
+                    <h3 id={headingId}>{group.label}</h3>
+                    <p>{group.description}</p>
+                  </div>
+                  <span>{group.items.length}</span>
+                </div>
+                <div className="suggestion-list" role="list">
+                  {group.items.map((item) => {
+                    const key = `item-${item.id}`;
+                    const pending = pendingWrites.has(key);
+                    const confidence = cadenceConfidence(item.confidenceBps);
+                    return (
+                      <div
+                        className="suggestion-row"
+                        key={item.id}
+                        role="listitem"
+                        tabIndex={-1}
+                        data-list-item-focus={item.id}
+                        data-list-item-location="ideas"
+                      >
+                        <div className="suggestion-copy">
+                          <strong>{item.label}</strong>
+                          <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
+                          <small>
+                            {[
+                              confidence,
+                              item.estimatedPriceCents === null
+                                ? "Price estimate unavailable"
+                                : `Latest regular price ~${currency.format(item.estimatedPriceCents / 100)}`,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </small>
+                        </div>
+                        <button
+                          type="button"
+                          className="add-button"
+                          onClick={() => onAdd(item)}
+                          disabled={pending}
+                          aria-label={`Add ${item.label} to the Active List`}
+                        >
+                          {pending
+                            ? "Adding…"
+                            : shoppingStarted
+                              ? "Add during trip"
+                              : "Add to list"}
+                        </button>
+                        <InlineWriteError
+                          failure={failedWrites[key]}
+                          onRetry={() => onRetry(key)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-state ideas-empty">
+          <strong>All current ideas are active</strong>
+          <p>Remove an item before shopping if you want to keep it here for later.</p>
+        </div>
+      )}
     </section>
   );
 }

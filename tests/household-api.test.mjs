@@ -15,14 +15,20 @@ import {
 } from "../app/recommendation-engine.ts";
 
 class PreparedStatementAdapter {
-  constructor(database, sql, values = []) {
+  constructor(database, sql, values = [], beforeExecute = null) {
     this.database = database;
     this.sql = sql;
     this.values = values;
+    this.beforeExecute = beforeExecute;
   }
 
   bind(...values) {
-    return new PreparedStatementAdapter(this.database, this.sql, values);
+    return new PreparedStatementAdapter(
+      this.database,
+      this.sql,
+      values,
+      this.beforeExecute,
+    );
   }
 
   async run() {
@@ -30,6 +36,7 @@ class PreparedStatementAdapter {
   }
 
   async first() {
+    this.beforeExecute?.(this.sql);
     return this.database.prepare(this.sql).get(...this.values) ?? null;
   }
 
@@ -38,6 +45,7 @@ class PreparedStatementAdapter {
   }
 
   execute(forceRows) {
+    this.beforeExecute?.(this.sql);
     const returnsRows =
       forceRows || /^\s*(SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(this.sql);
     const statement = this.database.prepare(this.sql);
@@ -62,16 +70,36 @@ class D1DatabaseAdapter {
   constructor() {
     this.database = new DatabaseSync(":memory:");
     this.database.exec("PRAGMA foreign_keys = ON");
+    this.failNextBatchPattern = null;
+    this.beforeNextStatement = null;
   }
 
   prepare(sql) {
-    return new PreparedStatementAdapter(this.database, sql);
+    return new PreparedStatementAdapter(this.database, sql, [], (statement) => {
+      if (
+        this.beforeNextStatement &&
+        this.beforeNextStatement.pattern.test(statement)
+      ) {
+        const { mutation } = this.beforeNextStatement;
+        this.beforeNextStatement = null;
+        mutation(this.database);
+      }
+    });
   }
 
   async batch(statements) {
     this.database.exec("BEGIN");
     try {
-      const results = statements.map((statement) => statement.execute(false));
+      const results = statements.map((statement) => {
+        if (
+          this.failNextBatchPattern &&
+          this.failNextBatchPattern.test(statement.sql)
+        ) {
+          this.failNextBatchPattern = null;
+          throw new Error("Injected D1 batch failure");
+        }
+        return statement.execute(false);
+      });
       this.database.exec("COMMIT");
       return results;
     } catch (error) {
@@ -80,13 +108,21 @@ class D1DatabaseAdapter {
     }
   }
 
+  failNextBatchMatching(pattern) {
+    this.failNextBatchPattern = pattern;
+  }
+
+  beforeNextStatementMatching(pattern, mutation) {
+    this.beforeNextStatement = { pattern, mutation };
+  }
+
   close() {
     this.database.close();
   }
 }
 
-function householdRequest(email, method = "GET", body) {
-  return new Request("https://basket-sense.test/api/household", {
+function householdRequest(email, method = "GET", body, search = "") {
+  return new Request(`https://basket-sense.test/api/household${search}`, {
     method,
     headers: {
       Accept: "application/json",
@@ -316,6 +352,575 @@ test("list seeding backfills missing candidates without overwriting spouse edits
   }
 });
 
+test("list scope returns only the live trip without rerunning household bootstrap", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("poll-owner@example.test"), db),
+    );
+    const sweetCorn = initial.listItems.find(
+      (item) => item.label === "Sweet corn",
+    );
+    assert.ok(sweetCorn);
+
+    const lastSeenMarker = "2026-07-19T08:00:00.000Z";
+    db.database
+      .prepare(
+        `UPDATE household_members SET last_seen_at = ? WHERE user_email = ?`,
+      )
+      .run(lastSeenMarker, "poll-owner@example.test");
+    db.database
+      .prepare(`DELETE FROM trip_list_items WHERE id = ?`)
+      .run(sweetCorn.id);
+
+    const scopedResponse = await handleHouseholdGet(
+      householdRequest(
+        "poll-owner@example.test",
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(initial.currentTrip.id)}`,
+      ),
+      db,
+    );
+    assert.equal(scopedResponse.status, 200);
+    const scoped = await responseJson(scopedResponse);
+    assert.deepEqual(Object.keys(scoped).sort(), ["currentTrip", "listItems"]);
+    assert.equal(scoped.currentTrip.id, initial.currentTrip.id);
+    assert.equal(scoped.listItems.length, 10);
+    assert.ok(!scoped.listItems.some((item) => item.id === sweetCorn.id));
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT last_seen_at AS lastSeenAt FROM household_members
+           WHERE user_email = ?`,
+        )
+        .get("poll-owner@example.test").lastSeenAt,
+      lastSeenMarker,
+    );
+
+    const outsiderResponse = await handleHouseholdGet(
+      householdRequest(
+        "poll-outsider@example.test",
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(initial.currentTrip.id)}`,
+      ),
+      db,
+    );
+    assert.equal(outsiderResponse.status, 403);
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM household_members`).get()
+        .count,
+      1,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("freeze rolls back flags, header, and intent children as one D1 batch", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("atomic-freeze@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    db.failNextBatchMatching(/INSERT INTO trip_intent_items/);
+
+    const originalConsoleError = console.error;
+    let failedFreeze;
+    try {
+      console.error = () => undefined;
+      failedFreeze = await handleHouseholdPatch(
+        householdRequest("atomic-freeze@example.test", "PATCH", {
+          action: "freeze_trip",
+          tripId,
+        }),
+        db,
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(failedFreeze.status, 500);
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "planning",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND included_at_freeze IS NOT NULL`,
+        )
+        .get(tripId).count,
+      0,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      0,
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_intent_items WHERE trip_id = ?`)
+        .get(tripId).count,
+      0,
+    );
+
+    const successfulFreeze = await handleHouseholdPatch(
+      householdRequest("atomic-freeze@example.test", "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(successfulFreeze.status, 200);
+    const frozen = await responseJson(successfulFreeze);
+    assert.equal(frozen.trip.status, "frozen");
+    const snapshot = db.database
+      .prepare(`SELECT id FROM trip_intent_snapshots WHERE trip_id = ?`)
+      .get(tripId);
+    assert.ok(snapshot);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND included_at_freeze IS NOT NULL`,
+        )
+        .get(tripId).count,
+      initial.listItems.length,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items WHERE snapshot_id = ?`,
+        )
+        .get(snapshot.id).count,
+      initial.listItems.length,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("shopping can return to planning atomically before receipt evidence", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "undo-shopping@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const bananas = initial.listItems.find(
+      (item) => item.label === "Organic bananas",
+    );
+    assert.ok(bananas);
+
+    const freezeResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freezeResponse.status, 200);
+
+    const checkBananas = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: bananas.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkBananas.status, 200);
+
+    const addedResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Sample aisle discovery",
+        source: "manual",
+        section: "consider",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(addedResponse.status, 201);
+    const added = await responseJson(addedResponse);
+    assert.equal(added.item.addedAfterFreeze, true);
+    const checkAdded = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: added.item.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkAdded.status, 200);
+
+    const beforeUndo = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          email,
+          "GET",
+          undefined,
+          `?scope=list&tripId=${encodeURIComponent(tripId)}`,
+        ),
+        db,
+      ),
+    );
+    const liveStateBeforeUndo = new Map(
+      beforeUndo.listItems.map((item) => [
+        item.id,
+        item.included,
+      ]),
+    );
+    const snapshot = db.database
+      .prepare(`SELECT id FROM trip_intent_snapshots WHERE trip_id = ?`)
+      .get(tripId);
+    assert.ok(snapshot);
+
+    db.failNextBatchMatching(/SET status = 'planning'/);
+    const originalConsoleError = console.error;
+    let failedUndo;
+    try {
+      console.error = () => undefined;
+      failedUndo = await handleHouseholdPatch(
+        householdRequest(email, "PATCH", {
+          action: "unfreeze_trip",
+          tripId,
+        }),
+        db,
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(failedUndo.status, 500);
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "frozen",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND included_at_freeze IS NULL`,
+        )
+        .get(tripId).count,
+      0,
+      "A failed undo must roll back list-flag clearing",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND checked = 1`,
+        )
+        .get(tripId).count,
+      2,
+      "A failed undo must roll back shopping-session checkmarks",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT source FROM trip_list_items WHERE id = ?`)
+        .get(added.item.id).source,
+      "in_store",
+      "A failed undo must roll back source normalization",
+    );
+
+    const undoResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "unfreeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(undoResponse.status, 200);
+    const undone = await responseJson(undoResponse);
+    assert.equal(undone.trip.status, "planning");
+    assert.equal(undone.trip.frozenAt, null);
+    assert.equal(undone.trip.estimatedListTotalAtFreezeCents, null);
+    assert.equal(undone.trip.estimatedPricedItemCountAtFreeze, null);
+    assert.equal(undone.trip.estimatedUnpricedItemCountAtFreeze, null);
+    assert.equal(undone.listItems.length, beforeUndo.listItems.length);
+    for (const item of undone.listItems) {
+      assert.equal(
+        item.included,
+        liveStateBeforeUndo.get(item.id),
+        `${item.label} should preserve its live-list membership`,
+      );
+      assert.equal(item.checked, false);
+      assert.equal(item.includedAtFreeze, null);
+      assert.equal(item.addedAfterFreeze, false);
+    }
+    assert.equal(
+      undone.listItems.find((item) => item.id === added.item.id)?.source,
+      "manual",
+      "An item kept for planning should no longer be marked as an in-store addition",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      0,
+    );
+
+    const staleCheck = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: bananas.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(staleCheck.status, 409);
+    assert.match((await responseJson(staleCheck)).error, /while shopping/i);
+    assert.equal(
+      db.database
+        .prepare(`SELECT checked FROM trip_list_items WHERE id = ?`)
+        .get(bananas.id).checked,
+      0,
+      "A stale phone cannot restore a shopping checkmark after undo",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_intent_items WHERE trip_id = ?`)
+        .get(tripId).count,
+      0,
+    );
+
+    const repeatUndo = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "unfreeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(repeatUndo.status, 200);
+    const repeated = await responseJson(repeatUndo);
+    assert.equal(repeated.trip.status, "planning");
+    assert.ok(repeated.listItems.every((item) => item.checked === false));
+
+    db.database
+      .prepare(
+        `INSERT INTO trips (
+          id, household_id, scheduled_for, status, created_at, updated_at
+        )
+        SELECT ?, household_id, ?, 'frozen', ?, ?
+        FROM trips WHERE id = ?`,
+      )
+      .run(
+        "not-current-shopping-trip",
+        "2026-08-01",
+        "2026-07-26T08:00:00.000Z",
+        "2026-07-26T08:00:00.000Z",
+        tripId,
+      );
+    const nonCurrentUndo = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "unfreeze_trip",
+        tripId: "not-current-shopping-trip",
+      }),
+      db,
+    );
+    assert.equal(nonCurrentUndo.status, 409);
+    assert.match((await responseJson(nonCurrentUndo)).error, /current shopping trip/i);
+    assert.equal(
+      db.database
+        .prepare(`SELECT status FROM trips WHERE id = ?`)
+        .get("not-current-shopping-trip").status,
+      "frozen",
+    );
+
+    const refreeze = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(refreeze.status, 200);
+    assert.ok(
+      (await responseJson(refreeze)).listItems.every(
+        (item) => item.checked === false,
+      ),
+      "A restarted shopping trip must begin with every item unchecked",
+    );
+    const replacementSnapshot = db.database
+      .prepare(`SELECT id FROM trip_intent_snapshots WHERE trip_id = ?`)
+      .get(tripId);
+    assert.ok(replacementSnapshot);
+    assert.notEqual(replacementSnapshot.id, snapshot.id);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items WHERE snapshot_id = ?`,
+        )
+        .get(replacementSnapshot.id).count,
+      undone.listItems.length,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("stale list writes derive trip state at the write boundary", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "stale-list-write@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const bananas = initial.listItems.find(
+      (item) => item.label === "Organic bananas",
+    );
+    const lychee = initial.listItems.find((item) => item.label === "Lychee");
+    assert.ok(bananas);
+    assert.ok(lychee);
+    assert.equal(lychee.included, false);
+
+    const freeze = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freeze.status, 200);
+
+    db.beforeNextStatementMatching(
+      /UPDATE trip_list_items\s+SET checked/,
+      (database) => {
+        database
+          .prepare(`UPDATE trips SET status = 'planning' WHERE id = ?`)
+          .run(tripId);
+      },
+    );
+    const racedCheck = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: bananas.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(racedCheck.status, 409);
+    assert.equal(
+      db.database
+        .prepare(`SELECT checked FROM trip_list_items WHERE id = ?`)
+        .get(bananas.id).checked,
+      0,
+    );
+
+    db.database
+      .prepare(`UPDATE trips SET status = 'frozen' WHERE id = ?`)
+      .run(tripId);
+    db.beforeNextStatementMatching(
+      /UPDATE trip_list_items\s+SET included/,
+      (database) => {
+        database
+          .prepare(`UPDATE trips SET status = 'planning' WHERE id = ?`)
+          .run(tripId);
+      },
+    );
+    const racedInclude = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: lychee.id,
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(racedInclude.status, 200);
+    const included = await responseJson(racedInclude);
+    assert.equal(included.item.included, true);
+    assert.equal(included.item.addedAfterFreeze, false);
+
+    db.database
+      .prepare(`UPDATE trips SET status = 'frozen' WHERE id = ?`)
+      .run(tripId);
+    db.beforeNextStatementMatching(
+      /INSERT INTO trip_list_items/,
+      (database) => {
+        database
+          .prepare(`UPDATE trips SET status = 'planning' WHERE id = ?`)
+          .run(tripId);
+      },
+    );
+    const racedAdd = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Write-boundary discovery",
+        source: "manual",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(racedAdd.status, 201);
+    const added = await responseJson(racedAdd);
+    assert.equal(added.item.source, "manual");
+    assert.equal(added.item.includedAtFreeze, null);
+    assert.equal(added.item.addedAfterFreeze, false);
+
+    db.database
+      .prepare(`UPDATE trips SET status = 'frozen' WHERE id = ?`)
+      .run(tripId);
+    const checkedBeforeCompletion = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: bananas.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkedBeforeCompletion.status, 200);
+    db.beforeNextStatementMatching(
+      /UPDATE trip_list_items\s+SET checked/,
+      (database) => {
+        database
+          .prepare(`UPDATE trips SET status = 'completed' WHERE id = ?`)
+          .run(tripId);
+      },
+    );
+    const racedUncheck = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: bananas.id,
+        checked: false,
+      }),
+      db,
+    );
+    assert.equal(racedUncheck.status, 409);
+    assert.equal(
+      db.database
+        .prepare(`SELECT checked FROM trip_list_items WHERE id = ?`)
+        .get(bananas.id).checked,
+      1,
+      "Trip completion must win over a stale uncheck",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("two spouses share audited history, one frozen list, and receipt feedback", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -445,8 +1050,54 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     const milk = frozen.listItems.find(
       (item) => item.label === "Kirkland Signature organic 2% milk",
     );
+    const lychee = frozen.listItems.find((item) => item.label === "Lychee");
     assert.ok(milk);
+    assert.ok(lychee);
     assert.equal(milk.includedAtFreeze, true);
+    assert.equal(lychee.includedAtFreeze, false);
+    assert.equal(lychee.addedAfterFreeze, false);
+
+    const addLycheeDuringTripResponse = await handleHouseholdPatch(
+      householdRequest("second@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: lychee.id,
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(addLycheeDuringTripResponse.status, 200);
+    const addedLycheeDuringTrip = await responseJson(
+      addLycheeDuringTripResponse,
+    );
+    assert.equal(addedLycheeDuringTrip.item.included, true);
+    assert.equal(addedLycheeDuringTrip.item.includedAtFreeze, false);
+    assert.equal(addedLycheeDuringTrip.item.addedAfterFreeze, true);
+
+    const removeLycheeDuringTripResponse = await handleHouseholdPatch(
+      householdRequest("second@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: lychee.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(removeLycheeDuringTripResponse.status, 200);
+    const removedLycheeDuringTrip = await responseJson(
+      removeLycheeDuringTripResponse,
+    );
+    assert.equal(removedLycheeDuringTrip.item.included, false);
+    assert.equal(removedLycheeDuringTrip.item.addedAfterFreeze, true);
+
+    const checkedMilkResponse = await handleHouseholdPatch(
+      householdRequest("first@example.test", "PATCH", {
+        action: "set_item_checked",
+        itemId: milk.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkedMilkResponse.status, 200);
+    assert.equal((await responseJson(checkedMilkResponse)).item.checked, true);
 
     const removeMilkResponse = await handleHouseholdPatch(
       householdRequest("first@example.test", "PATCH", {
@@ -458,7 +1109,31 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     );
     const removedMilk = await responseJson(removeMilkResponse);
     assert.equal(removedMilk.item.included, false);
+    assert.equal(removedMilk.item.checked, false);
     assert.equal(removedMilk.item.includedAtFreeze, true);
+
+    const excludedCheckResponse = await handleHouseholdPatch(
+      householdRequest("second@example.test", "PATCH", {
+        action: "set_item_checked",
+        itemId: milk.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(excludedCheckResponse.status, 409);
+
+    const reactivateMilkResponse = await handleHouseholdPatch(
+      householdRequest("first@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: milk.id,
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(reactivateMilkResponse.status, 200);
+    const reactivatedMilk = await responseJson(reactivateMilkResponse);
+    assert.equal(reactivatedMilk.item.included, true);
+    assert.equal(reactivatedMilk.item.checked, false);
 
     const inStoreResponse = await handleHouseholdPost(
       householdRequest("first@example.test", "POST", {
@@ -538,10 +1213,16 @@ test("historical catalog prices list items and household review preserves receip
     const strawberries = byItemNumber.get("27003");
     const organicStrawberries = byItemNumber.get("512515");
     const huggies = byItemNumber.get("1935002");
+    const lycheeProduct = byItemNumber.get("7113");
+    const lycheeSuggestion = initial.listItems.find(
+      (item) => item.label === "Lychee",
+    );
     assert.ok(redOnions);
     assert.ok(strawberries);
     assert.ok(organicStrawberries);
     assert.ok(huggies);
+    assert.ok(lycheeProduct);
+    assert.ok(lycheeSuggestion);
     assert.equal(redOnions.latestRegularUnitPriceCents, 549);
     assert.equal(strawberries.latestRegularUnitPriceCents, 649);
     assert.equal(organicStrawberries.latestRegularUnitPriceCents, 1099);
@@ -551,23 +1232,85 @@ test("historical catalog prices list items and household review preserves receip
     assert.equal(huggies.latestPaidUnitPriceCents, 3199);
     assert.equal(huggies.latestDiscountUnitCents, 800);
 
-    const redOnionAdd = await responseJson(
-      await handleHouseholdPost(
-        householdRequest("catalog-owner@example.test", "POST", {
-          action: "add_list_item",
-          tripId: initial.currentTrip.id,
-          productId: redOnions.id,
-          label: "red onions",
-          source: "manual",
-          section: "essentials",
-          included: true,
-        }),
-        db,
-      ),
+    const lycheeAddResponse = await handleHouseholdPost(
+      householdRequest("catalog-owner@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        productId: lycheeProduct.id,
+        label: lycheeProduct.canonicalName,
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
     );
+    assert.equal(lycheeAddResponse.status, 200);
+    const lycheeAdd = await responseJson(lycheeAddResponse);
+    assert.equal(lycheeAdd.item.id, lycheeSuggestion.id);
+    assert.equal(lycheeAdd.item.included, true);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND product_id = ?`,
+        )
+        .get(initial.currentTrip.id, lycheeProduct.id).count,
+      1,
+    );
+
+    const redOnionAddResponse = await handleHouseholdPost(
+      householdRequest("catalog-owner@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        productId: redOnions.id,
+        label: "red onions",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(redOnionAddResponse.status, 201);
+    const redOnionAdd = await responseJson(redOnionAddResponse);
     assert.equal(redOnionAdd.item.productId, redOnions.id);
     assert.equal(redOnionAdd.item.label, redOnions.canonicalName);
     assert.equal(redOnionAdd.item.estimatedPriceCents, 549);
+
+    const redOnionRemoveResponse = await handleHouseholdPatch(
+      householdRequest("catalog-spouse@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: redOnionAdd.item.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(redOnionRemoveResponse.status, 200);
+
+    const redOnionReuseResponse = await handleHouseholdPost(
+      householdRequest("catalog-owner@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        productId: redOnions.id,
+        label: "red onions",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(redOnionReuseResponse.status, 200);
+    const redOnionReuse = await responseJson(redOnionReuseResponse);
+    assert.equal(redOnionReuse.item.id, redOnionAdd.item.id);
+    assert.equal(redOnionReuse.item.included, true);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND product_id = ?`,
+        )
+        .get(initial.currentTrip.id, redOnions.id).count,
+      1,
+    );
 
     const strawberryAdd = await responseJson(
       await handleHouseholdPost(
@@ -585,6 +1328,37 @@ test("historical catalog prices list items and household review preserves receip
     assert.equal(strawberryAdd.item.productId, strawberries.id);
     assert.equal(strawberryAdd.item.estimatedPriceCents, 649);
 
+    db.database
+      .prepare(`UPDATE trip_list_items SET label = ? WHERE id = ?`)
+      .run("Saturday berries", strawberryAdd.item.id);
+    const strawberryResolvedReuseResponse = await handleHouseholdPost(
+      householdRequest("catalog-spouse@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "strawberries",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(strawberryResolvedReuseResponse.status, 200);
+    const strawberryResolvedReuse = await responseJson(
+      strawberryResolvedReuseResponse,
+    );
+    assert.equal(strawberryResolvedReuse.item.id, strawberryAdd.item.id);
+    assert.equal(strawberryResolvedReuse.item.productId, strawberries.id);
+    assert.equal(strawberryResolvedReuse.item.label, "Saturday berries");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_list_items
+           WHERE trip_id = ? AND product_id = ?`,
+        )
+        .get(initial.currentTrip.id, strawberries.id).count,
+      1,
+    );
+
     const partialAdd = await responseJson(
       await handleHouseholdPost(
         householdRequest("catalog-owner@example.test", "POST", {
@@ -600,6 +1374,31 @@ test("historical catalog prices list items and household review preserves receip
     );
     assert.equal(partialAdd.item.productId, null);
     assert.equal(partialAdd.item.estimatedPriceCents, null);
+
+    await handleHouseholdPatch(
+      householdRequest("catalog-owner@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: partialAdd.item.id,
+        included: false,
+      }),
+      db,
+    );
+    const partialReuseResponse = await handleHouseholdPost(
+      householdRequest("catalog-spouse@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "STRAW",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(partialReuseResponse.status, 200);
+    const partialReuse = await responseJson(partialReuseResponse);
+    assert.equal(partialReuse.item.id, partialAdd.item.id);
+    assert.equal(partialReuse.item.productId, null);
+    assert.equal(partialReuse.item.included, true);
 
     const ambiguous = byItemNumber.get("1901772");
     assert.ok(ambiguous);
@@ -772,6 +1571,22 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
       db,
     );
     assert.equal(removeAfterFreeze.status, 200);
+
+    const postFreezeAddResponse = await handleHouseholdPost(
+      householdRequest("closed-loop@example.test", "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Post-freeze C",
+        source: "manual",
+        section: "consider",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(postFreezeAddResponse.status, 201);
+    const postFreezeAdd = await responseJson(postFreezeAddResponse);
+    assert.equal(postFreezeAdd.item.addedAfterFreeze, true);
+
     const freezeAgain = await handleHouseholdPatch(
       householdRequest("closed-loop@example.test", "PATCH", {
         action: "freeze_trip",
@@ -787,6 +1602,24 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
         )
         .get(tripId).count,
       1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items WHERE snapshot_id = ?`,
+        )
+        .get(snapshot.id).count,
+      initial.listItems.length,
+      "An existing intent snapshot never gains post-freeze list rows",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items
+           WHERE snapshot_id = ? AND list_item_id = ?`,
+        )
+        .get(snapshot.id, postFreezeAdd.item.id).count,
+      0,
     );
     assert.equal(
       db.database
@@ -841,6 +1674,16 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
     );
     assert.equal(ingestResponse.status, 200);
     const ingested = await responseJson(ingestResponse);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items
+           WHERE snapshot_id = ? AND list_item_id = ?`,
+        )
+        .get(snapshot.id, postFreezeAdd.item.id).count,
+      0,
+      "Receipt ingestion must not append to an existing intent snapshot",
+    );
     assert.equal(ingested.receipt.tripId, tripId);
     assert.equal(ingested.receipt.parseStatus, "reconciled");
     assert.equal(ingested.closedLoop.items.length, 3);
@@ -849,6 +1692,33 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
     assert.equal(ingested.comparison.isProvisional, false);
     assert.equal(ingested.comparison.buckets.receiptOnly.length, 1);
     assert.ok(ingested.questions.length <= 3);
+
+    const undoWithReceipt = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "unfreeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(undoWithReceipt.status, 409);
+    assert.match(
+      (await responseJson(undoWithReceipt)).error,
+      /receipt evidence/i,
+    );
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "frozen",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      1,
+      "Receipt-linked undo must preserve the frozen evidence",
+    );
 
     assert.equal(
       db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
@@ -917,6 +1787,16 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
       "completed",
       "Only explicit finalization completes the trip",
     );
+
+    const undoCompleted = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "unfreeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(undoCompleted.status, 409);
+    assert.match((await responseJson(undoCompleted)).error, /completed trips/i);
 
     const refreshed = await responseJson(
       await handleHouseholdGet(householdRequest("closed-loop@example.test"), db),

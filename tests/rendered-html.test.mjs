@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -47,6 +48,9 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /before tax/i);
   assert.match(html, /The database is the shared source of truth/i);
   assert.match(html, /Suggested starting points for (?:<!-- -->)?Jul 25/i);
+  assert.match(html, /Active List/i);
+  assert.match(html, />Ideas</i);
+  assert.match(html, /every five seconds while visible/i);
   assert.match(html, /Kirkland Signature organic 2% milk/i);
   assert.match(html, /26 purchases \(28 units\).*median interval 7 days/i);
   assert.match(html, /Optional seasonal favorite/i);
@@ -72,4 +76,33 @@ test("renders the four focused household destinations", async () => {
   assert.match(html, /Plan/);
   assert.match(html, /Shop/);
   assert.match(html, /One list, two phones/i);
+});
+
+test("renders accessible catalog and device theme controls", async () => {
+  const response = await render();
+  const html = await response.text();
+
+  assert.match(html, /role="group" aria-label="Color theme"/i);
+  assert.match(html, /aria-label="Switch to dark theme"/i);
+  assert.match(html, />Auto</i);
+  assert.match(html, /role="combobox"/i);
+  assert.match(html, /aria-autocomplete="list"/i);
+  assert.match(html, /aria-controls="household-product-catalog"/i);
+  assert.match(html, /Search all past warehouse products or add a new item/i);
+  assert.doesNotMatch(html, /<datalist/i);
+});
+
+test("keeps shopping undo and catalog keyboard focus behavior wired", async () => {
+  const source = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /action: "unfreeze_trip"/);
+  assert.match(source, /Back to planning/);
+  assert.match(source, /frozenContextKey/);
+  assert.match(source, /startShoppingRef\.current\?\.focus\(\)/);
+  assert.match(source, /unfreezeTriggerRef\.current\?\.focus\(\)/);
+  assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/);
+  assert.match(source, /onPointerDown=\{\(event\) => event\.preventDefault\(\)\}/);
 });

@@ -276,6 +276,11 @@ export interface HouseholdBootstrapResponse {
   closedLoop: ClosedLoopReview | null;
 }
 
+export interface HouseholdListResponse {
+  currentTrip: TripSummary;
+  listItems: TripListItemSummary[];
+}
+
 export type HouseholdPostRequest =
   | {
       action: "add_list_item";
@@ -334,6 +339,10 @@ export type HouseholdPatchRequest =
     }
   | {
       action: "freeze_trip";
+      tripId: string;
+    }
+  | {
+      action: "unfreeze_trip";
       tripId: string;
     }
   | {

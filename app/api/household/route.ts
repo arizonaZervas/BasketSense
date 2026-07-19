@@ -26,6 +26,7 @@ import type {
   FeedbackKind,
   FeedbackSummary,
   HouseholdBootstrapResponse,
+  HouseholdListResponse,
   HouseholdMemberSummary,
   HouseholdPatchRequest,
   HouseholdPostRequest,
@@ -984,7 +985,7 @@ async function seedSaturdayList(
             ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
             NULL, 0, ?, 1000, ?, NULL, ?, ?
           )
-          ON CONFLICT(id) DO NOTHING`
+          ON CONFLICT DO NOTHING`
         )
         .bind(
           `seed-${trip.scheduled_for}-${recommendation.itemNumber}`,
@@ -1513,6 +1514,68 @@ async function readHouseholdState(
   };
 }
 
+async function readExistingHouseholdContext(
+  db: D1Database,
+  user: AuthenticatedUser,
+  requestedTripId: string | null
+): Promise<HouseholdContext> {
+  const household = await db
+    .prepare(`SELECT * FROM households WHERE slug = ? LIMIT 1`)
+    .bind(HOUSEHOLD_SLUG)
+    .first<HouseholdRow>();
+
+  if (!household) {
+    throw new ApiError(403, "This private household is not available");
+  }
+
+  const member = await db
+    .prepare(
+      `SELECT * FROM household_members
+       WHERE household_id = ? AND user_email = ?
+       LIMIT 1`
+    )
+    .bind(household.id, user.email)
+    .first<MemberRow>();
+
+  if (!member) {
+    throw new ApiError(403, "This private household is not available");
+  }
+
+  const currentTrip = requestedTripId
+    ? await authorizedTrip(db, household.id, requestedTripId)
+    : await db
+        .prepare(
+          `SELECT * FROM trips
+           WHERE household_id = ? AND status IN ('planning', 'frozen')
+           ORDER BY scheduled_for ASC, created_at ASC
+           LIMIT 1`
+        )
+        .bind(household.id)
+        .first<TripRow>();
+
+  if (!currentTrip) throw new ApiError(404, "Trip not found");
+  return { household, member, currentTrip };
+}
+
+async function readHouseholdListState(
+  db: D1Database,
+  context: HouseholdContext
+): Promise<HouseholdListResponse> {
+  const listItems = await db
+    .prepare(
+      `SELECT * FROM trip_list_items
+       WHERE trip_id = ?
+       ORDER BY sort_order ASC, created_at ASC`
+    )
+    .bind(context.currentTrip.id)
+    .all<ListItemRow>();
+
+  return {
+    currentTrip: tripSummary(context.currentTrip),
+    listItems: listItems.results.map(listItemSummary),
+  };
+}
+
 async function authorizedTrip(
   db: D1Database,
   householdId: string,
@@ -1658,10 +1721,7 @@ async function addListItem(
   ) {
     throw new ApiError(400, "source is invalid");
   }
-  const source =
-    trip.status === "frozen" && sourceValue === "manual"
-      ? "in_store"
-      : (sourceValue as ListItemSource);
+  const requestedSource = sourceValue as ListItemSource;
   const sectionValue = body.section ?? "essentials";
   if (
     typeof sectionValue !== "string" ||
@@ -1703,44 +1763,158 @@ async function addListItem(
   const quantityMilli =
     optionalInteger(body.quantityMilli, "quantityMilli", 1, 1_000_000) ??
     1000;
-  const addedAfterFreeze = trip.status === "frozen";
-  const includedAtFreeze = addedAfterFreeze ? 0 : null;
-  const id = crypto.randomUUID();
   const now = nowIso();
 
-  await db
+  const existingItem = productId
+    ? await db
+        .prepare(
+          `SELECT * FROM trip_list_items
+           WHERE trip_id = ? AND product_id = ?
+           ORDER BY created_at ASC
+           LIMIT 1`
+        )
+        .bind(trip.id, productId)
+        .first<ListItemRow>()
+    : await db
+        .prepare(
+          `SELECT * FROM trip_list_items
+           WHERE trip_id = ? AND LOWER(TRIM(label)) = LOWER(TRIM(?))
+           ORDER BY created_at ASC
+           LIMIT 1`
+        )
+        .bind(trip.id, label)
+        .first<ListItemRow>();
+
+  if (existingItem) {
+    const reusedEstimateCents =
+      requestedEstimatedPriceCents ??
+      catalogMatch?.latest_regular_unit_price_cents ??
+      existingItem.estimated_price_cents;
+    const reusedQuantityMilli =
+      body.quantityMilli === undefined
+        ? existingItem.quantity_milli
+        : quantityMilli;
+    const update = await db
+      .prepare(
+        `UPDATE trip_list_items
+         SET included = ?,
+             checked = CASE
+               WHEN ? = 0 OR included = 0 THEN 0
+               ELSE checked
+             END,
+             estimated_price_cents = ?, quantity_milli = ?,
+             source = CASE
+               WHEN (
+                 SELECT trips.status FROM trips
+                 WHERE trips.id = trip_list_items.trip_id
+                   AND trips.household_id = ?
+               ) = 'frozen' AND ? = 'manual'
+               THEN 'in_store'
+               ELSE source
+             END,
+             added_after_freeze = CASE
+               WHEN (
+                 SELECT trips.status FROM trips
+                 WHERE trips.id = trip_list_items.trip_id
+                   AND trips.household_id = ?
+               ) = 'planning'
+               THEN 0
+               WHEN ? = 1 AND COALESCE(included_at_freeze, 0) = 0
+               THEN 1
+               ELSE added_after_freeze
+             END,
+             updated_at = ?
+         WHERE id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = trip_list_items.trip_id
+               AND trips.household_id = ?
+               AND trips.status IN ('planning', 'frozen')
+           )`
+      )
+      .bind(
+        included ? 1 : 0,
+        included ? 1 : 0,
+        reusedEstimateCents,
+        reusedQuantityMilli,
+        context.household.id,
+        requestedSource,
+        context.household.id,
+        included ? 1 : 0,
+        now,
+        existingItem.id,
+        context.household.id
+      )
+      .run();
+    if ((update.meta.changes ?? 0) !== 1) {
+      throw new ApiError(
+        409,
+        "List items can only be added while a trip is being planned or shopped"
+      );
+    }
+
+    const reusedItem = await db
+      .prepare(`SELECT * FROM trip_list_items WHERE id = ? LIMIT 1`)
+      .bind(existingItem.id)
+      .first<ListItemRow>();
+    if (!reusedItem) throw new ApiError(500, "Unable to add the list item");
+
+    return json({ item: listItemSummary(reusedItem) });
+  }
+
+  const id = crypto.randomUUID();
+
+  const insert = await db
     .prepare(
       `INSERT INTO trip_list_items (
         id, trip_id, product_id, label, section, source,
         recommendation_reason, confidence_bps, included, checked,
         included_at_freeze, added_after_freeze, estimated_price_cents,
         quantity_milli, sort_order, added_by_member_id, created_at, updated_at
-      ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?,
-        (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM trip_list_items WHERE trip_id = ?),
+      )
+      SELECT
+        ?, trips.id, ?, ?, ?,
+        CASE
+          WHEN trips.status = 'frozen' AND ? = 'manual' THEN 'in_store'
+          ELSE ?
+        END,
+        ?, ?, ?, 0,
+        CASE WHEN trips.status = 'frozen' THEN 0 ELSE NULL END,
+        CASE WHEN trips.status = 'frozen' THEN 1 ELSE 0 END,
+        ?, ?,
+        (SELECT COALESCE(MAX(sort_order), -1) + 1
+         FROM trip_list_items WHERE trip_id = trips.id),
         ?, ?, ?
-      )`
+      FROM trips
+      WHERE trips.id = ?
+        AND trips.household_id = ?
+        AND trips.status IN ('planning', 'frozen')`
     )
     .bind(
       id,
-      trip.id,
       productId,
       label,
       section,
-      source,
+      requestedSource,
+      requestedSource,
       recommendationReason,
       confidenceBps,
       included ? 1 : 0,
-      includedAtFreeze,
-      addedAfterFreeze ? 1 : 0,
       estimatedPriceCents,
       quantityMilli,
-      trip.id,
       context.member.id,
       now,
-      now
+      now,
+      trip.id,
+      context.household.id
     )
     .run();
+  if ((insert.meta.changes ?? 0) !== 1) {
+    throw new ApiError(
+      409,
+      "List items can only be added while a trip is being planned or shopped"
+    );
+  }
 
   const item = await db
     .prepare(`SELECT * FROM trip_list_items WHERE id = ? LIMIT 1`)
@@ -1884,19 +2058,106 @@ async function setListItemBoolean(
   }
 
   const value = requiredBoolean(body[column], column);
+  if (column === "checked" && value && !Boolean(item.included)) {
+    throw new ApiError(409, "Only active list items can be checked");
+  }
   const now = nowIso();
   const statement =
     column === "included"
-      ? `UPDATE trip_list_items SET included = ?, updated_at = ? WHERE id = ?`
-      : `UPDATE trip_list_items SET checked = ?, updated_at = ? WHERE id = ?`;
+      ? `UPDATE trip_list_items
+         SET included = ?,
+             checked = 0,
+             added_after_freeze = CASE
+               WHEN (
+                 SELECT trips.status FROM trips
+                 WHERE trips.id = trip_list_items.trip_id
+                   AND trips.household_id = ?
+               ) = 'planning'
+               THEN 0
+               WHEN ? = 1
+                 AND COALESCE(included_at_freeze, 0) = 0
+               THEN 1
+               ELSE added_after_freeze
+             END,
+             updated_at = ?
+         WHERE id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = trip_list_items.trip_id
+               AND trips.household_id = ?
+               AND trips.status IN ('planning', 'frozen')
+           )`
+      : `UPDATE trip_list_items
+         SET checked = ?, updated_at = ?
+         WHERE id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = trip_list_items.trip_id
+               AND trips.household_id = ?
+               AND trips.status IN ('planning', 'frozen')
+           )
+           AND (
+             ? = 0
+             OR (
+               included = 1
+               AND EXISTS (
+                 SELECT 1 FROM trips
+                 WHERE trips.id = trip_list_items.trip_id
+                   AND trips.household_id = ?
+                   AND trips.status = 'frozen'
+               )
+             )
+           )`;
 
-  await db.prepare(statement).bind(value ? 1 : 0, now, item.id).run();
+  let changes = 0;
+  if (column === "included") {
+    const update = await db
+      .prepare(statement)
+      .bind(
+        value ? 1 : 0,
+        context.household.id,
+        value ? 1 : 0,
+        now,
+        item.id,
+        context.household.id
+      )
+      .run();
+    changes = update.meta.changes ?? 0;
+  } else {
+    const update = await db
+      .prepare(statement)
+      .bind(
+        value ? 1 : 0,
+        now,
+        item.id,
+        context.household.id,
+        value ? 1 : 0,
+        context.household.id
+      )
+      .run();
+    changes = update.meta.changes ?? 0;
+  }
+  if (changes !== 1) {
+    if (column === "checked" && value) {
+      throw new ApiError(
+        409,
+        "Only active list items can be checked while shopping"
+      );
+    }
+    throw new ApiError(
+      409,
+      "List items can only be changed while a trip is being planned or shopped"
+    );
+  }
 
   const updated = await db
     .prepare(`SELECT * FROM trip_list_items WHERE id = ? LIMIT 1`)
     .bind(item.id)
     .first<ListItemRow>();
   if (!updated) throw new ApiError(500, "Unable to update the list item");
+  if (column === "checked" && value && !Boolean(updated.included)) {
+    throw new ApiError(409, "Only active list items can be checked");
+  }
 
   return json({ item: listItemSummary(updated) });
 }
@@ -1907,104 +2168,100 @@ async function ensureIntentSnapshot(
   trip: TripRow,
   evidenceLevel: "pre_trip" | "upload_fallback"
 ) {
-  let snapshot = await db
+  const existingSnapshot = await db
     .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
     .bind(trip.id)
     .first<IntentSnapshotRow>();
+  if (existingSnapshot) return existingSnapshot;
 
-  const listItems = await db
-    .prepare(
-      `SELECT * FROM trip_list_items
-       WHERE trip_id = ?
-       ORDER BY sort_order ASC, created_at ASC`
-    )
-    .bind(trip.id)
-    .all<ListItemRow>();
-
-  if (!snapshot) {
-    const includedItems = listItems.results.filter((item) =>
-      trip.status === "planning"
-        ? Boolean(item.included)
-        : Boolean(item.included_at_freeze ?? item.included)
-    );
-    const priced = includedItems.filter(
-      (item) => item.estimated_price_cents !== null
-    );
-    const estimatedTotalCents = priced.reduce(
-      (sum, item) =>
-        sum +
-        Math.round(
-          ((item.estimated_price_cents ?? 0) * item.quantity_milli) / 1000
-        ),
-      0
-    );
-    const snapshotId = crypto.randomUUID();
-    const now = nowIso();
-    await db
+  const includedExpression =
+    trip.status === "planning"
+      ? "trip_list_items.included"
+      : "COALESCE(trip_list_items.included_at_freeze, trip_list_items.included)";
+  const snapshotId = crypto.randomUUID();
+  const now = nowIso();
+  await db.batch([
+    db
       .prepare(
         `INSERT INTO trip_intent_snapshots (
           id, trip_id, evidence_level, estimated_total_cents,
           priced_item_count, unpriced_item_count, captured_by_member_id,
           captured_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        SELECT ?, ?, ?,
+          COALESCE(SUM(
+            CASE
+              WHEN ${includedExpression} = 1
+                AND trip_list_items.estimated_price_cents IS NOT NULL
+              THEN CAST((trip_list_items.estimated_price_cents *
+                         trip_list_items.quantity_milli + 500) / 1000 AS INTEGER)
+              ELSE 0
+            END
+          ), 0),
+          COALESCE(SUM(
+            CASE
+              WHEN ${includedExpression} = 1
+                AND trip_list_items.estimated_price_cents IS NOT NULL
+              THEN 1 ELSE 0
+            END
+          ), 0),
+          COALESCE(SUM(
+            CASE
+              WHEN ${includedExpression} = 1
+                AND trip_list_items.estimated_price_cents IS NULL
+              THEN 1 ELSE 0
+            END
+          ), 0),
+          ?, ?, ?
+        FROM trip_list_items
+        WHERE trip_id = ?
         ON CONFLICT(trip_id) DO NOTHING`
       )
       .bind(
         snapshotId,
         trip.id,
         evidenceLevel,
-        estimatedTotalCents,
-        priced.length,
-        includedItems.length - priced.length,
         context.member.id,
         now,
-        now
-      )
-      .run();
-    snapshot = await db
-      .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
-      .bind(trip.id)
-      .first<IntentSnapshotRow>();
-  }
-
-  if (!snapshot) {
-    throw new ApiError(500, "Unable to preserve the saved trip plan");
-  }
-
-  const now = nowIso();
-  const statements = listItems.results.map((item) => {
-    const included =
-      trip.status === "planning"
-        ? item.included
-        : (item.included_at_freeze ?? item.included);
-    return db
+        now,
+        trip.id
+      ),
+    db
       .prepare(
         `INSERT INTO trip_intent_items (
           id, snapshot_id, trip_id, list_item_id, product_id, label,
           section, source, recommendation_reason, confidence_bps, included,
           quantity_milli, estimated_price_cents, sort_order, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        SELECT ? || ':' || trip_list_items.id, ?, trip_list_items.trip_id,
+          trip_list_items.id, trip_list_items.product_id, trip_list_items.label,
+          trip_list_items.section, trip_list_items.source,
+          trip_list_items.recommendation_reason, trip_list_items.confidence_bps,
+          ${includedExpression}, trip_list_items.quantity_milli,
+          trip_list_items.estimated_price_cents, trip_list_items.sort_order, ?
+        FROM trip_list_items
+        WHERE trip_list_items.trip_id = ?
+          AND EXISTS (
+            SELECT 1 FROM trip_intent_snapshots
+            WHERE id = ? AND trip_id = ?
+          )
         ON CONFLICT(snapshot_id, list_item_id) DO NOTHING`
       )
       .bind(
-        crypto.randomUUID(),
-        snapshot.id,
+        snapshotId,
+        snapshotId,
+        now,
         trip.id,
-        item.id,
-        item.product_id,
-        item.label,
-        item.section,
-        item.source,
-        item.recommendation_reason,
-        item.confidence_bps,
-        included,
-        item.quantity_milli,
-        item.estimated_price_cents,
-        item.sort_order,
-        now
-      );
-  });
-  await runPreparedInChunks(db, statements);
+        snapshotId,
+        trip.id
+      ),
+  ]);
+
+  const snapshot = await db
+    .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+    .bind(trip.id)
+    .first<IntentSnapshotRow>();
+  if (!snapshot) throw new ApiError(500, "Unable to preserve the saved trip plan");
   return snapshot;
 }
 
@@ -2021,13 +2278,47 @@ async function freezeTrip(
 
   if (trip.status === "planning") {
     const now = nowIso();
+    const snapshotId = crypto.randomUUID();
     await db.batch([
       db
         .prepare(
-          `UPDATE trip_list_items
-           SET included_at_freeze = included, added_after_freeze = 0,
+          `UPDATE trip_list_items AS item
+           SET included_at_freeze = CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM trip_intent_snapshots
+                   WHERE trip_id = item.trip_id
+                 )
+                 THEN COALESCE((
+                   SELECT intent.included
+                   FROM trip_intent_items AS intent
+                   INNER JOIN trip_intent_snapshots AS snapshot
+                     ON snapshot.id = intent.snapshot_id
+                   WHERE snapshot.trip_id = item.trip_id
+                     AND intent.list_item_id = item.id
+                   LIMIT 1
+                 ), 0)
+                 ELSE item.included
+               END,
+               added_after_freeze = CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM trip_intent_snapshots
+                   WHERE trip_id = item.trip_id
+                 )
+                   AND item.included = 1
+                   AND COALESCE((
+                     SELECT intent.included
+                     FROM trip_intent_items AS intent
+                     INNER JOIN trip_intent_snapshots AS snapshot
+                       ON snapshot.id = intent.snapshot_id
+                     WHERE snapshot.trip_id = item.trip_id
+                       AND intent.list_item_id = item.id
+                     LIMIT 1
+                   ), 0) = 0
+                 THEN 1
+                 ELSE 0
+               END,
                updated_at = ?
-           WHERE trip_id = ? AND included_at_freeze IS NULL
+           WHERE item.trip_id = ? AND item.included_at_freeze IS NULL
              AND EXISTS (
                SELECT 1 FROM trips
                WHERE id = ? AND household_id = ? AND status = 'planning'
@@ -2036,9 +2327,13 @@ async function freezeTrip(
         .bind(now, trip.id, trip.id, context.household.id),
       db
         .prepare(
-          `UPDATE trips
-           SET status = 'frozen', frozen_at = ?,
-               estimated_list_total_at_freeze_cents = (
+          `INSERT INTO trip_intent_snapshots (
+            id, trip_id, evidence_level, estimated_total_cents,
+            priced_item_count, unpriced_item_count, captured_by_member_id,
+            captured_at, created_at
+          )
+          SELECT ?, trips.id, 'pre_trip',
+            (
                  SELECT COALESCE(SUM(
                    CASE
                      WHEN included_at_freeze = 1 AND estimated_price_cents IS NOT NULL
@@ -2047,9 +2342,9 @@ async function freezeTrip(
                    END
                  ), 0)
                  FROM trip_list_items
-                 WHERE trip_id = ?
+                 WHERE trip_id = trips.id
                ),
-               estimated_priced_item_count_at_freeze = (
+            (
                  SELECT COALESCE(SUM(
                    CASE
                      WHEN included_at_freeze = 1 AND estimated_price_cents IS NOT NULL
@@ -2057,9 +2352,9 @@ async function freezeTrip(
                    END
                  ), 0)
                  FROM trip_list_items
-                 WHERE trip_id = ?
+                 WHERE trip_id = trips.id
                ),
-               estimated_unpriced_item_count_at_freeze = (
+            (
                  SELECT COALESCE(SUM(
                    CASE
                      WHEN included_at_freeze = 1 AND estimated_price_cents IS NULL
@@ -2067,29 +2362,240 @@ async function freezeTrip(
                    END
                  ), 0)
                  FROM trip_list_items
-                 WHERE trip_id = ?
+                 WHERE trip_id = trips.id
                ),
-               updated_at = ?
-           WHERE id = ? AND household_id = ? AND status = 'planning'`
+            ?, ?, ?
+          FROM trips
+          WHERE trips.id = ? AND trips.household_id = ?
+            AND trips.status = 'planning'
+          ON CONFLICT(trip_id) DO NOTHING`
         )
         .bind(
+          snapshotId,
+          context.member.id,
           now,
-          trip.id,
-          trip.id,
-          trip.id,
           now,
           trip.id,
           context.household.id
         ),
+      db
+        .prepare(
+          `INSERT INTO trip_intent_items (
+            id, snapshot_id, trip_id, list_item_id, product_id, label,
+            section, source, recommendation_reason, confidence_bps, included,
+            quantity_milli, estimated_price_cents, sort_order, created_at
+          )
+          SELECT ? || ':' || item.id, ?, item.trip_id, item.id,
+            item.product_id, item.label, item.section, item.source,
+            item.recommendation_reason, item.confidence_bps,
+            item.included_at_freeze, item.quantity_milli,
+            item.estimated_price_cents, item.sort_order, ?
+          FROM trip_list_items AS item
+          INNER JOIN trips ON trips.id = item.trip_id
+          WHERE item.trip_id = ? AND trips.household_id = ?
+            AND trips.status = 'planning'
+            AND item.included_at_freeze IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM trip_intent_snapshots
+              WHERE id = ? AND trip_id = item.trip_id
+            )
+          ON CONFLICT(snapshot_id, list_item_id) DO NOTHING`
+        )
+        .bind(
+          snapshotId,
+          snapshotId,
+          now,
+          trip.id,
+          context.household.id,
+          snapshotId
+        ),
+      db
+        .prepare(
+          `UPDATE trips
+           SET status = 'frozen', frozen_at = COALESCE(frozen_at, ?),
+               estimated_list_total_at_freeze_cents = COALESCE((
+                 SELECT estimated_total_cents FROM trip_intent_snapshots
+                 WHERE trip_id = trips.id
+               ), 0),
+               estimated_priced_item_count_at_freeze = COALESCE((
+                 SELECT priced_item_count FROM trip_intent_snapshots
+                 WHERE trip_id = trips.id
+               ), 0),
+               estimated_unpriced_item_count_at_freeze = COALESCE((
+                 SELECT unpriced_item_count FROM trip_intent_snapshots
+                 WHERE trip_id = trips.id
+               ), 0),
+               updated_at = ?
+           WHERE id = ? AND household_id = ? AND status = 'planning'
+             AND EXISTS (
+               SELECT 1 FROM trip_intent_snapshots
+               WHERE trip_id = trips.id
+             )`
+        )
+        .bind(now, now, trip.id, context.household.id),
     ]);
   }
 
-  const snapshotTrip = await authorizedTrip(
-    db,
-    context.household.id,
-    trip.id
-  );
-  await ensureIntentSnapshot(db, context, snapshotTrip, "pre_trip");
+  const frozenSnapshot = await db
+    .prepare(`SELECT id FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+    .bind(trip.id)
+    .first<{ id: string }>();
+  if (!frozenSnapshot) {
+    throw new ApiError(500, "Unable to preserve the saved trip plan");
+  }
+
+  const [updatedTrip, itemsResult] = await Promise.all([
+    authorizedTrip(db, context.household.id, trip.id),
+    db
+      .prepare(
+        `SELECT * FROM trip_list_items
+         WHERE trip_id = ?
+         ORDER BY sort_order ASC, created_at ASC`
+      )
+      .bind(trip.id)
+      .all<ListItemRow>(),
+  ]);
+
+  return json({
+    trip: tripSummary(updatedTrip),
+    listItems: itemsResult.results.map(listItemSummary),
+  });
+}
+
+async function unfreezeTrip(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const tripId = requiredString(body.tripId, "tripId", 128);
+  const trip = await authorizedTrip(db, context.household.id, tripId);
+  if (trip.status === "completed") {
+    throw new ApiError(409, "Completed trips cannot return to planning");
+  }
+  if (trip.id !== context.currentTrip.id) {
+    throw new ApiError(
+      409,
+      "Only the current shopping trip can return to planning"
+    );
+  }
+
+  const linkedReceipt = await db
+    .prepare(
+      `SELECT id FROM receipt_transactions
+       WHERE household_id = ? AND trip_id = ?
+       LIMIT 1`
+    )
+    .bind(context.household.id, trip.id)
+    .first<{ id: string }>();
+  if (linkedReceipt) {
+    throw new ApiError(
+      409,
+      "Shopping cannot be undone after receipt evidence has been added"
+    );
+  }
+  if (trip.status === "planning") {
+    const itemsResult = await db
+      .prepare(
+        `SELECT * FROM trip_list_items
+         WHERE trip_id = ?
+         ORDER BY sort_order ASC, created_at ASC`
+      )
+      .bind(trip.id)
+      .all<ListItemRow>();
+    return json({
+      trip: tripSummary(trip),
+      listItems: itemsResult.results.map(listItemSummary),
+    });
+  }
+  if (trip.status !== "frozen") {
+    throw new ApiError(409, "This trip is not in shopping mode");
+  }
+
+  const now = nowIso();
+  const results = await db.batch([
+    db
+      .prepare(
+        `DELETE FROM trip_intent_snapshots
+         WHERE trip_id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE id = ? AND household_id = ? AND status = 'frozen'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM receipt_transactions
+             WHERE household_id = ? AND trip_id = ?
+           )`
+      )
+      .bind(
+        trip.id,
+        trip.id,
+        context.household.id,
+        context.household.id,
+        trip.id
+      ),
+    db
+      .prepare(
+        `UPDATE trip_list_items
+         SET source = CASE WHEN source = 'in_store' THEN 'manual' ELSE source END,
+             checked = 0, included_at_freeze = NULL, added_after_freeze = 0,
+             updated_at = ?
+         WHERE trip_id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE id = ? AND household_id = ? AND status = 'frozen'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM receipt_transactions
+             WHERE household_id = ? AND trip_id = ?
+           )`
+      )
+      .bind(
+        now,
+        trip.id,
+        trip.id,
+        context.household.id,
+        context.household.id,
+        trip.id
+      ),
+    db
+      .prepare(
+        `UPDATE trips
+         SET status = 'planning', frozen_at = NULL,
+             estimated_list_total_at_freeze_cents = NULL,
+             estimated_priced_item_count_at_freeze = NULL,
+             estimated_unpriced_item_count_at_freeze = NULL,
+             updated_at = ?
+         WHERE id = ? AND household_id = ? AND status = 'frozen'
+           AND NOT EXISTS (
+             SELECT 1 FROM receipt_transactions
+             WHERE household_id = ? AND trip_id = ?
+           )`
+      )
+      .bind(
+        now,
+        trip.id,
+        context.household.id,
+        context.household.id,
+        trip.id
+      ),
+  ]);
+
+  if ((results[2]?.meta.changes ?? 0) !== 1) {
+    const receiptAfterRace = await db
+      .prepare(
+        `SELECT id FROM receipt_transactions
+         WHERE household_id = ? AND trip_id = ? LIMIT 1`
+      )
+      .bind(context.household.id, trip.id)
+      .first<{ id: string }>();
+    if (receiptAfterRace) {
+      throw new ApiError(
+        409,
+        "Shopping cannot be undone after receipt evidence has been added"
+      );
+    }
+    throw new ApiError(409, "This trip is no longer in shopping mode");
+  }
 
   const [updatedTrip, itemsResult] = await Promise.all([
     authorizedTrip(db, context.household.id, trip.id),
@@ -4014,6 +4520,12 @@ export async function handleHouseholdGet(
   try {
     const user = authenticatedUser(request);
     await ensureSchema(db);
+    const url = new URL(request.url);
+    if (url.searchParams.get("scope") === "list") {
+      const tripId = optionalId(url.searchParams.get("tripId"), "tripId");
+      const context = await readExistingHouseholdContext(db, user, tripId);
+      return json(await readHouseholdListState(db, context));
+    }
     const context = await bootstrapHousehold(db, user);
     return json(await readHouseholdState(db, context));
   } catch (error) {
@@ -4070,6 +4582,9 @@ export async function handleHouseholdPatch(
     }
     if (action === "freeze_trip") {
       return await freezeTrip(db, context, body);
+    }
+    if (action === "unfreeze_trip") {
+      return await unfreezeTrip(db, context, body);
     }
     if (action === "update_receipt_draft") {
       return await updateReceiptDraft(db, context, body);
