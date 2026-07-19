@@ -157,6 +157,54 @@ test("D1 dashboard matches the audited historical view before client cutover", a
   }
 });
 
+test("Data Health is owner-only, household-scoped, and exportable without a SQL console", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const owner = "data-health-owner@example.test";
+    const healthResponse = await handleHouseholdGet(
+      householdRequest(owner, "GET", undefined, "?view=data-health"),
+      db,
+    );
+    assert.equal(healthResponse.status, 200);
+    const health = await responseJson(healthResponse);
+    assert.equal(health.source, "hosted_d1");
+    assert.ok(health.tableCounts.some((entry) => entry.key === "receiptItems"));
+    assert.ok(health.reconciliation.totalReceipts > 0);
+    assert.equal(health.importTracking.supportsBatchJobFailures, false);
+    assert.ok(Array.isArray(health.receipts));
+    assert.ok(Array.isArray(health.recommendationEvents));
+
+    const exportResponse = await handleHouseholdGet(
+      householdRequest(owner, "GET", undefined, "?view=export&format=json"),
+      db,
+    );
+    assert.equal(exportResponse.status, 200);
+    const exported = await responseJson(exportResponse);
+    assert.equal(exported.schemaVersion, 1);
+    assert.equal(exported.household.id, "household_basketsense");
+    assert.ok(Array.isArray(exported.records.receiptTransactions));
+    assert.ok(!JSON.stringify(exported).includes("storage_key"));
+
+    const csvResponse = await handleHouseholdGet(
+      householdRequest(owner, "GET", undefined, "?view=export&format=csv"),
+      db,
+    );
+    assert.equal(csvResponse.status, 200);
+    assert.match(csvResponse.headers.get("content-type"), /text\/csv/i);
+    assert.match(await csvResponse.text(), /receipt_id/);
+
+    await handleHouseholdGet(householdRequest("data-health-member@example.test"), db);
+    const forbidden = await handleHouseholdGet(
+      householdRequest("data-health-member@example.test", "GET", undefined, "?view=data-health"),
+      db,
+    );
+    assert.equal(forbidden.status, 403);
+    assert.match((await responseJson(forbidden)).error, /owner/i);
+  } finally {
+    db.close();
+  }
+});
+
 test("product metadata migration upgrades an existing catalog safely", () => {
   const db = new D1DatabaseAdapter();
   try {

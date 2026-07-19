@@ -24,6 +24,15 @@ import type {
   ClosedLoopComparison,
   ClosedLoopReceiptItem,
   ClosedLoopReview,
+  DataHealthFailedImport,
+  DataHealthProduct,
+  DataHealthReceipt,
+  DataHealthRecommendationEvent,
+  DataHealthResponse,
+  DataHealthReviewQuestion,
+  DataHealthTableCount,
+  DataHealthTrip,
+  DataHealthUnmatchedLine,
   FeedbackKind,
   FeedbackSummary,
   HouseholdBootstrapResponse,
@@ -1514,6 +1523,407 @@ async function readHouseholdState(
     closedLoop: await readClosedLoopReview(db, context.household.id),
     dashboard: await buildDashboardViewDataFromD1(db, context.household.id),
   };
+}
+
+function requireHouseholdOwner(context: HouseholdContext) {
+  if (context.member.role !== "owner") {
+    throw new ApiError(403, "Only the household owner can access Data Health");
+  }
+}
+
+const DATA_HEALTH_TABLES = [
+  { key: "households", label: "Households", sql: "SELECT COUNT(*) AS count FROM households WHERE id = ?" },
+  { key: "householdMembers", label: "Household members", sql: "SELECT COUNT(*) AS count FROM household_members WHERE household_id = ?" },
+  { key: "products", label: "Products", sql: "SELECT COUNT(*) AS count FROM products WHERE household_id = ?" },
+  { key: "trips", label: "Trips", sql: "SELECT COUNT(*) AS count FROM trips WHERE household_id = ?" },
+  { key: "tripListItems", label: "Live list items", sql: "SELECT COUNT(*) AS count FROM trip_list_items INNER JOIN trips ON trips.id = trip_list_items.trip_id WHERE trips.household_id = ?" },
+  { key: "receiptTransactions", label: "Receipt transactions", sql: "SELECT COUNT(*) AS count FROM receipt_transactions WHERE household_id = ?" },
+  { key: "receiptItems", label: "Receipt lines", sql: "SELECT COUNT(*) AS count FROM receipt_items INNER JOIN receipt_transactions ON receipt_transactions.id = receipt_items.receipt_transaction_id WHERE receipt_transactions.household_id = ?" },
+  { key: "feedback", label: "Feedback", sql: "SELECT COUNT(*) AS count FROM feedback WHERE household_id = ?" },
+  { key: "tripIntentSnapshots", label: "Frozen intents", sql: "SELECT COUNT(*) AS count FROM trip_intent_snapshots INNER JOIN trips ON trips.id = trip_intent_snapshots.trip_id WHERE trips.household_id = ?" },
+  { key: "tripIntentItems", label: "Frozen intent items", sql: "SELECT COUNT(*) AS count FROM trip_intent_items INNER JOIN trips ON trips.id = trip_intent_items.trip_id WHERE trips.household_id = ?" },
+  { key: "receiptUploads", label: "Receipt uploads", sql: "SELECT COUNT(*) AS count FROM receipt_uploads WHERE household_id = ?" },
+  { key: "productAliases", label: "Product aliases", sql: "SELECT COUNT(*) AS count FROM product_aliases WHERE household_id = ?" },
+  { key: "tripItemMatches", label: "Intent-to-receipt matches", sql: "SELECT COUNT(*) AS count FROM trip_item_matches WHERE household_id = ?" },
+  { key: "reviewQuestions", label: "Review questions", sql: "SELECT COUNT(*) AS count FROM review_questions WHERE household_id = ?" },
+] as const;
+
+function countResult(value: unknown) {
+  const record = value as { count?: number | string } | null;
+  return Number(record?.count ?? 0);
+}
+
+async function readDataHealth(
+  db: D1Database,
+  context: HouseholdContext,
+): Promise<DataHealthResponse> {
+  requireHouseholdOwner(context);
+  const householdId = context.household.id;
+  const countStatements = DATA_HEALTH_TABLES.map((entry) =>
+    db.prepare(entry.sql).bind(householdId),
+  );
+  const results = await db.batch([
+    ...countStatements,
+    db
+      .prepare(
+        `SELECT
+          COUNT(*) AS total_receipts,
+          SUM(CASE WHEN parse_status = 'reconciled' THEN 1 ELSE 0 END) AS reconciled,
+          SUM(CASE WHEN parse_status = 'needs_review' THEN 1 ELSE 0 END) AS needs_review,
+          SUM(CASE WHEN parse_status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+          SUM(CASE WHEN parse_status <> 'reconciled' THEN total_cents ELSE 0 END) AS unreconciled_total_cents
+         FROM receipt_transactions
+         WHERE household_id = ?`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT receipt_items.id, receipt_items.receipt_transaction_id,
+                receipt_transactions.purchased_at, receipt_items.source_line_number,
+                receipt_items.raw_description, receipt_items.costco_item_number,
+                receipt_items.net_amount_cents, receipt_items.match_confidence_bps
+         FROM receipt_items
+         INNER JOIN receipt_transactions
+           ON receipt_transactions.id = receipt_items.receipt_transaction_id
+         WHERE receipt_transactions.household_id = ?
+           AND receipt_items.product_id IS NULL
+         ORDER BY receipt_transactions.purchased_at DESC, receipt_items.source_line_number ASC
+         LIMIT 100`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT products.id, products.canonical_name, products.costco_item_number,
+                products.category, products.category_status, products.active,
+                products.updated_at, COUNT(receipt_items.id) AS receipt_line_count
+         FROM products
+         LEFT JOIN receipt_items ON receipt_items.product_id = products.id
+         WHERE products.household_id = ?
+           AND (products.category_status = 'needs_review' OR products.category IS NULL OR products.category = '')
+         GROUP BY products.id
+         ORDER BY products.updated_at DESC, products.canonical_name COLLATE NOCASE ASC
+         LIMIT 100`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT review_questions.id, review_questions.receipt_transaction_id,
+                receipt_transactions.purchased_at, review_questions.purpose,
+                review_questions.prompt, review_questions.priority,
+                review_questions.status, review_questions.created_at
+         FROM review_questions
+         INNER JOIN receipt_transactions
+           ON receipt_transactions.id = review_questions.receipt_transaction_id
+         WHERE review_questions.household_id = ? AND review_questions.status = 'open'
+         ORDER BY review_questions.priority ASC, review_questions.created_at ASC
+         LIMIT 100`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT id, purchased_at, source_type, total_cents, parse_status, audit_flag
+         FROM receipt_transactions
+         WHERE household_id = ? AND parse_status = 'rejected'
+         ORDER BY purchased_at DESC
+         LIMIT 100`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT receipt_transactions.id, receipt_transactions.trip_id,
+                trips.scheduled_for, receipt_transactions.purchased_at,
+                receipt_transactions.transaction_type, receipt_transactions.source_type,
+                receipt_transactions.total_cents, receipt_transactions.item_count,
+                receipt_transactions.parse_status, receipt_transactions.audit_flag,
+                COUNT(CASE WHEN receipt_items.product_id IS NULL THEN 1 END) AS unmatched_line_count
+         FROM receipt_transactions
+         LEFT JOIN trips ON trips.id = receipt_transactions.trip_id
+         LEFT JOIN receipt_items ON receipt_items.receipt_transaction_id = receipt_transactions.id
+         WHERE receipt_transactions.household_id = ?
+         GROUP BY receipt_transactions.id
+         ORDER BY receipt_transactions.purchased_at DESC
+         LIMIT 250`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT trips.id, trips.scheduled_for, trips.status, trips.target_cents,
+                trips.estimated_list_total_at_freeze_cents, trips.created_at,
+                COUNT(DISTINCT trip_list_items.id) AS list_item_count,
+                COUNT(DISTINCT receipt_transactions.id) AS receipt_count
+         FROM trips
+         LEFT JOIN trip_list_items ON trip_list_items.trip_id = trips.id
+         LEFT JOIN receipt_transactions ON receipt_transactions.trip_id = trips.id
+         WHERE trips.household_id = ?
+         GROUP BY trips.id
+         ORDER BY trips.scheduled_for DESC
+         LIMIT 250`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT products.id, products.canonical_name, products.costco_item_number,
+                products.category, products.category_status, products.active,
+                products.updated_at, COUNT(receipt_items.id) AS receipt_line_count
+         FROM products
+         LEFT JOIN receipt_items ON receipt_items.product_id = products.id
+         WHERE products.household_id = ?
+         GROUP BY products.id
+         ORDER BY products.canonical_name COLLATE NOCASE ASC
+         LIMIT 250`,
+      )
+      .bind(householdId),
+    db
+      .prepare(
+        `SELECT trip_list_items.id, trip_list_items.trip_id, trips.scheduled_for,
+                trips.status AS trip_status, trip_list_items.label,
+                trip_list_items.source, trip_list_items.section,
+                trip_list_items.included, trip_list_items.checked,
+                trip_list_items.confidence_bps, trip_list_items.recommendation_reason,
+                trip_list_items.estimated_price_cents, trip_list_items.created_at
+         FROM trip_list_items
+         INNER JOIN trips ON trips.id = trip_list_items.trip_id
+         WHERE trips.household_id = ?
+           AND trip_list_items.source IN ('recurring', 'predicted', 'consider')
+         ORDER BY trips.scheduled_for DESC, trip_list_items.created_at DESC
+         LIMIT 250`,
+      )
+      .bind(householdId),
+  ]);
+
+  const countResults = results.slice(0, DATA_HEALTH_TABLES.length);
+  const offset = DATA_HEALTH_TABLES.length;
+  const reconciliation = results[offset].results[0] as {
+    total_receipts: number | null;
+    reconciled: number | null;
+    needs_review: number | null;
+    rejected: number | null;
+    unreconciled_total_cents: number | null;
+  } | undefined;
+  const unmatched = results[offset + 1].results as unknown as Array<{
+    id: string; receipt_transaction_id: string; purchased_at: string;
+    source_line_number: number; raw_description: string; costco_item_number: string | null;
+    net_amount_cents: number; match_confidence_bps: number | null;
+  }>;
+  const productsForReview = results[offset + 2].results as unknown as Array<{
+    id: string; canonical_name: string; costco_item_number: string | null;
+    category: string | null; category_status: DataHealthProduct["categoryStatus"];
+    active: number; receipt_line_count: number; updated_at: string;
+  }>;
+  const questions = results[offset + 3].results as unknown as Array<{
+    id: string; receipt_transaction_id: string; purchased_at: string;
+    purpose: ReviewQuestionPurpose; prompt: string; priority: number;
+    status: "open" | "answered" | "dismissed"; created_at: string;
+  }>;
+  const failedImports = results[offset + 4].results as unknown as Array<{
+    id: string; purchased_at: string; source_type: DataHealthFailedImport["sourceType"];
+    total_cents: number; parse_status: "rejected"; audit_flag: string;
+  }>;
+  const receipts = results[offset + 5].results as unknown as Array<{
+    id: string; trip_id: string | null; scheduled_for: string | null; purchased_at: string;
+    transaction_type: DataHealthReceipt["transactionType"];
+    source_type: DataHealthReceipt["sourceType"]; total_cents: number; item_count: number;
+    parse_status: DataHealthReceipt["parseStatus"]; audit_flag: string; unmatched_line_count: number;
+  }>;
+  const trips = results[offset + 6].results as unknown as Array<{
+    id: string; scheduled_for: string; status: TripStatus; target_cents: number | null;
+    estimated_list_total_at_freeze_cents: number | null; list_item_count: number;
+    receipt_count: number; created_at: string;
+  }>;
+  const products = results[offset + 7].results as unknown as typeof productsForReview;
+  const recommendationEvents = results[offset + 8].results as unknown as Array<{
+    id: string; trip_id: string; scheduled_for: string; trip_status: TripStatus;
+    label: string; source: ListItemSource; section: ListItemSection; included: number;
+    checked: number; confidence_bps: number | null; recommendation_reason: string | null;
+    estimated_price_cents: number | null; created_at: string;
+  }>;
+
+  const mapProduct = (row: (typeof products)[number]): DataHealthProduct => ({
+    id: row.id,
+    canonicalName: row.canonical_name,
+    costcoItemNumber: row.costco_item_number,
+    category: row.category,
+    categoryStatus: row.category_status,
+    active: Boolean(row.active),
+    receiptLineCount: Number(row.receipt_line_count),
+    updatedAt: row.updated_at,
+  });
+
+  return {
+    generatedAt: nowIso(),
+    source: "hosted_d1",
+    tableCounts: DATA_HEALTH_TABLES.map((entry, index) => ({
+      key: entry.key,
+      label: entry.label,
+      count: countResult((countResults[index].results[0] ?? null) as unknown),
+    })) as DataHealthTableCount[],
+    reconciliation: {
+      totalReceipts: Number(reconciliation?.total_receipts ?? 0),
+      reconciled: Number(reconciliation?.reconciled ?? 0),
+      needsReview: Number(reconciliation?.needs_review ?? 0),
+      rejected: Number(reconciliation?.rejected ?? 0),
+      unreconciledTotalCents: Number(reconciliation?.unreconciled_total_cents ?? 0),
+    },
+    importTracking: {
+      supportsBatchJobFailures: false,
+      message: "Batch import jobs are not implemented yet. Rejected receipt drafts are shown here; upload-job failures will arrive with batch ingestion.",
+    },
+    unmatchedReceiptLines: unmatched.map((row): DataHealthUnmatchedLine => ({
+      id: row.id,
+      receiptTransactionId: row.receipt_transaction_id,
+      purchasedAt: row.purchased_at,
+      sourceLineNumber: row.source_line_number,
+      rawDescription: row.raw_description,
+      costcoItemNumber: row.costco_item_number,
+      netAmountCents: row.net_amount_cents,
+      matchConfidenceBps: row.match_confidence_bps,
+    })),
+    productsNeedingReview: productsForReview.map(mapProduct),
+    openReviewQuestions: questions.map((row): DataHealthReviewQuestion => ({
+      id: row.id,
+      receiptTransactionId: row.receipt_transaction_id,
+      purchasedAt: row.purchased_at,
+      purpose: row.purpose,
+      prompt: row.prompt,
+      priority: row.priority,
+      status: row.status,
+      createdAt: row.created_at,
+    })),
+    failedImports: failedImports.map((row) => ({
+      id: row.id,
+      purchasedAt: row.purchased_at,
+      sourceType: row.source_type,
+      totalCents: row.total_cents,
+      parseStatus: row.parse_status,
+      auditFlag: row.audit_flag,
+    })),
+    receipts: receipts.map((row): DataHealthReceipt => ({
+      id: row.id,
+      tripId: row.trip_id,
+      scheduledFor: row.scheduled_for,
+      purchasedAt: row.purchased_at,
+      transactionType: row.transaction_type,
+      sourceType: row.source_type,
+      totalCents: row.total_cents,
+      itemCount: row.item_count,
+      parseStatus: row.parse_status,
+      auditFlag: row.audit_flag,
+      unmatchedLineCount: Number(row.unmatched_line_count),
+    })),
+    trips: trips.map((row): DataHealthTrip => ({
+      id: row.id,
+      scheduledFor: row.scheduled_for,
+      status: row.status,
+      targetCents: row.target_cents,
+      estimatedListTotalAtFreezeCents: row.estimated_list_total_at_freeze_cents,
+      listItemCount: Number(row.list_item_count),
+      receiptCount: Number(row.receipt_count),
+      createdAt: row.created_at,
+    })),
+    products: products.map(mapProduct),
+    recommendationEvents: recommendationEvents.map(
+      (row): DataHealthRecommendationEvent => ({
+        id: row.id,
+        tripId: row.trip_id,
+        scheduledFor: row.scheduled_for,
+        tripStatus: row.trip_status,
+        label: row.label,
+        source: row.source,
+        section: row.section,
+        included: Boolean(row.included),
+        checked: Boolean(row.checked),
+        confidenceBps: row.confidence_bps,
+        recommendationReason: row.recommendation_reason,
+        estimatedPriceCents: row.estimated_price_cents,
+        createdAt: row.created_at,
+      }),
+    ),
+  };
+}
+
+function csvCell(value: unknown) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function csvResponse(rows: DataHealthReceipt[]) {
+  const headings = [
+    "receipt_id", "trip_id", "trip_date", "purchased_at", "transaction_type",
+    "source_type", "total_cents", "item_count", "parse_status", "audit_flag", "unmatched_line_count",
+  ];
+  const lines = [
+    headings.join(","),
+    ...rows.map((row) => [
+      row.id, row.tripId, row.scheduledFor, row.purchasedAt, row.transactionType,
+      row.sourceType, row.totalCents, row.itemCount, row.parseStatus, row.auditFlag, row.unmatchedLineCount,
+    ].map(csvCell).join(",")),
+  ];
+  return new Response(lines.join("\n"), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="basketsense-receipts.csv"',
+    },
+  });
+}
+
+async function householdExportResponse(
+  db: D1Database,
+  context: HouseholdContext,
+  format: string | null,
+) {
+  requireHouseholdOwner(context);
+  const dataHealth = await readDataHealth(db, context);
+  if (format === "csv") return csvResponse(dataHealth.receipts);
+  if (format !== "json") {
+    throw new ApiError(400, "Export format must be json or csv");
+  }
+
+  const householdId = context.household.id;
+  const records = await db.batch([
+    db.prepare("SELECT id, user_email, display_name, role, created_at, last_seen_at FROM household_members WHERE household_id = ? ORDER BY created_at").bind(householdId),
+    db.prepare("SELECT * FROM trips WHERE household_id = ? ORDER BY scheduled_for").bind(householdId),
+    db.prepare("SELECT trip_list_items.* FROM trip_list_items INNER JOIN trips ON trips.id = trip_list_items.trip_id WHERE trips.household_id = ? ORDER BY trip_list_items.created_at").bind(householdId),
+    db.prepare("SELECT * FROM products WHERE household_id = ? ORDER BY canonical_name COLLATE NOCASE").bind(householdId),
+    db.prepare("SELECT * FROM receipt_transactions WHERE household_id = ? ORDER BY purchased_at").bind(householdId),
+    db.prepare("SELECT receipt_items.* FROM receipt_items INNER JOIN receipt_transactions ON receipt_transactions.id = receipt_items.receipt_transaction_id WHERE receipt_transactions.household_id = ? ORDER BY receipt_transactions.purchased_at, receipt_items.source_line_number").bind(householdId),
+    db.prepare("SELECT * FROM feedback WHERE household_id = ? ORDER BY created_at").bind(householdId),
+    db.prepare("SELECT trip_intent_snapshots.* FROM trip_intent_snapshots INNER JOIN trips ON trips.id = trip_intent_snapshots.trip_id WHERE trips.household_id = ? ORDER BY trip_intent_snapshots.created_at").bind(householdId),
+    db.prepare("SELECT trip_intent_items.* FROM trip_intent_items INNER JOIN trips ON trips.id = trip_intent_items.trip_id WHERE trips.household_id = ? ORDER BY trip_intent_items.created_at").bind(householdId),
+    db.prepare("SELECT id, household_id, receipt_transaction_id, original_filename, content_type, byte_size, status, uploaded_by_member_id, created_at, updated_at FROM receipt_uploads WHERE household_id = ? ORDER BY created_at").bind(householdId),
+    db.prepare("SELECT * FROM product_aliases WHERE household_id = ? ORDER BY created_at").bind(householdId),
+    db.prepare("SELECT * FROM trip_item_matches WHERE household_id = ? ORDER BY created_at").bind(householdId),
+    db.prepare("SELECT * FROM review_questions WHERE household_id = ? ORDER BY created_at").bind(householdId),
+  ]);
+
+  return json({
+    schemaVersion: 1,
+    generatedAt: nowIso(),
+    household: {
+      id: context.household.id,
+      name: context.household.name,
+      timeZone: context.household.time_zone,
+    },
+    records: {
+      members: records[0].results,
+      trips: records[1].results,
+      tripListItems: records[2].results,
+      products: records[3].results,
+      receiptTransactions: records[4].results,
+      receiptItems: records[5].results,
+      feedback: records[6].results,
+      tripIntentSnapshots: records[7].results,
+      tripIntentItems: records[8].results,
+      receiptUploads: records[9].results,
+      productAliases: records[10].results,
+      tripItemMatches: records[11].results,
+      reviewQuestions: records[12].results,
+    },
+    exportNotes: [
+      "Receipt-image binaries and R2 storage keys are intentionally excluded.",
+      "This export contains only records scoped to this household.",
+    ],
+  });
 }
 
 async function readExistingHouseholdContext(
@@ -4529,6 +4939,20 @@ export async function handleHouseholdGet(
       return json(await readHouseholdListState(db, context));
     }
     const context = await bootstrapHousehold(db, user);
+    const view = url.searchParams.get("view");
+    if (view === "data-health") {
+      return json(await readDataHealth(db, context));
+    }
+    if (view === "export") {
+      return await householdExportResponse(
+        db,
+        context,
+        url.searchParams.get("format"),
+      );
+    }
+    if (view) {
+      throw new ApiError(404, "Unknown household view");
+    }
     return json(await readHouseholdState(db, context));
   } catch (error) {
     return handleError(error);

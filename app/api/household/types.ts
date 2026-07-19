@@ -284,6 +284,136 @@ export interface HouseholdListResponse {
   listItems: TripListItemSummary[];
 }
 
+export type DataHealthTableKey =
+  | "households"
+  | "householdMembers"
+  | "products"
+  | "trips"
+  | "tripListItems"
+  | "receiptTransactions"
+  | "receiptItems"
+  | "feedback"
+  | "tripIntentSnapshots"
+  | "tripIntentItems"
+  | "receiptUploads"
+  | "productAliases"
+  | "tripItemMatches"
+  | "reviewQuestions";
+
+export interface DataHealthTableCount {
+  key: DataHealthTableKey;
+  label: string;
+  count: number;
+}
+
+export interface DataHealthReceipt {
+  id: string;
+  tripId: string | null;
+  scheduledFor: string | null;
+  purchasedAt: string;
+  transactionType: ReceiptTransactionSummary["transactionType"];
+  sourceType: ReceiptTransactionSummary["sourceType"];
+  totalCents: number;
+  itemCount: number;
+  parseStatus: ReceiptTransactionSummary["parseStatus"];
+  auditFlag: string;
+  unmatchedLineCount: number;
+}
+
+export interface DataHealthTrip {
+  id: string;
+  scheduledFor: string;
+  status: TripStatus;
+  targetCents: number | null;
+  estimatedListTotalAtFreezeCents: number | null;
+  listItemCount: number;
+  receiptCount: number;
+  createdAt: string;
+}
+
+export interface DataHealthProduct {
+  id: string;
+  canonicalName: string;
+  costcoItemNumber: string | null;
+  category: string | null;
+  categoryStatus: ProductSummary["categoryStatus"];
+  active: boolean;
+  receiptLineCount: number;
+  updatedAt: string;
+}
+
+export interface DataHealthRecommendationEvent {
+  id: string;
+  tripId: string;
+  scheduledFor: string;
+  tripStatus: TripStatus;
+  label: string;
+  source: ListItemSource;
+  section: ListItemSection;
+  included: boolean;
+  checked: boolean;
+  confidenceBps: number | null;
+  recommendationReason: string | null;
+  estimatedPriceCents: number | null;
+  createdAt: string;
+}
+
+export interface DataHealthUnmatchedLine {
+  id: string;
+  receiptTransactionId: string;
+  purchasedAt: string;
+  sourceLineNumber: number;
+  rawDescription: string;
+  costcoItemNumber: string | null;
+  netAmountCents: number;
+  matchConfidenceBps: number | null;
+}
+
+export interface DataHealthReviewQuestion {
+  id: string;
+  receiptTransactionId: string;
+  purchasedAt: string;
+  purpose: ReviewQuestionPurpose;
+  prompt: string;
+  priority: number;
+  status: "open" | "answered" | "dismissed";
+  createdAt: string;
+}
+
+export interface DataHealthFailedImport {
+  id: string;
+  purchasedAt: string;
+  sourceType: ReceiptTransactionSummary["sourceType"];
+  totalCents: number;
+  parseStatus: "rejected";
+  auditFlag: string;
+}
+
+export interface DataHealthResponse {
+  generatedAt: string;
+  source: "hosted_d1";
+  tableCounts: DataHealthTableCount[];
+  reconciliation: {
+    totalReceipts: number;
+    reconciled: number;
+    needsReview: number;
+    rejected: number;
+    unreconciledTotalCents: number;
+  };
+  importTracking: {
+    supportsBatchJobFailures: false;
+    message: string;
+  };
+  unmatchedReceiptLines: DataHealthUnmatchedLine[];
+  productsNeedingReview: DataHealthProduct[];
+  openReviewQuestions: DataHealthReviewQuestion[];
+  failedImports: DataHealthFailedImport[];
+  receipts: DataHealthReceipt[];
+  trips: DataHealthTrip[];
+  products: DataHealthProduct[];
+  recommendationEvents: DataHealthRecommendationEvent[];
+}
+
 export type HouseholdPostRequest =
   | {
       action: "add_list_item";

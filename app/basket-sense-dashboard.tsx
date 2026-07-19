@@ -17,6 +17,7 @@ import type {
   DashboardViewData,
 } from "./dashboard-types";
 import type { HouseholdListResponse } from "./api/household/types";
+import { DataHealthExplorer } from "./data-health-explorer";
 import {
   isProductCategoryKey,
   mergeHouseholdProductMetadata,
@@ -35,7 +36,7 @@ import {
   type ReceiptStep,
 } from "./receipt-review-flow";
 
-type Tab = "overview" | "products" | "week" | "review";
+type Tab = "overview" | "products" | "week" | "review" | "data";
 type TripStatus = "planning" | "frozen" | "completed";
 type ListItemSource =
   | "manual"
@@ -143,6 +144,8 @@ const primaryTabs = [
   { id: "products", label: "Products", symbol: "▤" },
   { id: "review", label: "Review", symbol: "?" },
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
+
+const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
 
 const THEME_STORAGE_KEY = "basketsense-color-theme";
 
@@ -1003,6 +1006,10 @@ export function BasketSenseDashboard({
     effectiveViewData.transactions,
     effectiveViewData.audit.through,
   );
+  const visibleTabs =
+    household?.currentUser.role === "owner"
+      ? [...primaryTabs, dataHealthTab]
+      : primaryTabs;
 
   return (
     <div className="app-shell">
@@ -1022,7 +1029,7 @@ export function BasketSenseDashboard({
         </button>
 
         <nav className="desktop-nav">
-          {primaryTabs.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               className={activeTab === tab.id ? "active" : ""}
@@ -1213,10 +1220,14 @@ export function BasketSenseDashboard({
             }}
           />
         ) : null}
+
+        {activeTab === "data" && household?.currentUser.role === "owner" ? (
+          <DataHealthExplorer />
+        ) : null}
       </main>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
-        {primaryTabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             className={activeTab === tab.id ? "active" : ""}

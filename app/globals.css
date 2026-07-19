@@ -1960,6 +1960,219 @@ button.price-point:hover {
   line-height: 1.5;
 }
 
+.data-health-page {
+  display: grid;
+  gap: 18px;
+}
+
+.data-health-loading {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 30px;
+  text-align: center;
+}
+
+.data-health-loading p,
+.data-health-source,
+.data-health-note,
+.data-export-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.data-health-source {
+  margin-top: -10px;
+}
+
+.data-health-metrics {
+  margin: 0;
+}
+
+.data-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.data-health-card {
+  padding: 24px;
+}
+
+.record-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+  margin: 20px 0 0;
+}
+
+.record-counts > div,
+.health-status-list li {
+  display: flex;
+  min-height: 37px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.record-counts dt,
+.health-status-list span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.record-counts dd,
+.health-status-list strong {
+  margin: 0;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 13px;
+}
+
+.health-status-list {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.review-queues {
+  display: grid;
+  gap: 20px;
+}
+
+.review-queue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.review-queue {
+  min-height: 164px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-subtle);
+  padding: 16px;
+}
+
+.review-queue > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-queue h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.review-queue > div > strong {
+  display: grid;
+  min-width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--forest-soft);
+  color: var(--forest);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+
+.review-queue ul {
+  display: grid;
+  gap: 9px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-queue li,
+.review-queue p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.review-queue li strong,
+.review-queue li span {
+  display: block;
+}
+
+.review-queue li strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-queue li span {
+  margin-top: 2px;
+}
+
+.review-queue > p {
+  margin-top: 20px;
+}
+
+.data-export-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.data-export-card h2,
+.data-explorer-card h2 {
+  margin: 5px 0 6px;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+.data-export-card p {
+  max-width: 720px;
+}
+
+.data-export-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.data-export-actions a {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.data-explorer-card {
+  display: grid;
+  gap: 18px;
+}
+
+.data-explorer-controls {
+  display: grid;
+  grid-template-columns: 160px 160px minmax(180px, 1fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.search-field {
+  display: block;
+}
+
+.search-field input {
+  width: 100%;
+}
+
 .week-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -3769,7 +3982,7 @@ button.price-point:hover {
     inset: auto 0 0;
     z-index: 30;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
     border-top: 1px solid var(--line);
     background: var(--mobile-nav-bg);
     padding: 6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
@@ -5001,5 +5214,36 @@ button.price-point:hover {
 
   .question-options button {
     min-height: 72px;
+  }
+
+  .data-health-grid,
+  .review-queue-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .data-health-card {
+    padding: 18px;
+  }
+
+  .record-counts {
+    grid-template-columns: 1fr;
+  }
+
+  .data-export-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .data-export-actions {
+    width: 100%;
+  }
+
+  .data-export-actions a {
+    flex: 1 1 180px;
+    justify-content: center;
+  }
+
+  .data-explorer-controls {
+    grid-template-columns: 1fr;
   }
 }
