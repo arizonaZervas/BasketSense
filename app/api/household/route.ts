@@ -18,6 +18,7 @@ import {
   type ReceiptIntentItem,
   type ReceiptIntentMatch,
 } from "../../receipt-logic";
+import { buildDashboardViewDataFromD1 } from "../../dashboard-d1-data";
 
 import type {
   ClosedLoopComparison,
@@ -1511,6 +1512,7 @@ async function readHouseholdState(
     receiptTransactions: receipts.map(receiptSummary),
     feedback: feedbackRows.map(feedbackSummary),
     closedLoop: await readClosedLoopReview(db, context.household.id),
+    dashboard: await buildDashboardViewDataFromD1(db, context.household.id),
   };
 }
 

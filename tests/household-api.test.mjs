@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { RECURRING_PRODUCT_HISTORIES_2026 } from "../app/basketsense-data.ts";
+import { buildDashboardViewData } from "../app/basketsense-dashboard-data.ts";
 import {
   handleHouseholdGet,
   handleHouseholdPatch,
@@ -142,6 +143,19 @@ async function responseJson(response) {
   assert.ok(body && typeof body === "object");
   return body;
 }
+
+test("D1 dashboard matches the audited historical view before client cutover", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const response = await responseJson(
+      await handleHouseholdGet(householdRequest("dashboard-owner@example.test"), db),
+    );
+
+    assert.deepEqual(response.dashboard, buildDashboardViewData());
+  } finally {
+    db.close();
+  }
+});
 
 test("product metadata migration upgrades an existing catalog safely", () => {
   const db = new D1DatabaseAdapter();
@@ -1805,6 +1819,24 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
     assert.equal(refreshed.closedLoop.receipt.id, ingested.receiptId);
     assert.equal(refreshed.closedLoop.comparison.arithmetic.isReconciled, true);
     assert.equal(refreshed.closedLoop.comparison.isProvisional, false);
+    assert.equal(refreshed.dashboard.audit.through, "2026-07-25");
+    assert.equal(
+      refreshed.dashboard.audit.transactionCount,
+      initial.dashboard.audit.transactionCount + 1,
+    );
+    assert.ok(
+      refreshed.dashboard.transactions.some(
+        (transaction) => transaction.id === ingested.receiptId,
+      ),
+      "A reconciled July 25 receipt becomes part of the shared dashboard",
+    );
+    assert.equal(
+      refreshed.dashboard.products.find(
+        (product) => product.itemNumber === milkProduct.costcoItemNumber,
+      )?.lastPurchasedOn,
+      "2026-07-25",
+      "The new receipt also updates the product's purchase history",
+    );
   } finally {
     db.close();
   }

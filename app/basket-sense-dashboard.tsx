@@ -118,6 +118,7 @@ type HouseholdSnapshot = {
   products: SharedProduct[];
   feedback: SharedFeedback[];
   closedLoop?: ClosedLoopSnapshot | null;
+  dashboard: DashboardViewData;
 };
 
 type WriteRequest = {
@@ -417,8 +418,12 @@ export function BasketSenseDashboard({
     destination: "active" | "ideas" | "active-heading";
   } | null>(null);
   const effectiveViewData = useMemo(
-    () => mergeHouseholdProductMetadata(viewData, household?.products ?? []),
-    [household?.products, viewData],
+    () =>
+      mergeHouseholdProductMetadata(
+        household?.dashboard ?? viewData,
+        household?.products ?? [],
+      ),
+    [household?.dashboard, household?.products, viewData],
   );
   const resolvedTheme: ResolvedTheme =
     themePreference === "system" ? systemTheme : themePreference;

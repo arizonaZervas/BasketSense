@@ -26,11 +26,7 @@ export type DashboardTransaction = {
   taxCents: number;
   externalFundingCents: number;
   sourceType: "digital_receipt" | "fuel_receipt" | "receipt_photo";
-  auditFlag:
-    | "none"
-    | "external_funding_split"
-    | "page_overlap_deduped"
-    | "photo_value_inferred";
+  auditFlag: string;
 };
 
 export type DashboardReceiptLine = {
@@ -45,7 +41,7 @@ export type DashboardReceiptLine = {
   grossAmountCents: number;
   discountCents: number;
   netAmountCents: number;
-  taxStatus: "taxable" | "non_taxable";
+  taxStatus: "taxable" | "non_taxable" | "unknown";
   categoryKey: ProductCategoryKey;
   categoryLabel: string;
   classificationStatus: ClassificationStatus;

@@ -1,7 +1,5 @@
 import {
   AUDITED_2026_SUMMARY,
-  AUDITED_CATEGORY_TOTALS_2026,
-  AUDITED_MONTHLY_TOTALS_2026,
   AUDITED_RECEIPT_ITEMS_2026,
   AUDITED_RECEIPT_TRANSACTIONS_2026,
   AUDIT_RECONCILIATION_ISSUES_2026,
@@ -33,12 +31,6 @@ const monthLabel = new Intl.DateTimeFormat("en-US", {
   month: "short",
   timeZone: "UTC",
 });
-
-const channelPresentation = {
-  warehouse: { label: "Warehouse", color: "var(--sage)" },
-  gas: { label: "Gas", color: "var(--apricot)" },
-  optical: { label: "Optical out-of-pocket", color: "var(--lilac)" },
-} as const;
 
 function assertEqual(
   actual: number,
@@ -497,14 +489,11 @@ function buildProductCategories(
       (sum, category) => sum + category.householdViewCents,
       0,
     ) + warehouseTaxCents,
-    AUDITED_2026_SUMMARY.householdFundedCents,
+    transactions.reduce(
+      (sum, transaction) => sum + transaction.householdFundedCents,
+      0,
+    ),
     "product categories plus warehouse tax to household-funded total",
-  );
-  assertEqual(
-    productCategories.find((category) => category.key === "optical_services")
-      ?.householdViewCents ?? -1,
-    5_399,
-    "optical household-funded category",
   );
 
   return {
@@ -540,14 +529,52 @@ function buildSuggestions(): readonly DashboardSuggestion[] {
   }));
 }
 
-export function buildDashboardViewData(): DashboardViewData {
-  validateSourceFacts();
+export type DashboardHistoryInput = {
+  through: string;
+  reconciliationIssueCount: number;
+  transactions: readonly DashboardTransaction[];
+  receiptLines: readonly DashboardReceiptLine[];
+  suggestions?: readonly DashboardSuggestion[];
+};
 
-  const transactions = buildTransactions();
+export function buildDashboardViewDataFromHistory(
+  input: DashboardHistoryInput,
+): DashboardViewData {
+  const transactions = [...input.transactions].sort(
+    (first, second) =>
+      second.purchasedOn.localeCompare(first.purchasedOn) ||
+      second.id.localeCompare(first.id),
+  );
   const transactionById = new Map(
     transactions.map((transaction) => [transaction.id, transaction]),
   );
-  const receiptLines = buildReceiptLines(transactionById);
+  const receiptLines = [...input.receiptLines].sort((first, second) => {
+    const firstTransaction = transactionById.get(first.transactionId);
+    const secondTransaction = transactionById.get(second.transactionId);
+    if (!firstTransaction || !secondTransaction) return 0;
+    return (
+      firstTransaction.purchasedOn.localeCompare(secondTransaction.purchasedOn) ||
+      first.transactionId.localeCompare(second.transactionId) ||
+      first.id.localeCompare(second.id)
+    );
+  });
+
+  assertUnique(
+    transactions.map((transaction) => transaction.id),
+    "dashboard transaction IDs",
+  );
+  assertUnique(
+    receiptLines.map((line) => line.id),
+    "dashboard receipt-line IDs",
+  );
+  for (const line of receiptLines) {
+    if (!transactionById.has(line.transactionId)) {
+      throw new Error(
+        `Dashboard history join failed: ${line.id} references missing transaction ${line.transactionId}`,
+      );
+    }
+  }
+
   const products = buildProducts(receiptLines, transactionById);
   const {
     productCategories,
@@ -556,56 +583,95 @@ export function buildDashboardViewData(): DashboardViewData {
     needsReviewWarehouseCents,
   } = buildProductCategories(receiptLines, transactions, transactionById);
   const latestWarehouseTransaction = transactions.find(
-    (transaction) => transaction.id === "warehouse-2026-07-18",
+    (transaction) => transaction.channel === "warehouse",
   );
 
   if (!latestWarehouseTransaction) {
-    throw new Error("The audited July 18 warehouse transaction is missing");
+    throw new Error("Dashboard history has no reconciled warehouse transaction");
   }
 
-  const warehouse = AUDITED_CATEGORY_TOTALS_2026.find(
-    (category) => category.category === "warehouse",
-  );
-  const gas = AUDITED_CATEGORY_TOTALS_2026.find(
-    (category) => category.category === "gas",
-  );
-  const optical = AUDITED_CATEGORY_TOTALS_2026.find(
-    (category) => category.category === "optical",
-  );
+  const monthsByKey = new Map<
+    string,
+    { householdFundedCents: number; transactionCount: number }
+  >();
+  for (const transaction of transactions) {
+    const key = transaction.purchasedOn.slice(0, 7);
+    const current = monthsByKey.get(key) ?? {
+      householdFundedCents: 0,
+      transactionCount: 0,
+    };
+    current.householdFundedCents += transaction.householdFundedCents;
+    current.transactionCount += 1;
+    monthsByKey.set(key, current);
+  }
+
+  const channels = ([
+    ["warehouse", "Warehouse", "var(--sage)"],
+    ["gas", "Gas", "var(--apricot)"],
+    ["optical", "Optical out-of-pocket", "var(--lilac)"],
+  ] as const).map(([key, label, color]) => {
+    const channelTransactions = transactions.filter(
+      (transaction) => transaction.channel === key,
+    );
+    return {
+      key,
+      label,
+      color,
+      householdFundedCents: channelTransactions.reduce(
+        (sum, transaction) => sum + transaction.householdFundedCents,
+        0,
+      ),
+      grossReceiptTotalCents: channelTransactions.reduce(
+        (sum, transaction) => sum + transaction.receiptTotalCents,
+        0,
+      ),
+      transactionCount: channelTransactions.length,
+    };
+  });
+  const warehouse = channels.find((channel) => channel.key === "warehouse");
+  const gas = channels.find((channel) => channel.key === "gas");
+  const optical = channels.find((channel) => channel.key === "optical");
 
   if (!warehouse || !gas || !optical) {
-    throw new Error("The audited channel summary is incomplete");
+    throw new Error("Dashboard channel summary is incomplete");
   }
 
   return {
     audit: {
-      through: AUDITED_2026_SUMMARY.through,
-      householdFundedCents: AUDITED_2026_SUMMARY.householdFundedCents,
-      grossReceiptTotalCents: AUDITED_2026_SUMMARY.grossReceiptTotalCents,
-      externalFundingCents: AUDITED_2026_SUMMARY.externalFundingCents,
-      transactionCount: AUDITED_2026_SUMMARY.transactionCount,
+      through: input.through,
+      householdFundedCents: transactions.reduce(
+        (sum, transaction) => sum + transaction.householdFundedCents,
+        0,
+      ),
+      grossReceiptTotalCents: transactions.reduce(
+        (sum, transaction) => sum + transaction.receiptTotalCents,
+        0,
+      ),
+      externalFundingCents: transactions.reduce(
+        (sum, transaction) => sum + transaction.externalFundingCents,
+        0,
+      ),
+      transactionCount: transactions.length,
       warehouseTransactionCount: warehouse.transactionCount,
       gasTransactionCount: gas.transactionCount,
       opticalTransactionCount: optical.transactionCount,
-      averageWarehouseCents: Math.round(
-        warehouse.householdFundedCents / warehouse.transactionCount,
-      ),
-      reconciliationIssueCount: AUDIT_RECONCILIATION_ISSUES_2026.length,
+      averageWarehouseCents:
+        warehouse.transactionCount === 0
+          ? 0
+          : Math.round(
+              warehouse.householdFundedCents / warehouse.transactionCount,
+            ),
+      reconciliationIssueCount: input.reconciliationIssueCount,
     },
-    months: AUDITED_MONTHLY_TOTALS_2026.map((month) => ({
-      key: month.month,
-      label: monthLabel.format(new Date(`${month.month}-01T00:00:00Z`)),
-      householdFundedCents: month.householdFundedCents,
-      transactionCount: month.transactionCount,
-    })),
-    channels: AUDITED_CATEGORY_TOTALS_2026.map((channel) => ({
-      key: channel.category,
-      label: channelPresentation[channel.category].label,
-      householdFundedCents: channel.householdFundedCents,
-      grossReceiptTotalCents: channel.grossReceiptTotalCents,
-      transactionCount: channel.transactionCount,
-      color: channelPresentation[channel.category].color,
-    })),
+    months: [...monthsByKey.entries()]
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([key, month]) => ({
+        key,
+        label: monthLabel.format(new Date(`${key}-01T00:00:00Z`)),
+        householdFundedCents: month.householdFundedCents,
+        transactionCount: month.transactionCount,
+      })),
+    channels,
     productCategories,
     warehouseTaxCents,
     classifiedWarehouseCents,
@@ -614,8 +680,25 @@ export function buildDashboardViewData(): DashboardViewData {
     receiptLines,
     recentTransactions: transactions.slice(0, 7),
     products,
-    suggestions: buildSuggestions(),
+    suggestions: input.suggestions ?? buildSuggestions(),
     suggestionPlanDate: JULY_25_PLAN_DATE,
     latestWarehouseTransaction,
   };
+}
+
+export function buildDashboardViewData(): DashboardViewData {
+  validateSourceFacts();
+
+  const transactions = buildTransactions();
+  const transactionById = new Map(
+    transactions.map((transaction) => [transaction.id, transaction]),
+  );
+  const receiptLines = buildReceiptLines(transactionById);
+  return buildDashboardViewDataFromHistory({
+    through: AUDITED_2026_SUMMARY.through,
+    reconciliationIssueCount: AUDIT_RECONCILIATION_ISSUES_2026.length,
+    transactions,
+    receiptLines,
+    suggestions: buildSuggestions(),
+  });
 }

@@ -1,98 +1,112 @@
-# vinext-starter
+# BasketSense
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+BasketSense is a private, household-first Costco companion for two people who
+plan, shop, and learn together. It helps a household arrive with a useful
+Saturday list, preserve room for good discoveries, and turn receipts into
+trustworthy spending and product insights—without turning a family ritual into
+a guilt-heavy budgeting exercise.
 
-## Prerequisites
+## What it does today
 
-- Node.js `>=22.13.0`
+- Maintains one shared mobile-friendly Saturday list for two household members.
+- Suggests recurring essentials and “check first” items using explainable
+  purchase-cadence rules.
+- Lets either spouse add, remove, check off, freeze, and undo a shopping plan.
+- Captures a frozen pre-trip snapshot so planned-versus-actual claims have
+  evidence behind them.
+- Uploads private receipt photos, supports OCR/manual correction, reconciles
+  arithmetic, and preserves raw Costco receipt descriptions.
+- Matches purchased receipt lines against frozen intent with deterministic,
+  reviewable rules.
+- Creates at most three evidence-triggered review questions after a trip.
+- Supports interactive product, transaction, category, and receipt drill-downs.
+- Offers accessible light, dark, and system theme modes.
 
-## Quick Start
+## The product loop
+
+```text
+Purchase history → proposed list → shared edits → frozen intent
+→ receipt reconciliation → planned-versus-actual comparison
+→ lightweight feedback → a better next list
+```
+
+Receipt history can suggest a replenishment window. It cannot prove an item was
+impulsive, wasteful, or a good deal. BasketSense records those outcomes only
+when the household supplies explicit feedback.
+
+## Data and correctness
+
+The interactive dashboard reads reconciled household data from Cloudflare D1.
+The audited January–July 2026 dataset remains a test oracle while this data path
+evolves: automated tests assert that the D1-derived dashboard exactly matches
+the audited dashboard before the UI uses it.
+
+Important conventions:
+
+- Money is stored as integer cents.
+- Quantity is stored in thousandths, so fractional fuel quantities remain exact.
+- A `trip` is the planning event; a `receipt_transaction` is a financial event.
+- The live list is mutable; a frozen intent snapshot is immutable evidence.
+- Receipt images live in private R2 object storage. Searchable metadata and
+  normalized line items live in D1.
+- Draft or rejected receipts never silently alter “actual” spending metrics.
+
+## Architecture
+
+```text
+React / Next App Router client
+        ↓
+Authenticated household API
+        ↓
+Cloudflare D1 (shared list, products, trips, receipts, feedback)
+        ↓
+Cloudflare R2 (private receipt images)
+```
+
+The app uses vinext, React, TypeScript, Cloudflare Worker bindings, D1/SQLite,
+R2, and Drizzle schema/migration tooling.
+
+## Run locally
+
+Requirements: Node.js 22.13 or newer.
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+Useful checks:
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm test
+npm run lint
+npm run db:generate
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+The local development runtime persists D1 and R2 emulator state under
+`.wrangler/`. That state is intentionally ignored by Git.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## Learn the codebase
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+- [Full-stack learning guide](docs/full-stack-learning-guide.md) — architecture,
+  frontend, API, receipt flow, all database tables, SQL exploration, testing,
+  deployment, and technical debt.
+- [Data model](docs/data-model.md) — why trips, receipts, list items, intent,
+  and feedback are separate records.
+- [Product backlog](docs/product-backlog.md) — the D1 dashboard migration,
+  recommendation-engine direction, and data-ownership work.
+- [Product principles](PRODUCT.md) — the household-first product contract.
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+## Privacy
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+BasketSense is intentionally private. Do not commit receipt images, local D1
+files, Cloudflare/Miniflare state, environment files, authentication headers,
+or household data. The app does not store Costco credentials or automate Costco
+sign-in.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## Project status
 
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+This is a working private household product, not a generic public shopping app.
+The next major product direction is a recommendation engine that scores the
+whole eligible product catalog conservatively, with explicit household controls
+and offline backtesting before it changes the live list.

@@ -1,3 +1,5 @@
+import type { DashboardViewData } from "../../dashboard-types";
+
 export type TripStatus = "planning" | "frozen" | "completed";
 
 export type ListItemSection =
@@ -274,6 +276,7 @@ export interface HouseholdBootstrapResponse {
   receiptTransactions: ReceiptTransactionSummary[];
   feedback: FeedbackSummary[];
   closedLoop: ClosedLoopReview | null;
+  dashboard: DashboardViewData;
 }
 
 export interface HouseholdListResponse {
