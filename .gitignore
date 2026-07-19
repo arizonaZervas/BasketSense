@@ -39,7 +39,12 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
+/output/
 /work/
+
+# Local browser QA artifacts
+/.playwright-cli/
+/.playwright-mcp/
 
 # Private household source data and local audit artifacts
 /Costco Receipts/
