@@ -40,3 +40,8 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Private household source data and local audit artifacts
+/Costco Receipts/
+/tmp/
+*.tsbuildinfo
