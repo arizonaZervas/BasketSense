@@ -235,7 +235,7 @@ export const receiptItems = sqliteTable(
     discountCents: integer("discount_cents").notNull().default(0),
     netAmountCents: integer("net_amount_cents").notNull(),
     taxStatus: text("tax_status", {
-      enum: ["taxable", "non_taxable"],
+      enum: ["taxable", "non_taxable", "unknown"],
     }).notNull(),
     normalizationStatus: text("normalization_status", {
       enum: ["receipt_abbreviation", "normalized_from_history"],
@@ -284,6 +284,9 @@ export const feedback = sqliteTable(
         "duplicate_signal",
         "waste_signal",
         "regret_signal",
+        "receipt_correction",
+        "fulfillment_reason",
+        "product_experience",
       ],
     }).notNull(),
     value: text("value").notNull(),
@@ -308,6 +311,242 @@ export const feedback = sqliteTable(
   ]
 );
 
+export const tripIntentSnapshots = sqliteTable(
+  "trip_intent_snapshots",
+  {
+    id: text("id").primaryKey(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    evidenceLevel: text("evidence_level", {
+      enum: ["pre_trip", "upload_fallback"],
+    }).notNull(),
+    estimatedTotalCents: integer("estimated_total_cents").notNull().default(0),
+    pricedItemCount: integer("priced_item_count").notNull().default(0),
+    unpricedItemCount: integer("unpriced_item_count").notNull().default(0),
+    capturedByMemberId: text("captured_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    capturedAt: text("captured_at").notNull().default(timestampDefault),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("trip_intent_snapshots_trip_unique").on(table.tripId),
+    index("trip_intent_snapshots_evidence_idx").on(table.evidenceLevel),
+  ]
+);
+
+export const tripIntentItems = sqliteTable(
+  "trip_intent_items",
+  {
+    id: text("id").primaryKey(),
+    snapshotId: text("snapshot_id")
+      .notNull()
+      .references(() => tripIntentSnapshots.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    listItemId: text("list_item_id").references(() => tripListItems.id, {
+      onDelete: "set null",
+    }),
+    productId: text("product_id").references(() => products.id, {
+      onDelete: "set null",
+    }),
+    label: text("label").notNull(),
+    section: text("section", {
+      enum: ["essentials", "suggested", "check_first", "consider"],
+    }).notNull(),
+    source: text("source", {
+      enum: ["manual", "recurring", "predicted", "consider", "in_store"],
+    }).notNull(),
+    recommendationReason: text("recommendation_reason"),
+    confidenceBps: integer("confidence_bps"),
+    included: integer("included", { mode: "boolean" }).notNull(),
+    quantityMilli: integer("quantity_milli").notNull().default(1000),
+    estimatedPriceCents: integer("estimated_price_cents"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("trip_intent_items_snapshot_list_unique").on(
+      table.snapshotId,
+      table.listItemId
+    ),
+    index("trip_intent_items_trip_sort_idx").on(table.tripId, table.sortOrder),
+    index("trip_intent_items_product_idx").on(table.productId),
+  ]
+);
+
+export const receiptUploads = sqliteTable(
+  "receipt_uploads",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    receiptTransactionId: text("receipt_transaction_id")
+      .notNull()
+      .references(() => receiptTransactions.id, { onDelete: "cascade" }),
+    storageKey: text("storage_key").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    contentType: text("content_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    status: text("status", { enum: ["stored", "replaced", "deleted"] })
+      .notNull()
+      .default("stored"),
+    uploadedByMemberId: text("uploaded_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("receipt_uploads_receipt_unique").on(
+      table.receiptTransactionId
+    ),
+    uniqueIndex("receipt_uploads_storage_key_unique").on(table.storageKey),
+    index("receipt_uploads_household_idx").on(table.householdId),
+  ]
+);
+
+export const productAliases = sqliteTable(
+  "product_aliases",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    aliasKey: text("alias_key").notNull(),
+    rawDescription: text("raw_description").notNull(),
+    normalizedDescription: text("normalized_description").notNull(),
+    costcoItemNumber: text("costco_item_number"),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    confirmationSource: text("confirmation_source", {
+      enum: ["historical", "member"],
+    }).notNull(),
+    confirmedByMemberId: text("confirmed_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("product_aliases_household_key_unique").on(
+      table.householdId,
+      table.aliasKey
+    ),
+    index("product_aliases_product_idx").on(table.productId),
+  ]
+);
+
+export const tripItemMatches = sqliteTable(
+  "trip_item_matches",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    receiptTransactionId: text("receipt_transaction_id")
+      .notNull()
+      .references(() => receiptTransactions.id, { onDelete: "cascade" }),
+    intentItemId: text("intent_item_id")
+      .notNull()
+      .references(() => tripIntentItems.id, { onDelete: "cascade" }),
+    receiptItemId: text("receipt_item_id")
+      .notNull()
+      .references(() => receiptItems.id, { onDelete: "cascade" }),
+    matchType: text("match_type", {
+      enum: [
+        "exact_item_number",
+        "exact_product",
+        "confirmed_alias",
+        "exact_name",
+        "member_confirmed",
+      ],
+    }).notNull(),
+    confidenceBps: integer("confidence_bps").notNull(),
+    resolutionSource: text("resolution_source", {
+      enum: ["system", "member"],
+    }).notNull(),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("trip_item_matches_receipt_item_unique").on(
+      table.receiptItemId
+    ),
+    uniqueIndex("trip_item_matches_intent_item_unique").on(table.intentItemId),
+    index("trip_item_matches_receipt_idx").on(table.receiptTransactionId),
+    index("trip_item_matches_trip_idx").on(table.tripId),
+  ]
+);
+
+export const reviewQuestions = sqliteTable(
+  "review_questions",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    receiptTransactionId: text("receipt_transaction_id")
+      .notNull()
+      .references(() => receiptTransactions.id, { onDelete: "cascade" }),
+    questionKey: text("question_key").notNull(),
+    purpose: text("purpose", {
+      enum: ["data_quality", "intent", "outcome", "product_experience"],
+    }).notNull(),
+    prompt: text("prompt").notNull(),
+    optionsJson: text("options_json").notNull(),
+    declaredEffect: text("declared_effect").notNull(),
+    effectTarget: text("effect_target"),
+    listItemId: text("list_item_id").references(() => tripListItems.id, {
+      onDelete: "set null",
+    }),
+    intentItemId: text("intent_item_id").references(() => tripIntentItems.id, {
+      onDelete: "set null",
+    }),
+    receiptItemId: text("receipt_item_id").references(() => receiptItems.id, {
+      onDelete: "set null",
+    }),
+    priority: integer("priority").notNull().default(100),
+    status: text("status", { enum: ["open", "answered", "dismissed"] })
+      .notNull()
+      .default("open"),
+    answerValue: text("answer_value"),
+    answerNote: text("answer_note"),
+    answeredByMemberId: text("answered_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    answeredAt: text("answered_at"),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("review_questions_receipt_key_unique").on(
+      table.receiptTransactionId,
+      table.questionKey
+    ),
+    index("review_questions_receipt_status_idx").on(
+      table.receiptTransactionId,
+      table.status,
+      table.priority
+    ),
+    index("review_questions_household_idx").on(table.householdId),
+  ]
+);
+
 export type Household = typeof households.$inferSelect;
 export type HouseholdMember = typeof householdMembers.$inferSelect;
 export type Product = typeof products.$inferSelect;
@@ -316,3 +555,9 @@ export type TripListItem = typeof tripListItems.$inferSelect;
 export type ReceiptTransaction = typeof receiptTransactions.$inferSelect;
 export type ReceiptItem = typeof receiptItems.$inferSelect;
 export type Feedback = typeof feedback.$inferSelect;
+export type TripIntentSnapshot = typeof tripIntentSnapshots.$inferSelect;
+export type TripIntentItem = typeof tripIntentItems.$inferSelect;
+export type ReceiptUpload = typeof receiptUploads.$inferSelect;
+export type ProductAlias = typeof productAliases.$inferSelect;
+export type TripItemMatch = typeof tripItemMatches.$inferSelect;
+export type ReviewQuestion = typeof reviewQuestions.$inferSelect;

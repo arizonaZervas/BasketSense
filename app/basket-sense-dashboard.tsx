@@ -17,6 +17,13 @@ import type {
   DashboardViewData,
 } from "./dashboard-types";
 import type { ProductCategoryKey } from "./product-categories";
+import {
+  ClosedLoopReview,
+  ReceiptFlowDialog,
+  ReceiptNextStepCard,
+  type ClosedLoopSnapshot,
+  type ReceiptStep,
+} from "./receipt-review-flow";
 
 type Tab = "overview" | "products" | "week" | "review";
 type TripStatus = "planning" | "frozen" | "completed";
@@ -93,6 +100,7 @@ type HouseholdSnapshot = {
   listItems: SharedListItem[];
   products: SharedProduct[];
   feedback: SharedFeedback[];
+  closedLoop?: ClosedLoopSnapshot | null;
 };
 
 type WriteRequest = {
@@ -282,10 +290,16 @@ export function BasketSenseDashboard({
     null,
   );
   const [isDataDialogOpen, setIsDataDialogOpen] = useState(false);
+  const [isReceiptFlowOpen, setIsReceiptFlowOpen] = useState(false);
+  const [receiptFlowInitialStep, setReceiptFlowInitialStep] =
+    useState<ReceiptStep>("capture");
+  const [receiptFlowScope, setReceiptFlowScope] =
+    useState<"current" | "latest">("current");
   const [toast, setToast] = useState<string | null>(null);
   const refreshPromise = useRef<Promise<void> | null>(null);
   const toastTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
+  const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
 
   const refreshHousehold = useCallback(async (quiet = false, forceFresh = false) => {
     if (refreshPromise.current) {
@@ -388,6 +402,27 @@ export function BasketSenseDashboard({
 
   const closeDataDialog = useCallback(() => {
     setIsDataDialogOpen(false);
+  }, []);
+
+  const openReceiptFlow = useCallback(
+    (step: ReceiptStep = "capture", scope: "current" | "latest" = "current") => {
+      receiptFlowReturnFocus.current = document.activeElement as HTMLElement | null;
+      setReceiptFlowInitialStep(step);
+      setReceiptFlowScope(scope);
+      setIsReceiptFlowOpen(true);
+    },
+    [],
+  );
+
+  const closeReceiptFlow = useCallback(() => {
+    setIsReceiptFlowOpen(false);
+    window.setTimeout(() => receiptFlowReturnFocus.current?.focus(), 0);
+  }, []);
+
+  const openTripReview = useCallback(() => {
+    setIsReceiptFlowOpen(false);
+    setActiveTab("review");
+    window.scrollTo({ top: 0 });
   }, []);
 
   async function performWrite(key: string, request: WriteRequest) {
@@ -550,20 +585,6 @@ export function BasketSenseDashboard({
     });
   }
 
-  function saveTripFeedback(value: string, rating: number) {
-    void performWrite("trip-feedback", {
-      method: "POST",
-      body: {
-        action: "add_feedback",
-        receiptTransactionId: viewData.latestWarehouseTransaction.id,
-        kind: "trip_enjoyment",
-        value,
-        rating,
-      },
-      successMessage: "Your trip note is now part of the shared household history",
-    });
-  }
-
   async function copyList() {
     const included = household?.listItems.filter((item) => item.included) ?? [];
     const text = included
@@ -581,13 +602,23 @@ export function BasketSenseDashboard({
     }
   }
 
-  const currentUserFeedback = household?.feedback.find(
-    (feedback) =>
-      feedback.receiptTransactionId === viewData.latestWarehouseTransaction.id &&
-      feedback.kind === "trip_enjoyment" &&
-      feedback.createdByMemberId === household.currentUser.id,
-  );
-  const openReviewCount = currentUserFeedback ? 0 : 1;
+  const closedLoop = household?.closedLoop ?? null;
+  const currentTripClosedLoop =
+    closedLoop?.receipt?.tripId === household?.currentTrip.id ? closedLoop : null;
+  const openReviewQuestions = (closedLoop?.questions ?? [])
+    .slice(0, 3)
+    .filter(
+      (question) =>
+        !["answered", "resolved", "skipped", "dismissed"].includes(
+          question.status ?? "open",
+        ),
+    ).length;
+  const receiptCheckCount = !household
+    ? 0
+    : !closedLoop?.receipt || closedLoop.comparison?.isProvisional
+      ? 1
+      : 0;
+  const openReviewCount = openReviewQuestions + receiptCheckCount;
   const members = household?.members.length ? household.members : [];
   const shownMembers = members.slice(0, 2);
   const visibleUser = household?.currentUser ?? {
@@ -729,6 +760,7 @@ export function BasketSenseDashboard({
             onToggleChecked={toggleChecked}
             onFreeze={freezeTrip}
             onCopy={copyList}
+            onOpenReceipt={(step) => openReceiptFlow(step, "current")}
           />
         ) : null}
 
@@ -765,15 +797,12 @@ export function BasketSenseDashboard({
 
         {activeTab === "review" ? (
           <ReviewTab
-            latestTransaction={viewData.latestWarehouseTransaction}
-            currentFeedback={currentUserFeedback}
-            householdFeedback={household?.feedback ?? []}
-            members={members}
+            closedLoop={closedLoop}
             connected={Boolean(household) && syncStatus !== "offline"}
-            pending={pendingWrites.has("trip-feedback")}
-            failure={failedWrites["trip-feedback"]}
-            onRetry={() => retryWrite("trip-feedback")}
-            onSave={saveTripFeedback}
+            onOpenReceipt={(step) => openReceiptFlow(step, "latest")}
+            onRefresh={async () => {
+              await refreshHousehold(true, true);
+            }}
           />
         ) : null}
       </main>
@@ -805,6 +834,21 @@ export function BasketSenseDashboard({
         />
       ) : null}
 
+      <ReceiptFlowDialog
+        open={isReceiptFlowOpen}
+        initialStep={receiptFlowInitialStep}
+        tripId={household?.currentTrip.id ?? null}
+        tripStatus={household?.currentTrip.status ?? null}
+        closedLoop={
+          receiptFlowScope === "latest" ? closedLoop : currentTripClosedLoop
+        }
+        onClose={closeReceiptFlow}
+        onRefresh={async () => {
+          await refreshHousehold(true, true);
+        }}
+        onOpenReview={openTripReview}
+      />
+
       <div className="live-region" aria-live="polite" aria-atomic="true">
         {toast ? <div className="toast">{toast}</div> : null}
       </div>
@@ -830,6 +874,7 @@ function ThisWeekTab({
   onToggleChecked,
   onFreeze,
   onCopy,
+  onOpenReceipt,
 }: {
   household: HouseholdSnapshot | null;
   syncStatus: SyncStatus;
@@ -848,6 +893,7 @@ function ThisWeekTab({
   onToggleChecked: (item: SharedListItem) => void;
   onFreeze: () => void;
   onCopy: () => void;
+  onOpenReceipt: (step?: ReceiptStep) => void;
 }) {
   const trip = household?.currentTrip;
   const items = household?.listItems ?? [];
@@ -1049,6 +1095,18 @@ function ThisWeekTab({
           </small>
         </div>
       </section>
+
+      {trip ? (
+        <ReceiptNextStepCard
+          tripStatus={trip.status}
+          closedLoop={
+            household?.closedLoop?.receipt?.tripId === trip.id
+              ? household.closedLoop
+              : null
+          }
+          onOpen={onOpenReceipt}
+        />
+      ) : null}
 
       <div className="week-layout">
         <div className="weekly-list-stack">
@@ -2363,126 +2421,29 @@ function ProductsTab({
 }
 
 function ReviewTab({
-  latestTransaction,
-  currentFeedback,
-  householdFeedback,
-  members,
+  closedLoop,
   connected,
-  pending,
-  failure,
-  onRetry,
-  onSave,
+  onOpenReceipt,
+  onRefresh,
 }: {
-  latestTransaction: DashboardViewData["latestWarehouseTransaction"];
-  currentFeedback: SharedFeedback | undefined;
-  householdFeedback: SharedFeedback[];
-  members: HouseholdMember[];
+  closedLoop: ClosedLoopSnapshot | null;
   connected: boolean;
-  pending: boolean;
-  failure: FailedWrite | undefined;
-  onRetry: () => void;
-  onSave: (value: string, rating: number) => void;
+  onOpenReceipt: (step?: ReceiptStep) => void;
+  onRefresh: () => Promise<void>;
 }) {
-  const answers = householdFeedback.filter(
-    (feedback) =>
-      feedback.receiptTransactionId === latestTransaction.id &&
-      feedback.kind === "trip_enjoyment",
-  );
-  const memberById = new Map(members.map((member) => [member.id, member]));
-  const options = [
-    { label: "Enjoyable and easy", rating: 5 },
-    { label: "Enjoyable but busy", rating: 4 },
-    { label: "Mostly neutral", rating: 3 },
-    { label: "More stressful than usual", rating: 2 },
-    { label: "Not sure yet", rating: 3 },
-  ];
-
   return (
     <div className="page review-page">
       <section className="page-heading">
-        <p className="section-label">One neutral question</p>
+        <p className="section-label">One useful closed loop</p>
         <h1>Review</h1>
-        <p>Receipts record the cart. You two provide the meaning, one minute at a time.</p>
+        <p>Check the receipt first. Then add only the household context the receipt cannot know.</p>
       </section>
-
-      <section className="notice-card gentle">
-        <span className="notice-mark" aria-hidden="true">
-          1
-        </span>
-        <p>
-          <strong>No impulse or regret label is inferred.</strong> This first question
-          records whether the Costco ritual still felt good; later questions should be
-          asked only when they can change a future decision.
-        </p>
-      </section>
-
-      <section className="review-flow">
-        <article className="review-card card">
-          <div className="review-progress">
-            <span>{formatShortDate(latestTransaction.purchasedOn)} household follow-up</span>
-            <span>{answers.length}/2 household answers</span>
-          </div>
-          <div className="review-top">
-            <div>
-              <p className="section-label">From audited receipt</p>
-              <h2>How did this Costco trip feel?</h2>
-            </div>
-            <strong className="review-amount">
-              {currency.format(latestTransaction.householdFundedCents / 100)}
-            </strong>
-          </div>
-          <EvidenceBadge label="Receipt + household answer" tone="confirmed" />
-          <p className="review-context">
-            {latestTransaction.itemCount} items · {currency.format(latestTransaction.discountCents / 100)} in discounts · no judgment attached to the amount.
-          </p>
-
-          {currentFeedback ? (
-            <div className="feedback-saved" role="status">
-              <span aria-hidden="true">✓</span>
-              <div>
-                <strong>Your answer is shared</strong>
-                <p>{currentFeedback.value}</p>
-              </div>
-            </div>
-          ) : (
-            <div className="review-options">
-              {options.map((option) => (
-                <button
-                  key={option.label}
-                  onClick={() => onSave(option.label, option.rating)}
-                  disabled={!connected || pending}
-                >
-                  {pending ? "Saving…" : option.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {!connected ? (
-            <p className="form-help">Connect the shared household before answering.</p>
-          ) : null}
-          <InlineWriteError failure={failure} onRetry={onRetry} />
-        </article>
-      </section>
-
-      {answers.length ? (
-        <section className="resolved-section">
-          <h2>Shared household responses</h2>
-          {answers.map((answer) => (
-            <div className="resolved-row" key={answer.id}>
-              <span aria-hidden="true">✓</span>
-              <div>
-                <strong>
-                  {answer.createdByMemberId
-                    ? memberById.get(answer.createdByMemberId)?.displayName ?? "Household member"
-                    : "Household member"}
-                </strong>
-                <small>{answer.value}</small>
-              </div>
-            </div>
-          ))}
-        </section>
-      ) : null}
+      <ClosedLoopReview
+        closedLoop={closedLoop}
+        connected={connected}
+        onOpenReceipt={onOpenReceipt}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }
@@ -2573,9 +2534,10 @@ function DataDialog({
           </button>
         </div>
         <p className="dialog-intro">
-          BasketSense currently stores sanitized, structured 2026 facts and the shared
-          Saturday workflow. It does not store Costco credentials or the raw source files
-          in the household database.
+          BasketSense stores structured receipt and Saturday-list data in the private
+          household database. When a photo upload succeeds, the original image is kept
+          separately in private object storage. Costco credentials are never requested or
+          stored.
         </p>
 
         <div className="data-audit-summary">
@@ -2594,21 +2556,22 @@ function DataDialog({
         </div>
 
         <div className="truth-list">
-          <h3>Stored in the shared database</h3>
+          <h3>Stored for this household</h3>
           <ul>
-            <li>Sanitized receipt totals and planning trips</li>
-            <li>Receipt line items and exact item numbers</li>
-            <li>The unified Saturday list and freeze snapshot</li>
-            <li>Household feedback with who answered</li>
+            <li>Structured receipt totals, line items, and exact item numbers in D1</li>
+            <li>The unified Saturday list and its saved pre-trip snapshot in D1</li>
+            <li>Household answers with who answered and what they update</li>
+            <li>Original receipt photos in private object storage after upload succeeds</li>
           </ul>
         </div>
 
         <div className="next-ingestion-note">
-          <strong>New weekly upload is the next ingestion step</strong>
+          <strong>Receipt reading stays reviewable</strong>
           <p>
-            Photo/PDF upload, OCR, line review, and total reconciliation are not active in
-            this screen yet. Until that review gate exists, BasketSense will not claim a
-            new receipt was understood automatically.
+            Text drafting runs on this device when the optional reader is available; the
+            receipt image is not sent to an OCR provider. You check the lines and arithmetic
+            before BasketSense treats the receipt as trusted. Paste and manual entry remain
+            available when automatic reading cannot load.
           </p>
         </div>
 

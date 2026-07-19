@@ -4,8 +4,20 @@ import {
   RECURRING_PRODUCT_HISTORIES_2026,
 } from "../../basketsense-data";
 import { buildSaturdayRecommendations } from "../../recommendation-engine";
+import {
+  matchReceiptItemsToIntent,
+  normalizeReceiptDescription,
+  reconcileReceipt,
+  type ConfirmedProductAlias,
+  type MatchableReceiptItem,
+  type ReceiptIntentItem,
+  type ReceiptIntentMatch,
+} from "../../receipt-logic";
 
 import type {
+  ClosedLoopComparison,
+  ClosedLoopReceiptItem,
+  ClosedLoopReview,
   FeedbackKind,
   FeedbackSummary,
   HouseholdBootstrapResponse,
@@ -16,6 +28,11 @@ import type {
   ListItemSource,
   ProductSummary,
   ReceiptTransactionSummary,
+  ReviewQuestionOptionSummary,
+  ReviewQuestionPurpose,
+  ReviewQuestionSummary,
+  TripIntentItemSummary,
+  TripItemMatchSummary,
   TripListItemSummary,
   TripStatus,
   TripSummary,
@@ -50,6 +67,9 @@ const FEEDBACK_KINDS = new Set<FeedbackKind>([
   "duplicate_signal",
   "waste_signal",
   "regret_signal",
+  "receipt_correction",
+  "fulfillment_reason",
+  "product_experience",
 ]);
 
 // Each entry is deliberately one SQL statement. D1 receives each entry through
@@ -228,6 +248,154 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON feedback (receipt_transaction_id)`,
   `CREATE INDEX IF NOT EXISTS feedback_receipt_item_idx
     ON feedback (receipt_item_id)`,
+  `CREATE TABLE IF NOT EXISTS trip_intent_snapshots (
+    id TEXT PRIMARY KEY NOT NULL,
+    trip_id TEXT NOT NULL,
+    evidence_level TEXT NOT NULL,
+    estimated_total_cents INTEGER NOT NULL DEFAULT 0,
+    priced_item_count INTEGER NOT NULL DEFAULT 0,
+    unpriced_item_count INTEGER NOT NULL DEFAULT 0,
+    captured_by_member_id TEXT,
+    captured_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (captured_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_intent_snapshots_trip_unique
+    ON trip_intent_snapshots (trip_id)`,
+  `CREATE INDEX IF NOT EXISTS trip_intent_snapshots_evidence_idx
+    ON trip_intent_snapshots (evidence_level)`,
+  `CREATE TABLE IF NOT EXISTS trip_intent_items (
+    id TEXT PRIMARY KEY NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    list_item_id TEXT,
+    product_id TEXT,
+    label TEXT NOT NULL,
+    section TEXT NOT NULL,
+    source TEXT NOT NULL,
+    recommendation_reason TEXT,
+    confidence_bps INTEGER,
+    included INTEGER NOT NULL,
+    quantity_milli INTEGER NOT NULL DEFAULT 1000,
+    estimated_price_cents INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (snapshot_id) REFERENCES trip_intent_snapshots(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (list_item_id) REFERENCES trip_list_items(id) ON DELETE SET NULL,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_intent_items_snapshot_list_unique
+    ON trip_intent_items (snapshot_id, list_item_id)`,
+  `CREATE INDEX IF NOT EXISTS trip_intent_items_trip_sort_idx
+    ON trip_intent_items (trip_id, sort_order)`,
+  `CREATE INDEX IF NOT EXISTS trip_intent_items_product_idx
+    ON trip_intent_items (product_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_uploads (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    receipt_transaction_id TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'stored',
+    uploaded_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE CASCADE,
+    FOREIGN KEY (uploaded_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_uploads_receipt_unique
+    ON receipt_uploads (receipt_transaction_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_uploads_storage_key_unique
+    ON receipt_uploads (storage_key)`,
+  `CREATE INDEX IF NOT EXISTS receipt_uploads_household_idx
+    ON receipt_uploads (household_id)`,
+  `CREATE TABLE IF NOT EXISTS product_aliases (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    alias_key TEXT NOT NULL,
+    raw_description TEXT NOT NULL,
+    normalized_description TEXT NOT NULL,
+    costco_item_number TEXT,
+    product_id TEXT NOT NULL,
+    confirmation_source TEXT NOT NULL,
+    confirmed_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (confirmed_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_aliases_household_key_unique
+    ON product_aliases (household_id, alias_key)`,
+  `CREATE INDEX IF NOT EXISTS product_aliases_product_idx
+    ON product_aliases (product_id)`,
+  `CREATE TABLE IF NOT EXISTS trip_item_matches (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    receipt_transaction_id TEXT NOT NULL,
+    intent_item_id TEXT NOT NULL,
+    receipt_item_id TEXT NOT NULL,
+    match_type TEXT NOT NULL,
+    confidence_bps INTEGER NOT NULL,
+    resolution_source TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE CASCADE,
+    FOREIGN KEY (intent_item_id) REFERENCES trip_intent_items(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_item_id) REFERENCES receipt_items(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_item_matches_receipt_item_unique
+    ON trip_item_matches (receipt_item_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_item_matches_intent_item_unique
+    ON trip_item_matches (intent_item_id)`,
+  `CREATE INDEX IF NOT EXISTS trip_item_matches_receipt_idx
+    ON trip_item_matches (receipt_transaction_id)`,
+  `CREATE INDEX IF NOT EXISTS trip_item_matches_trip_idx
+    ON trip_item_matches (trip_id)`,
+  `CREATE TABLE IF NOT EXISTS review_questions (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    receipt_transaction_id TEXT NOT NULL,
+    question_key TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    declared_effect TEXT NOT NULL,
+    effect_target TEXT,
+    list_item_id TEXT,
+    intent_item_id TEXT,
+    receipt_item_id TEXT,
+    priority INTEGER NOT NULL DEFAULT 100,
+    status TEXT NOT NULL DEFAULT 'open',
+    answer_value TEXT,
+    answer_note TEXT,
+    answered_by_member_id TEXT,
+    answered_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE CASCADE,
+    FOREIGN KEY (list_item_id) REFERENCES trip_list_items(id) ON DELETE SET NULL,
+    FOREIGN KEY (intent_item_id) REFERENCES trip_intent_items(id) ON DELETE SET NULL,
+    FOREIGN KEY (receipt_item_id) REFERENCES receipt_items(id) ON DELETE SET NULL,
+    FOREIGN KEY (answered_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS review_questions_receipt_key_unique
+    ON review_questions (receipt_transaction_id, question_key)`,
+  `CREATE INDEX IF NOT EXISTS review_questions_receipt_status_idx
+    ON review_questions (receipt_transaction_id, status, priority)`,
+  `CREATE INDEX IF NOT EXISTS review_questions_household_idx
+    ON review_questions (household_id)`,
 ] as const;
 
 interface AuthenticatedUser {
@@ -312,6 +480,7 @@ interface ReceiptTransactionRow {
   id: string;
   household_id: string;
   trip_id: string | null;
+  source_transaction_key: string;
   transaction_type: "warehouse" | "fuel" | "optical" | "return";
   source_type: "digital_receipt" | "fuel_receipt" | "receipt_photo";
   purchased_at: string;
@@ -325,6 +494,133 @@ interface ReceiptTransactionRow {
   external_funding_cents: number;
   audit_flag: string;
   parse_status: "needs_review" | "reconciled" | "rejected";
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReceiptItemRow {
+  id: string;
+  receipt_transaction_id: string;
+  product_id: string | null;
+  source_line_number: number;
+  costco_item_number: string | null;
+  raw_description: string;
+  quantity_milli: number;
+  unit_price_cents: number | null;
+  unit_price_mills: number | null;
+  line_subtotal_cents: number;
+  discount_cents: number;
+  net_amount_cents: number;
+  tax_status: "taxable" | "non_taxable" | "unknown";
+  normalization_status:
+    | "receipt_abbreviation"
+    | "normalized_from_history";
+  is_return: number;
+  match_confidence_bps: number | null;
+  created_at: string;
+  updated_at: string;
+  canonical_name?: string | null;
+  category?: string | null;
+}
+
+interface IntentSnapshotRow {
+  id: string;
+  trip_id: string;
+  evidence_level: "pre_trip" | "upload_fallback";
+  estimated_total_cents: number;
+  priced_item_count: number;
+  unpriced_item_count: number;
+  captured_by_member_id: string | null;
+  captured_at: string;
+  created_at: string;
+}
+
+interface IntentItemRow {
+  id: string;
+  snapshot_id: string;
+  trip_id: string;
+  list_item_id: string | null;
+  product_id: string | null;
+  label: string;
+  section: ListItemSection;
+  source: ListItemSource;
+  recommendation_reason: string | null;
+  confidence_bps: number | null;
+  included: number;
+  quantity_milli: number;
+  estimated_price_cents: number | null;
+  sort_order: number;
+  created_at: string;
+  costco_item_number?: string | null;
+  product_category?: string | null;
+}
+
+interface ProductAliasRow {
+  id: string;
+  household_id: string;
+  alias_key: string;
+  raw_description: string;
+  normalized_description: string;
+  costco_item_number: string | null;
+  product_id: string;
+  confirmation_source: "historical" | "member";
+}
+
+interface TripItemMatchRow {
+  id: string;
+  household_id: string;
+  trip_id: string;
+  receipt_transaction_id: string;
+  intent_item_id: string;
+  receipt_item_id: string;
+  match_type:
+    | "exact_item_number"
+    | "exact_product"
+    | "confirmed_alias"
+    | "exact_name"
+    | "member_confirmed";
+  confidence_bps: number;
+  resolution_source: "system" | "member";
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReviewQuestionRow {
+  id: string;
+  household_id: string;
+  trip_id: string;
+  receipt_transaction_id: string;
+  question_key: string;
+  purpose: ReviewQuestionPurpose;
+  prompt: string;
+  options_json: string;
+  declared_effect: string;
+  effect_target: string | null;
+  list_item_id: string | null;
+  intent_item_id: string | null;
+  receipt_item_id: string | null;
+  priority: number;
+  status: "open" | "answered" | "dismissed";
+  answer_value: string | null;
+  answer_note: string | null;
+  answered_by_member_id: string | null;
+  answered_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ReceiptUploadRow {
+  id: string;
+  household_id: string;
+  receipt_transaction_id: string;
+  storage_key: string;
+  original_filename: string;
+  content_type: string;
+  byte_size: number;
+  status: "stored" | "replaced" | "deleted";
+  uploaded_by_member_id: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface FeedbackRow {
@@ -674,6 +970,15 @@ function nextSaturday(timeZone: string) {
   return localDate.toISOString().slice(0, 10);
 }
 
+function saturdayAfter(dateValue: string) {
+  const date = new Date(`${dateValue}T12:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) {
+    throw new ApiError(400, "scheduled date is invalid");
+  }
+  date.setUTCDate(date.getUTCDate() + 7);
+  return date.toISOString().slice(0, 10);
+}
+
 function requiredString(
   value: unknown,
   field: string,
@@ -821,33 +1126,62 @@ async function bootstrapHousehold(
 
   await seedAuditedHistory(db, household.id);
 
-  const scheduledFor = nextSaturday(household.time_zone);
-  await db
-    .prepare(
-      `INSERT INTO trips (
-        id, household_id, scheduled_for, status, created_by_member_id,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, 'planning', ?, ?, ?)
-      ON CONFLICT(household_id, scheduled_for) DO NOTHING`
-    )
-    .bind(
-      crypto.randomUUID(),
-      household.id,
-      scheduledFor,
-      member.id,
-      now,
-      now
-    )
-    .run();
-
-  const currentTrip = await db
+  let currentTrip = await db
     .prepare(
       `SELECT * FROM trips
-       WHERE household_id = ? AND scheduled_for = ?
+       WHERE household_id = ? AND status IN ('planning', 'frozen')
+       ORDER BY scheduled_for ASC, created_at ASC
        LIMIT 1`
     )
-    .bind(household.id, scheduledFor)
+    .bind(household.id)
     .first<TripRow>();
+
+  if (!currentTrip) {
+    let scheduledFor = nextSaturday(household.time_zone);
+    const latestCompleted = await db
+      .prepare(
+        `SELECT scheduled_for FROM trips
+         WHERE household_id = ? AND status = 'completed'
+         ORDER BY scheduled_for DESC
+         LIMIT 1`
+      )
+      .bind(household.id)
+      .first<{ scheduled_for: string }>();
+    if (
+      latestCompleted?.scheduled_for &&
+      latestCompleted.scheduled_for >= scheduledFor
+    ) {
+      scheduledFor = saturdayAfter(latestCompleted.scheduled_for);
+    }
+
+    await db
+      .prepare(
+        `INSERT INTO trips (
+          id, household_id, scheduled_for, status, created_by_member_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, 'planning', ?, ?, ?)
+        ON CONFLICT(household_id, scheduled_for) DO NOTHING`
+      )
+      .bind(
+        crypto.randomUUID(),
+        household.id,
+        scheduledFor,
+        member.id,
+        now,
+        now
+      )
+      .run();
+
+    currentTrip = await db
+      .prepare(
+        `SELECT * FROM trips
+         WHERE household_id = ? AND scheduled_for = ?
+           AND status IN ('planning', 'frozen')
+         LIMIT 1`
+      )
+      .bind(household.id, scheduledFor)
+      .first<TripRow>();
+  }
 
   if (!currentTrip) {
     throw new ApiError(500, "Unable to initialize the Saturday trip");
@@ -1036,6 +1370,7 @@ async function readHouseholdState(
     products: products.map(productSummary),
     receiptTransactions: receipts.map(receiptSummary),
     feedback: feedbackRows.map(feedbackSummary),
+    closedLoop: await readClosedLoopReview(db, context.household.id),
   };
 }
 
@@ -1344,6 +1679,113 @@ async function setListItemBoolean(
   return json({ item: listItemSummary(updated) });
 }
 
+async function ensureIntentSnapshot(
+  db: D1Database,
+  context: HouseholdContext,
+  trip: TripRow,
+  evidenceLevel: "pre_trip" | "upload_fallback"
+) {
+  let snapshot = await db
+    .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+    .bind(trip.id)
+    .first<IntentSnapshotRow>();
+
+  const listItems = await db
+    .prepare(
+      `SELECT * FROM trip_list_items
+       WHERE trip_id = ?
+       ORDER BY sort_order ASC, created_at ASC`
+    )
+    .bind(trip.id)
+    .all<ListItemRow>();
+
+  if (!snapshot) {
+    const includedItems = listItems.results.filter((item) =>
+      trip.status === "planning"
+        ? Boolean(item.included)
+        : Boolean(item.included_at_freeze ?? item.included)
+    );
+    const priced = includedItems.filter(
+      (item) => item.estimated_price_cents !== null
+    );
+    const estimatedTotalCents = priced.reduce(
+      (sum, item) =>
+        sum +
+        Math.round(
+          ((item.estimated_price_cents ?? 0) * item.quantity_milli) / 1000
+        ),
+      0
+    );
+    const snapshotId = crypto.randomUUID();
+    const now = nowIso();
+    await db
+      .prepare(
+        `INSERT INTO trip_intent_snapshots (
+          id, trip_id, evidence_level, estimated_total_cents,
+          priced_item_count, unpriced_item_count, captured_by_member_id,
+          captured_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(trip_id) DO NOTHING`
+      )
+      .bind(
+        snapshotId,
+        trip.id,
+        evidenceLevel,
+        estimatedTotalCents,
+        priced.length,
+        includedItems.length - priced.length,
+        context.member.id,
+        now,
+        now
+      )
+      .run();
+    snapshot = await db
+      .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+      .bind(trip.id)
+      .first<IntentSnapshotRow>();
+  }
+
+  if (!snapshot) {
+    throw new ApiError(500, "Unable to preserve the saved trip plan");
+  }
+
+  const now = nowIso();
+  const statements = listItems.results.map((item) => {
+    const included =
+      trip.status === "planning"
+        ? item.included
+        : (item.included_at_freeze ?? item.included);
+    return db
+      .prepare(
+        `INSERT INTO trip_intent_items (
+          id, snapshot_id, trip_id, list_item_id, product_id, label,
+          section, source, recommendation_reason, confidence_bps, included,
+          quantity_milli, estimated_price_cents, sort_order, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(snapshot_id, list_item_id) DO NOTHING`
+      )
+      .bind(
+        crypto.randomUUID(),
+        snapshot.id,
+        trip.id,
+        item.id,
+        item.product_id,
+        item.label,
+        item.section,
+        item.source,
+        item.recommendation_reason,
+        item.confidence_bps,
+        included,
+        item.quantity_milli,
+        item.estimated_price_cents,
+        item.sort_order,
+        now
+      );
+  });
+  await runPreparedInChunks(db, statements);
+  return snapshot;
+}
+
 async function freezeTrip(
   db: D1Database,
   context: HouseholdContext,
@@ -1420,6 +1862,13 @@ async function freezeTrip(
     ]);
   }
 
+  const snapshotTrip = await authorizedTrip(
+    db,
+    context.household.id,
+    trip.id
+  );
+  await ensureIntentSnapshot(db, context, snapshotTrip, "pre_trip");
+
   const [updatedTrip, itemsResult] = await Promise.all([
     authorizedTrip(db, context.household.id, trip.id),
     db
@@ -1436,6 +1885,1815 @@ async function freezeTrip(
     trip: tripSummary(updatedTrip),
     listItems: itemsResult.results.map(listItemSummary),
   });
+}
+
+interface ValidatedDraftItem {
+  sourceLineNumber: number;
+  costcoItemNumber: string | null;
+  rawDescription: string;
+  quantityMilli: number;
+  unitPriceCents: number | null;
+  lineSubtotalCents: number;
+  discountCents: number;
+  netAmountCents: number;
+  taxStatus: "taxable" | "non_taxable" | "unknown";
+  isReturn: boolean;
+}
+
+function requiredInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number
+) {
+  const parsed = optionalInteger(value, field, minimum, maximum);
+  if (parsed === null) throw new ApiError(400, `${field} is required`);
+  return parsed;
+}
+
+function requiredDateTime(value: unknown, field: string) {
+  const raw = requiredString(value, field, 64);
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new ApiError(400, `${field} must be a valid date`);
+  }
+  return date.toISOString();
+}
+
+function validateDraftItems(value: unknown): ValidatedDraftItem[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ApiError(400, "items must contain at least one receipt line");
+  }
+  if (value.length > 200) {
+    throw new ApiError(400, "items cannot contain more than 200 lines");
+  }
+
+  const seenLines = new Set<number>();
+  return value.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ApiError(400, `items[${index}] must be an object`);
+    }
+    const item = entry as Record<string, unknown>;
+    const lineValue = item.sourceLineNumber ?? item.lineNumber;
+    const sourceLineNumber = requiredInteger(
+      lineValue,
+      `items[${index}].sourceLineNumber`,
+      1,
+      10_000
+    );
+    if (seenLines.has(sourceLineNumber)) {
+      throw new ApiError(400, "Receipt line numbers must be unique");
+    }
+    seenLines.add(sourceLineNumber);
+
+    const rawDescription = requiredString(
+      item.rawDescription,
+      `items[${index}].rawDescription`,
+      180
+    );
+    const costcoItemNumber = optionalId(
+      item.costcoItemNumber,
+      `items[${index}].costcoItemNumber`
+    );
+    const quantityMilli =
+      optionalInteger(
+        item.quantityMilli,
+        `items[${index}].quantityMilli`,
+        1,
+        1_000_000
+      ) ?? 1000;
+    const unitPriceCents = optionalInteger(
+      item.unitPriceCents,
+      `items[${index}].unitPriceCents`,
+      -10_000_000,
+      10_000_000
+    );
+    const lineSubtotalCents = requiredInteger(
+      item.lineSubtotalCents,
+      `items[${index}].lineSubtotalCents`,
+      -10_000_000,
+      10_000_000
+    );
+    const discountCents =
+      optionalInteger(
+        item.discountCents,
+        `items[${index}].discountCents`,
+        0,
+        10_000_000
+      ) ?? 0;
+    const netAmountCents =
+      optionalInteger(
+        item.netAmountCents,
+        `items[${index}].netAmountCents`,
+        -10_000_000,
+        10_000_000
+      ) ?? lineSubtotalCents - discountCents;
+    if (Math.abs(netAmountCents - (lineSubtotalCents - discountCents)) > 5) {
+      throw new ApiError(
+        400,
+        `items[${index}] net amount does not match subtotal minus discount`
+      );
+    }
+    const taxStatus =
+      item.taxStatus === "taxable" || item.taxStatus === "non_taxable"
+        ? item.taxStatus
+        : "unknown";
+
+    return {
+      sourceLineNumber,
+      costcoItemNumber,
+      rawDescription,
+      quantityMilli,
+      unitPriceCents,
+      lineSubtotalCents,
+      discountCents,
+      netAmountCents,
+      taxStatus,
+      isReturn: lineSubtotalCents < 0 && discountCents === 0,
+    };
+  });
+}
+
+function aliasKeyFor(
+  costcoItemNumber: string | null,
+  normalizedDescription: string
+) {
+  return costcoItemNumber
+    ? `item:${costcoItemNumber}`
+    : `description:${normalizedDescription}`;
+}
+
+async function resolveDraftProducts(
+  db: D1Database,
+  householdId: string,
+  items: ValidatedDraftItem[]
+) {
+  const [productsResult, aliasesResult] = await Promise.all([
+    db
+      .prepare(`SELECT * FROM products WHERE household_id = ? AND active = 1`)
+      .bind(householdId)
+      .all<ProductRow>(),
+    db
+      .prepare(`SELECT * FROM product_aliases WHERE household_id = ?`)
+      .bind(householdId)
+      .all<ProductAliasRow>(),
+  ]);
+  const productsByNumber = new Map(
+    productsResult.results
+      .filter((product) => product.costco_item_number)
+      .map((product) => [product.costco_item_number as string, product])
+  );
+  const productsById = new Map(
+    productsResult.results.map((product) => [product.id, product])
+  );
+  const productsByName = new Map(
+    productsResult.results.map((product) => [
+      normalizeReceiptDescription(product.canonical_name),
+      product,
+    ])
+  );
+  const aliasesByKey = new Map(
+    aliasesResult.results.map((alias) => [alias.alias_key, alias])
+  );
+
+  return items.map((item) => {
+    const normalized = normalizeReceiptDescription(item.rawDescription);
+    const numbered = item.costcoItemNumber
+      ? productsByNumber.get(item.costcoItemNumber)
+      : undefined;
+    if (numbered) {
+      return { item, product: numbered, confidenceBps: 10_000 };
+    }
+    const alias = aliasesByKey.get(
+      aliasKeyFor(item.costcoItemNumber, normalized)
+    );
+    const aliasedProduct = alias ? productsById.get(alias.product_id) : null;
+    if (aliasedProduct) {
+      return { item, product: aliasedProduct, confidenceBps: 9_900 };
+    }
+    const named = productsByName.get(normalized);
+    if (named) {
+      return { item, product: named, confidenceBps: 9_400 };
+    }
+    return { item, product: null, confidenceBps: 0 };
+  });
+}
+
+async function authorizedReceipt(
+  db: D1Database,
+  householdId: string,
+  receiptId: string
+) {
+  const receipt = await db
+    .prepare(
+      `SELECT * FROM receipt_transactions
+       WHERE id = ? AND household_id = ? LIMIT 1`
+    )
+    .bind(receiptId, householdId)
+    .first<ReceiptTransactionRow>();
+  if (!receipt) throw new ApiError(404, "Receipt transaction not found");
+  return receipt;
+}
+
+function receiptItemSummary(row: ReceiptItemRow): ClosedLoopReceiptItem {
+  return {
+    id: row.id,
+    sourceLineNumber: row.source_line_number,
+    costcoItemNumber: row.costco_item_number,
+    rawDescription: row.raw_description,
+    productId: row.product_id,
+    canonicalName: row.canonical_name ?? null,
+    category: row.category ?? null,
+    quantityMilli: row.quantity_milli,
+    unitPriceCents: row.unit_price_cents,
+    lineSubtotalCents: row.line_subtotal_cents,
+    discountCents: row.discount_cents,
+    netAmountCents: row.net_amount_cents,
+    taxStatus: row.tax_status,
+    matchConfidenceBps: row.match_confidence_bps,
+  };
+}
+
+function intentItemSummary(row: IntentItemRow): TripIntentItemSummary {
+  return {
+    id: row.id,
+    snapshotId: row.snapshot_id,
+    listItemId: row.list_item_id,
+    productId: row.product_id,
+    costcoItemNumber: row.costco_item_number ?? null,
+    label: row.label,
+    section: row.section,
+    source: row.source,
+    recommendationReason: row.recommendation_reason,
+    confidenceBps: row.confidence_bps,
+    included: Boolean(row.included),
+    quantityMilli: row.quantity_milli,
+    estimatedPriceCents: row.estimated_price_cents,
+    sortOrder: row.sort_order,
+  };
+}
+
+function matchSummary(row: TripItemMatchRow): TripItemMatchSummary {
+  return {
+    id: row.id,
+    intentItemId: row.intent_item_id,
+    receiptItemId: row.receipt_item_id,
+    matchType: row.match_type,
+    confidenceBps: row.confidence_bps,
+    resolutionSource: row.resolution_source,
+  };
+}
+
+function safeQuestionOptions(value: string): ReviewQuestionOptionSummary[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (option): option is Record<string, unknown> =>
+          Boolean(option) && typeof option === "object" && !Array.isArray(option)
+      )
+      .map((option) => ({
+        value: typeof option.value === "string" ? option.value : "",
+        label: typeof option.label === "string" ? option.label : "",
+        effect: typeof option.effect === "string" ? option.effect : "",
+      }))
+      .filter((option) => option.value && option.label && option.effect);
+  } catch {
+    return [];
+  }
+}
+
+function questionSummary(row: ReviewQuestionRow): ReviewQuestionSummary {
+  return {
+    id: row.id,
+    purpose: row.purpose,
+    prompt: row.prompt,
+    options: safeQuestionOptions(row.options_json),
+    status: row.status,
+    selectedValue: row.answer_value,
+    effectTarget: row.effect_target,
+    declaredEffect: row.declared_effect,
+    listItemId: row.list_item_id,
+    intentItemId: row.intent_item_id,
+    receiptItemId: row.receipt_item_id,
+    answeredAt: row.answered_at,
+  };
+}
+
+function toLogicIntent(row: IntentItemRow): ReceiptIntentItem {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    costcoItemNumber: row.costco_item_number ?? null,
+    frozenLabel: row.label,
+    section: row.section,
+    source: row.source,
+    includedAtFreeze: Boolean(row.included),
+    quantityMilli: row.quantity_milli,
+    estimatedPriceCents: row.estimated_price_cents,
+  };
+}
+
+function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    costcoItemNumber: row.costco_item_number,
+    rawDescription: row.raw_description,
+    canonicalName: row.canonical_name ?? null,
+    quantityMilli: row.quantity_milli,
+    lineSubtotalCents: row.line_subtotal_cents,
+    discountCents: row.discount_cents,
+    netAmountCents: row.net_amount_cents,
+    isReturn: Boolean(row.is_return),
+    parseConfidenceBps:
+      row.product_id === null ? 0 : (row.match_confidence_bps ?? 9_000),
+  };
+}
+
+function buildClosedLoopComparison(
+  receipt: ReceiptTransactionRow,
+  snapshot: IntentSnapshotRow,
+  intentItems: IntentItemRow[],
+  receiptItems: ReceiptItemRow[],
+  matches: TripItemMatchRow[],
+  possibleSubstitutions: ReceiptIntentMatch[],
+  arithmetic: ReturnType<typeof reconcileReceipt>
+): ClosedLoopComparison {
+  const intentById = new Map(intentItems.map((item) => [item.id, item]));
+  const receiptById = new Map(receiptItems.map((item) => [item.id, item]));
+  const matchedIntentIds = new Set(matches.map((match) => match.intent_item_id));
+  const matchedReceiptIds = new Set(
+    matches.map((match) => match.receipt_item_id)
+  );
+  let matchedVarianceCents = 0;
+  let unpricedPlannedActualCents = 0;
+  let additionsCents = 0;
+  let skippedEstimateCents = 0;
+  let unresolvedCents = 0;
+  const matched: ClosedLoopComparison["buckets"]["matched"] = [];
+  const unpricedPlanned: ClosedLoopComparison["buckets"]["unpricedPlanned"] = [];
+
+  for (const match of matches) {
+    const intent = intentById.get(match.intent_item_id);
+    const item = receiptById.get(match.receipt_item_id);
+    if (!intent || !item) continue;
+    if (!Boolean(intent.included)) {
+      additionsCents += item.line_subtotal_cents;
+      continue;
+    }
+    if (intent.estimated_price_cents === null) {
+      unpricedPlannedActualCents += item.line_subtotal_cents;
+      unpricedPlanned.push({
+        intentItemId: intent.id,
+        receiptItemId: item.id,
+      });
+      continue;
+    }
+    const estimate = Math.round(
+      (intent.estimated_price_cents * intent.quantity_milli) / 1000
+    );
+    matchedVarianceCents += item.line_subtotal_cents - estimate;
+    matched.push({ intentItemId: intent.id, receiptItemId: item.id });
+  }
+
+  const skippedPlanned = intentItems
+    .filter((item) => Boolean(item.included) && !matchedIntentIds.has(item.id))
+    .map((item) => {
+      if (item.estimated_price_cents !== null) {
+        skippedEstimateCents += Math.round(
+          (item.estimated_price_cents * item.quantity_milli) / 1000
+        );
+      }
+      return { intentItemId: item.id };
+    });
+  const receiptOnly: Array<{ receiptItemId: string }> = [];
+  const unresolved: Array<{ receiptItemId: string }> = [];
+  for (const item of receiptItems) {
+    if (matchedReceiptIds.has(item.id)) continue;
+    if (!item.product_id || item.match_confidence_bps === 0) {
+      unresolvedCents += item.line_subtotal_cents;
+      unresolved.push({ receiptItemId: item.id });
+    } else {
+      additionsCents += item.line_subtotal_cents;
+      receiptOnly.push({ receiptItemId: item.id });
+    }
+  }
+
+  return {
+    isProvisional:
+      receipt.parse_status !== "reconciled" || unresolved.length > 0,
+    arithmetic: {
+      isReconciled: arithmetic.isReconciled,
+      itemNetCents: arithmetic.itemNetCents,
+      subtotalDeltaCents: arithmetic.subtotalDeltaCents,
+      totalDeltaCents: arithmetic.totalDeltaCents,
+    },
+    intentEvidence: snapshot.evidence_level,
+    frozenEstimateCents: snapshot.estimated_total_cents,
+    pricedIntentItemCount: snapshot.priced_item_count,
+    unpricedIntentItemCount: snapshot.unpriced_item_count,
+    actualMerchandiseCents: receipt.subtotal_cents,
+    actualTotalCents: receipt.total_cents,
+    matchedVarianceCents,
+    unpricedPlannedActualCents,
+    additionsCents,
+    skippedEstimateCents,
+    discountsCents: receipt.discount_cents,
+    taxCents: receipt.tax_cents,
+    unresolvedCents,
+    buckets: {
+      matched,
+      unpricedPlanned,
+      skippedPlanned,
+      receiptOnly,
+      unresolved,
+      possibleSubstitutions: possibleSubstitutions.map((candidate) => ({
+        intentItemId: candidate.intentItemId,
+        receiptItemId: candidate.receiptItemId,
+      })),
+    },
+  };
+}
+
+async function matchingInputs(
+  db: D1Database,
+  householdId: string,
+  tripId: string,
+  receiptId: string
+) {
+  const [intentResult, receiptResult, aliasResult] = await Promise.all([
+    db
+      .prepare(
+        `SELECT trip_intent_items.*, products.costco_item_number,
+                products.category AS product_category
+         FROM trip_intent_items
+         LEFT JOIN products ON products.id = trip_intent_items.product_id
+         WHERE trip_intent_items.trip_id = ?
+         ORDER BY trip_intent_items.sort_order ASC`
+      )
+      .bind(tripId)
+      .all<IntentItemRow>(),
+    db
+      .prepare(
+        `SELECT receipt_items.*, products.canonical_name, products.category
+         FROM receipt_items
+         LEFT JOIN products ON products.id = receipt_items.product_id
+         WHERE receipt_items.receipt_transaction_id = ?
+         ORDER BY receipt_items.source_line_number ASC`
+      )
+      .bind(receiptId)
+      .all<ReceiptItemRow>(),
+    db
+      .prepare(`SELECT * FROM product_aliases WHERE household_id = ?`)
+      .bind(householdId)
+      .all<ProductAliasRow>(),
+  ]);
+  const aliases: ConfirmedProductAlias[] = aliasResult.results.map((alias) => ({
+    normalizedDescription: alias.normalized_description,
+    productId: alias.product_id,
+    costcoItemNumber: alias.costco_item_number,
+    confirmed: true,
+  }));
+  return {
+    intentRows: intentResult.results,
+    receiptRows: receiptResult.results,
+    aliases,
+  };
+}
+
+async function rebuildTripItemMatches(
+  db: D1Database,
+  householdId: string,
+  tripId: string,
+  receiptId: string
+) {
+  const inputs = await matchingInputs(db, householdId, tripId, receiptId);
+  const manualMatches = await db
+    .prepare(
+      `SELECT * FROM trip_item_matches
+       WHERE receipt_transaction_id = ? AND resolution_source = 'member'`
+    )
+    .bind(receiptId)
+    .all<TripItemMatchRow>();
+  const manualIntentIds = new Set(
+    manualMatches.results.map((match) => match.intent_item_id)
+  );
+  const manualReceiptIds = new Set(
+    manualMatches.results.map((match) => match.receipt_item_id)
+  );
+  const matching = matchReceiptItemsToIntent({
+    intentItems: inputs.intentRows.map(toLogicIntent),
+    receiptItems: inputs.receiptRows.map(toLogicReceipt),
+    aliases: inputs.aliases,
+  });
+  const automatic = matching.matches.filter(
+    (match) =>
+      match.status === "auto_matched" &&
+      !manualIntentIds.has(match.intentItemId) &&
+      !manualReceiptIds.has(match.receiptItemId)
+  );
+  const candidates = matching.matches.filter(
+    (match) =>
+      match.status === "candidate" &&
+      !manualIntentIds.has(match.intentItemId) &&
+      !manualReceiptIds.has(match.receiptItemId)
+  );
+  await db
+    .prepare(
+      `DELETE FROM trip_item_matches
+       WHERE receipt_transaction_id = ? AND resolution_source = 'system'`
+    )
+    .bind(receiptId)
+    .run();
+
+  const now = nowIso();
+  const statements = automatic.map((match) => {
+    const matchType =
+      match.reason === "normalized_exact"
+        ? "exact_name"
+        : match.reason === "fuzzy_candidate"
+          ? "exact_name"
+          : match.reason;
+    return db
+      .prepare(
+        `INSERT INTO trip_item_matches (
+          id, household_id, trip_id, receipt_transaction_id,
+          intent_item_id, receipt_item_id, match_type, confidence_bps,
+          resolution_source, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system', ?, ?)
+        ON CONFLICT(receipt_item_id) DO NOTHING`
+      )
+      .bind(
+        crypto.randomUUID(),
+        householdId,
+        tripId,
+        receiptId,
+        match.intentItemId,
+        match.receiptItemId,
+        matchType,
+        match.confidenceBps,
+        now,
+        now
+      );
+  });
+  await runPreparedInChunks(db, statements);
+  const persisted = await db
+    .prepare(
+      `SELECT * FROM trip_item_matches
+       WHERE receipt_transaction_id = ?
+       ORDER BY created_at ASC`
+    )
+    .bind(receiptId)
+    .all<TripItemMatchRow>();
+  return { ...inputs, matches: persisted.results, candidates };
+}
+
+interface QuestionCandidateInput {
+  key: string;
+  purpose: ReviewQuestionPurpose;
+  prompt: string;
+  options: ReviewQuestionOptionSummary[];
+  declaredEffect: string;
+  effectTarget: string;
+  intentItemId?: string;
+  listItemId?: string | null;
+  receiptItemId?: string;
+  priority: number;
+}
+
+function moneyLabel(cents: number) {
+  return `$${(Math.abs(cents) / 100).toFixed(2)}`;
+}
+
+async function rebuildReviewQuestions(
+  db: D1Database,
+  householdId: string,
+  receipt: ReceiptTransactionRow,
+  comparison: ClosedLoopComparison,
+  intentItems: IntentItemRow[],
+  receiptItems: ReceiptItemRow[],
+  persistedMatches: TripItemMatchRow[],
+  possibleSubstitutions: ReceiptIntentMatch[]
+) {
+  if (!receipt.trip_id) return;
+  await db
+    .prepare(
+      `DELETE FROM review_questions
+       WHERE receipt_transaction_id = ? AND status = 'open'`
+    )
+    .bind(receipt.id)
+    .run();
+
+  const candidates: QuestionCandidateInput[] = [];
+  const receiptById = new Map(receiptItems.map((item) => [item.id, item]));
+  const intentById = new Map(intentItems.map((item) => [item.id, item]));
+  const tenPercentThreshold = Math.round(
+    Math.abs(receipt.total_cents) * 0.1
+  );
+  const materialThreshold =
+    tenPercentThreshold > 0 ? Math.min(1500, tenPercentThreshold) : 1500;
+  const materialUnresolved = comparison.buckets.unresolved
+    .map((entry) => receiptById.get(entry.receiptItemId))
+    .filter((item): item is ReceiptItemRow => Boolean(item))
+    .filter((item) => Math.abs(item.net_amount_cents) >= materialThreshold)
+    .sort(
+      (left, right) =>
+        Math.abs(right.net_amount_cents) - Math.abs(left.net_amount_cents)
+    )[0];
+  if (materialUnresolved) {
+    candidates.push({
+      key: `verify-line:${materialUnresolved.id}`,
+      purpose: "data_quality",
+      prompt: `We read “${materialUnresolved.raw_description}” as ${moneyLabel(
+        materialUnresolved.net_amount_cents
+      )}, but could not identify the product. Is the receipt wording usable?`,
+      options: [
+        {
+          value: "keep_as_written",
+          label: "Yes, keep it",
+          effect: "Creates a household product using this wording and resolves the line.",
+        },
+        {
+          value: "correct_line",
+          label: "I’ll correct it",
+          effect: "Keeps the receipt provisional until the line is corrected.",
+        },
+        {
+          value: "leave_unresolved",
+          label: "Not sure yet",
+          effect: "Keeps this amount visibly unresolved.",
+        },
+      ],
+      declaredEffect: "Updates receipt product resolution or keeps it provisional",
+      effectTarget: "receipt_record",
+      receiptItemId: materialUnresolved.id,
+      priority: 10,
+    });
+  }
+
+  const matchedIntentIds = new Set(
+    persistedMatches.map((match) => match.intent_item_id)
+  );
+  const missingEssentials = intentItems
+    .filter(
+      (item) =>
+        Boolean(item.included) &&
+        item.section === "essentials" &&
+        !matchedIntentIds.has(item.id)
+    )
+    .sort((left, right) => {
+      const leftEstimate =
+        left.estimated_price_cents === null
+          ? 0
+          : Math.round(
+              (left.estimated_price_cents * left.quantity_milli) / 1000
+            );
+      const rightEstimate =
+        right.estimated_price_cents === null
+          ? 0
+          : Math.round(
+              (right.estimated_price_cents * right.quantity_milli) / 1000
+            );
+      return rightEstimate - leftEstimate || left.label.localeCompare(right.label);
+    });
+  const candidateSubstitution = possibleSubstitutions
+    .filter((candidate) => {
+      const intent = intentById.get(candidate.intentItemId);
+      const item = receiptById.get(candidate.receiptItemId);
+      if (!intent || !item || !missingEssentials.includes(intent)) return false;
+      const sameKnownCategory = Boolean(
+        intent.product_category &&
+          item.category &&
+          intent.product_category === item.category
+      );
+      return sameKnownCategory || candidate.confidenceBps >= 8_500;
+    })
+    .sort((left, right) => right.confidenceBps - left.confidenceBps)[0];
+
+  if (candidateSubstitution) {
+    const intent = intentById.get(candidateSubstitution.intentItemId)!;
+    const item = receiptById.get(candidateSubstitution.receiptItemId)!;
+    candidates.push({
+      key: `possible-substitution:${intent.id}:${item.id}`,
+      purpose: "intent",
+      prompt: `Did “${item.canonical_name ?? item.raw_description}” replace ${intent.label} on this trip?`,
+      options: [
+        {
+          value: "yes_substitution",
+          label: "Yes",
+          effect: "Confirms the receipt-to-plan match for this trip.",
+        },
+        {
+          value: "separate_purchase",
+          label: "No, separate item",
+          effect: "Keeps one item skipped and the other not on the saved list.",
+        },
+        {
+          value: "not_sure",
+          label: "Not sure",
+          effect: "Leaves the possible match unresolved without changing future suggestions.",
+        },
+      ],
+      declaredEffect: "Confirms or rejects a possible receipt-to-plan match",
+      effectTarget: "receipt_match",
+      intentItemId: intent.id,
+      listItemId: intent.list_item_id,
+      receiptItemId: item.id,
+      priority: 20,
+    });
+  } else if (missingEssentials[0]) {
+    const intent = missingEssentials[0];
+    candidates.push({
+      key: `missing-essential:${intent.id}`,
+      purpose: "intent",
+      prompt: `We could not find ${intent.label} on the receipt. Should it stay in next Saturday’s plan?`,
+      options: [
+        {
+          value: "still_need_it",
+          label: "Yes, carry it forward",
+          effect: "Adds it to the next planning trip.",
+        },
+        {
+          value: "not_needed",
+          label: "No, not needed",
+          effect: "Records a one-trip exception without changing the product permanently.",
+        },
+        {
+          value: "receipt_needs_fix",
+          label: "It is on the receipt",
+          effect: "Keeps the match unresolved until the receipt line is corrected.",
+        },
+      ],
+      declaredEffect: "Carries the item forward or records why it was not matched",
+      effectTarget: "next_saturday_list",
+      intentItemId: intent.id,
+      listItemId: intent.list_item_id,
+      priority: 20,
+    });
+  }
+
+  const matchedReceiptIds = new Set(
+    persistedMatches.map((match) => match.receipt_item_id)
+  );
+  const largestAddition = receiptItems
+    .filter(
+      (item) =>
+        !matchedReceiptIds.has(item.id) &&
+        Boolean(item.product_id) &&
+        !item.is_return &&
+        Math.abs(item.net_amount_cents) >= materialThreshold
+    )
+    .sort(
+      (left, right) =>
+        Math.abs(right.net_amount_cents) - Math.abs(left.net_amount_cents)
+    )[0];
+  if (largestAddition) {
+    const name = largestAddition.canonical_name ?? largestAddition.raw_description;
+    candidates.push({
+      key: `receipt-only:${largestAddition.id}`,
+      purpose: "outcome",
+      prompt: `${name} (${moneyLabel(
+        largestAddition.net_amount_cents
+      )}) was not on the saved list. How should we remember it?`,
+      options: [
+        {
+          value: "worthwhile_discovery",
+          label: "Worthwhile discovery",
+          effect: "Adds a positive discovery signal to this product.",
+        },
+        {
+          value: "seasonal_or_exceptional",
+          label: "Seasonal or one-time",
+          effect: "Records a seasonal or one-time signal for future list decisions.",
+        },
+        {
+          value: "regular_next_time",
+          label: "Add next time",
+          effect: "Adds it to the next planning trip.",
+        },
+      ],
+      declaredEffect: "Updates the product insight or next Saturday list",
+      effectTarget: "product_insight",
+      receiptItemId: largestAddition.id,
+      priority: 40,
+    });
+  }
+
+  const now = nowIso();
+  const statements = candidates
+    .sort((left, right) => left.priority - right.priority)
+    .slice(0, 3)
+    .map((candidate) =>
+      db
+        .prepare(
+          `INSERT INTO review_questions (
+            id, household_id, trip_id, receipt_transaction_id,
+            question_key, purpose, prompt, options_json, declared_effect,
+            effect_target, list_item_id, intent_item_id, receipt_item_id,
+            priority, status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+          ON CONFLICT(receipt_transaction_id, question_key) DO NOTHING`
+        )
+        .bind(
+          crypto.randomUUID(),
+          householdId,
+          receipt.trip_id,
+          receipt.id,
+          candidate.key,
+          candidate.purpose,
+          candidate.prompt,
+          JSON.stringify(candidate.options),
+          candidate.declaredEffect,
+          candidate.effectTarget,
+          candidate.listItemId ?? null,
+          candidate.intentItemId ?? null,
+          candidate.receiptItemId ?? null,
+          candidate.priority,
+          now,
+          now
+        )
+    );
+  await runPreparedInChunks(db, statements);
+}
+
+async function readClosedLoopReview(
+  db: D1Database,
+  householdId: string,
+  receiptId?: string
+): Promise<ClosedLoopReview | null> {
+  const receipt = receiptId
+    ? await authorizedReceipt(db, householdId, receiptId)
+    : await db
+        .prepare(
+          `SELECT * FROM receipt_transactions
+           WHERE household_id = ? AND trip_id IS NOT NULL
+           ORDER BY purchased_at DESC, created_at DESC
+           LIMIT 1`
+        )
+        .bind(householdId)
+        .first<ReceiptTransactionRow>();
+  if (!receipt?.trip_id) return null;
+
+  const snapshot = await db
+    .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+    .bind(receipt.trip_id)
+    .first<IntentSnapshotRow>();
+  if (!snapshot) return null;
+
+  const [inputs, matchesResult, questionsResult, upload] = await Promise.all([
+    matchingInputs(db, householdId, receipt.trip_id, receipt.id),
+    db
+      .prepare(
+        `SELECT * FROM trip_item_matches
+         WHERE receipt_transaction_id = ?
+         ORDER BY created_at ASC`
+      )
+      .bind(receipt.id)
+      .all<TripItemMatchRow>(),
+    db
+      .prepare(
+        `SELECT * FROM review_questions
+         WHERE receipt_transaction_id = ?
+         ORDER BY priority ASC, created_at ASC`
+      )
+      .bind(receipt.id)
+      .all<ReviewQuestionRow>(),
+    db
+      .prepare(
+        `SELECT * FROM receipt_uploads
+         WHERE receipt_transaction_id = ? AND status != 'deleted'
+         LIMIT 1`
+      )
+      .bind(receipt.id)
+      .first<ReceiptUploadRow>(),
+  ]);
+  const matching = matchReceiptItemsToIntent({
+    intentItems: inputs.intentRows.map(toLogicIntent),
+    receiptItems: inputs.receiptRows.map(toLogicReceipt),
+    aliases: inputs.aliases,
+  });
+  const persistedIntentIds = new Set(
+    matchesResult.results.map((match) => match.intent_item_id)
+  );
+  const persistedReceiptIds = new Set(
+    matchesResult.results.map((match) => match.receipt_item_id)
+  );
+  const possibleSubstitutions = matching.matches.filter(
+    (match) =>
+      match.status === "candidate" &&
+      !persistedIntentIds.has(match.intentItemId) &&
+      !persistedReceiptIds.has(match.receiptItemId)
+  );
+  const arithmetic = reconcileReceipt({
+    items: inputs.receiptRows.map((item) => ({
+      lineSubtotalCents: item.line_subtotal_cents,
+      discountCents: item.discount_cents,
+      netAmountCents: item.net_amount_cents,
+    })),
+    subtotalCents: receipt.subtotal_cents,
+    taxCents: receipt.tax_cents,
+    totalCents: receipt.total_cents,
+    discountCents: receipt.discount_cents,
+  });
+  const comparison = buildClosedLoopComparison(
+    receipt,
+    snapshot,
+    inputs.intentRows,
+    inputs.receiptRows,
+    matchesResult.results,
+    possibleSubstitutions,
+    arithmetic
+  );
+
+  return {
+    receipt: receiptSummary(receipt),
+    items: inputs.receiptRows.map(receiptItemSummary),
+    intentItems: inputs.intentRows.map(intentItemSummary),
+    matches: matchesResult.results.map(matchSummary),
+    comparison,
+    questions: questionsResult.results.map(questionSummary),
+    upload: upload
+      ? {
+          id: upload.id,
+          originalFilename: upload.original_filename,
+          contentType: upload.content_type,
+          byteSize: upload.byte_size,
+          status: upload.status,
+          uploadedAt: upload.created_at,
+          imageUrl: `/api/receipt-photo?receiptId=${encodeURIComponent(
+            receipt.id
+          )}`,
+        }
+      : null,
+  };
+}
+
+async function rebuildReceiptState(
+  db: D1Database,
+  context: HouseholdContext,
+  receiptId: string,
+  completeTrip = false
+) {
+  let receipt = await authorizedReceipt(
+    db,
+    context.household.id,
+    receiptId
+  );
+  if (!receipt.trip_id) {
+    throw new ApiError(409, "Receipt is not linked to a trip");
+  }
+  const receiptItems = await db
+    .prepare(
+      `SELECT * FROM receipt_items
+       WHERE receipt_transaction_id = ?
+       ORDER BY source_line_number ASC`
+    )
+    .bind(receipt.id)
+    .all<ReceiptItemRow>();
+  const arithmetic = reconcileReceipt({
+    items: receiptItems.results.map((item) => ({
+      lineSubtotalCents: item.line_subtotal_cents,
+      discountCents: item.discount_cents,
+      netAmountCents: item.net_amount_cents,
+    })),
+    subtotalCents: receipt.subtotal_cents,
+    taxCents: receipt.tax_cents,
+    totalCents: receipt.total_cents,
+    discountCents: receipt.discount_cents,
+  });
+  const now = nowIso();
+  const parseStatus = arithmetic.isReconciled ? "reconciled" : "needs_review";
+  const auditFlag = arithmetic.isReconciled
+    ? "closed_loop_reconciled"
+    : `closed_loop_delta:${arithmetic.subtotalDeltaCents ?? "missing"}:${
+        arithmetic.totalDeltaCents ?? "missing"
+      }`;
+  await db
+    .prepare(
+      `UPDATE receipt_transactions
+       SET item_gross_cents = ?, item_count = ?, parse_status = ?,
+           audit_flag = ?, updated_at = ?
+       WHERE id = ? AND household_id = ?`
+    )
+    .bind(
+      receiptItems.results.reduce(
+        (sum, item) => sum + item.line_subtotal_cents,
+        0
+      ),
+      receiptItems.results.length,
+      parseStatus,
+      auditFlag,
+      now,
+      receipt.id,
+      context.household.id
+    )
+    .run();
+  if (completeTrip && arithmetic.isReconciled) {
+    await db
+      .prepare(
+        `UPDATE trips
+         SET status = 'completed', completed_at = COALESCE(completed_at, ?),
+             updated_at = ?
+         WHERE id = ? AND household_id = ?`
+      )
+      .bind(now, now, receipt.trip_id, context.household.id)
+      .run();
+  }
+
+  const rebuilt = await rebuildTripItemMatches(
+    db,
+    context.household.id,
+    receipt.trip_id,
+    receipt.id
+  );
+  receipt = await authorizedReceipt(db, context.household.id, receipt.id);
+  const snapshot = await db
+    .prepare(`SELECT * FROM trip_intent_snapshots WHERE trip_id = ? LIMIT 1`)
+    .bind(receipt.trip_id)
+    .first<IntentSnapshotRow>();
+  if (!snapshot) {
+    throw new ApiError(500, "Trip intent snapshot is unavailable");
+  }
+  const comparison = buildClosedLoopComparison(
+    receipt,
+    snapshot,
+    rebuilt.intentRows,
+    rebuilt.receiptRows,
+    rebuilt.matches,
+    rebuilt.candidates,
+    arithmetic
+  );
+  await rebuildReviewQuestions(
+    db,
+    context.household.id,
+    receipt,
+    comparison,
+    rebuilt.intentRows,
+    rebuilt.receiptRows,
+    rebuilt.matches,
+    rebuilt.candidates
+  );
+  return readClosedLoopReview(db, context.household.id, receipt.id);
+}
+
+async function insertReceiptItems(
+  db: D1Database,
+  householdId: string,
+  receiptId: string,
+  items: ValidatedDraftItem[],
+  replaceExisting = false
+) {
+  const resolved = await resolveDraftProducts(db, householdId, items);
+  const now = nowIso();
+  const statements: D1PreparedStatement[] = [];
+  if (replaceExisting) {
+    statements.push(
+      db
+        .prepare(`DELETE FROM receipt_items WHERE receipt_transaction_id = ?`)
+        .bind(receiptId)
+    );
+  }
+  for (const resolution of resolved) {
+    const item = resolution.item;
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO receipt_items (
+            id, receipt_transaction_id, product_id, source_line_number,
+            costco_item_number, raw_description, quantity_milli,
+            unit_price_cents, unit_price_mills, line_subtotal_cents,
+            discount_cents, net_amount_cents, tax_status,
+            normalization_status, is_return, match_confidence_bps,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          crypto.randomUUID(),
+          receiptId,
+          resolution.product?.id ?? null,
+          item.sourceLineNumber,
+          item.costcoItemNumber,
+          item.rawDescription,
+          item.quantityMilli,
+          item.unitPriceCents,
+          item.lineSubtotalCents,
+          item.discountCents,
+          item.netAmountCents,
+          item.taxStatus,
+          resolution.product
+            ? "normalized_from_history"
+            : "receipt_abbreviation",
+          item.isReturn ? 1 : 0,
+          resolution.confidenceBps,
+          now,
+          now
+        )
+    );
+  }
+  await runPreparedInChunks(db, statements);
+}
+
+function receiptMutationResponse(closedLoop: ClosedLoopReview) {
+  return json({
+    receiptId: closedLoop.receipt.id,
+    receipt: closedLoop.receipt,
+    comparison: closedLoop.comparison,
+    questions: closedLoop.questions,
+    closedLoop,
+  });
+}
+
+async function ingestReceiptDraft(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const clientDraftId = requiredString(
+    body.clientDraftId,
+    "clientDraftId",
+    128
+  );
+  const tripId = requiredString(body.tripId, "tripId", 128);
+  const trip = await authorizedTrip(db, context.household.id, tripId);
+  const sourceTransactionKey = `closed-loop-draft:${clientDraftId}`;
+  const existing = await db
+    .prepare(
+      `SELECT * FROM receipt_transactions
+       WHERE household_id = ? AND source_transaction_key = ? LIMIT 1`
+    )
+    .bind(context.household.id, sourceTransactionKey)
+    .first<ReceiptTransactionRow>();
+  if (existing) {
+    if (existing.trip_id !== trip.id) {
+      throw new ApiError(409, "This receipt draft is linked to another trip");
+    }
+    const persistedItemCount = await db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM receipt_items
+         WHERE receipt_transaction_id = ?`
+      )
+      .bind(existing.id)
+      .first<{ count: number }>();
+    if ((persistedItemCount?.count ?? 0) !== existing.item_count) {
+      const recoveryItems = validateDraftItems(body.items);
+      if (recoveryItems.length !== existing.item_count) {
+        throw new ApiError(
+          409,
+          "This receipt draft is incomplete and the retry no longer matches it"
+        );
+      }
+      await insertReceiptItems(
+        db,
+        context.household.id,
+        existing.id,
+        recoveryItems,
+        true
+      );
+      const recovered = await rebuildReceiptState(db, context, existing.id);
+      if (!recovered) {
+        throw new ApiError(409, "The existing receipt draft is incomplete");
+      }
+      return receiptMutationResponse(recovered);
+    }
+    const closedLoop = await readClosedLoopReview(
+      db,
+      context.household.id,
+      existing.id
+    );
+    if (!closedLoop) {
+      throw new ApiError(409, "The existing receipt draft is incomplete");
+    }
+    return receiptMutationResponse(closedLoop);
+  }
+  if (trip.status === "completed") {
+    throw new ApiError(409, "This trip already has a completed receipt");
+  }
+  const linkedReceipt = await db
+    .prepare(
+      `SELECT id FROM receipt_transactions
+       WHERE household_id = ? AND trip_id = ? AND source_type = 'receipt_photo'
+       LIMIT 1`
+    )
+    .bind(context.household.id, trip.id)
+    .first<{ id: string }>();
+  if (linkedReceipt) {
+    throw new ApiError(409, "This trip already has a receipt draft");
+  }
+
+  const purchasedAt = requiredDateTime(body.purchasedAt, "purchasedAt");
+  const subtotalCents = requiredInteger(
+    body.subtotalCents,
+    "subtotalCents",
+    -100_000_000,
+    100_000_000
+  );
+  const taxCents = requiredInteger(
+    body.taxCents,
+    "taxCents",
+    -10_000_000,
+    10_000_000
+  );
+  const totalCents = requiredInteger(
+    body.totalCents,
+    "totalCents",
+    -100_000_000,
+    100_000_000
+  );
+  const items = validateDraftItems(body.items);
+  const discountCents =
+    optionalInteger(
+      body.discountCents,
+      "discountCents",
+      0,
+      100_000_000
+    ) ?? items.reduce((sum, item) => sum + item.discountCents, 0);
+
+  if (trip.status === "planning") {
+    await ensureIntentSnapshot(db, context, trip, "upload_fallback");
+  } else {
+    await ensureIntentSnapshot(db, context, trip, "pre_trip");
+  }
+  const receiptId = crypto.randomUUID();
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO receipt_transactions (
+        id, household_id, trip_id, source_transaction_key,
+        transaction_type, source_type, purchased_at, item_gross_cents,
+        item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
+        household_funded_cents, external_funding_cents, audit_flag,
+        parse_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'warehouse', 'receipt_photo', ?, ?, ?, ?, ?, ?, ?, ?,
+                0, 'closed_loop_draft', 'needs_review', ?, ?)`
+    )
+    .bind(
+      receiptId,
+      context.household.id,
+      trip.id,
+      sourceTransactionKey,
+      purchasedAt,
+      items.reduce((sum, item) => sum + item.lineSubtotalCents, 0),
+      items.length,
+      subtotalCents,
+      taxCents,
+      discountCents,
+      totalCents,
+      totalCents,
+      now,
+      now
+    )
+    .run();
+  await insertReceiptItems(db, context.household.id, receiptId, items);
+  const closedLoop = await rebuildReceiptState(db, context, receiptId);
+  if (!closedLoop) {
+    throw new ApiError(500, "Unable to prepare the receipt review");
+  }
+  return receiptMutationResponse(closedLoop);
+}
+
+async function updateReceiptDraft(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const receipt = await authorizedReceipt(
+    db,
+    context.household.id,
+    receiptId
+  );
+  if (receipt.source_type !== "receipt_photo") {
+    throw new ApiError(409, "Audited historical receipts cannot be edited here");
+  }
+  const purchasedAt =
+    body.purchasedAt === undefined
+      ? receipt.purchased_at
+      : requiredDateTime(body.purchasedAt, "purchasedAt");
+  const subtotalCents =
+    body.subtotalCents === undefined
+      ? receipt.subtotal_cents
+      : requiredInteger(
+          body.subtotalCents,
+          "subtotalCents",
+          -100_000_000,
+          100_000_000
+        );
+  const taxCents =
+    body.taxCents === undefined
+      ? receipt.tax_cents
+      : requiredInteger(
+          body.taxCents,
+          "taxCents",
+          -10_000_000,
+          10_000_000
+        );
+  const totalCents =
+    body.totalCents === undefined
+      ? receipt.total_cents
+      : requiredInteger(
+          body.totalCents,
+          "totalCents",
+          -100_000_000,
+          100_000_000
+        );
+  const discountCents =
+    body.discountCents === undefined
+      ? receipt.discount_cents
+      : (optionalInteger(
+          body.discountCents,
+          "discountCents",
+          0,
+          100_000_000
+        ) ?? 0);
+  const items =
+    body.items === undefined ? null : validateDraftItems(body.items);
+  const now = nowIso();
+  await db
+    .prepare(
+      `UPDATE receipt_transactions
+       SET purchased_at = ?, subtotal_cents = ?, tax_cents = ?,
+           discount_cents = ?, total_cents = ?, household_funded_cents = ?,
+           parse_status = 'needs_review', audit_flag = 'closed_loop_corrected',
+           updated_at = ?
+       WHERE id = ? AND household_id = ?`
+    )
+    .bind(
+      purchasedAt,
+      subtotalCents,
+      taxCents,
+      discountCents,
+      totalCents,
+      totalCents,
+      now,
+      receipt.id,
+      context.household.id
+    )
+    .run();
+  if (items) {
+    await insertReceiptItems(
+      db,
+      context.household.id,
+      receipt.id,
+      items,
+      true
+    );
+  }
+  const closedLoop = await rebuildReceiptState(db, context, receipt.id);
+  if (!closedLoop) {
+    throw new ApiError(500, "Unable to refresh the receipt review");
+  }
+  return receiptMutationResponse(closedLoop);
+}
+
+async function finalizeReceipt(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const receipt = await authorizedReceipt(
+    db,
+    context.household.id,
+    receiptId
+  );
+  const items = await db
+    .prepare(
+      `SELECT * FROM receipt_items WHERE receipt_transaction_id = ?`
+    )
+    .bind(receipt.id)
+    .all<ReceiptItemRow>();
+  const arithmetic = reconcileReceipt({
+    items: items.results.map((item) => ({
+      lineSubtotalCents: item.line_subtotal_cents,
+      discountCents: item.discount_cents,
+      netAmountCents: item.net_amount_cents,
+    })),
+    subtotalCents: receipt.subtotal_cents,
+    taxCents: receipt.tax_cents,
+    totalCents: receipt.total_cents,
+    discountCents: receipt.discount_cents,
+  });
+  if (!arithmetic.isReconciled) {
+    throw new ApiError(
+      409,
+      "Receipt totals must reconcile within five cents before finalizing"
+    );
+  }
+  const closedLoop = await rebuildReceiptState(db, context, receipt.id, true);
+  if (!closedLoop) {
+    throw new ApiError(500, "Unable to finalize the receipt");
+  }
+  return receiptMutationResponse(closedLoop);
+}
+
+async function followingPlanningTrip(
+  db: D1Database,
+  context: HouseholdContext,
+  sourceTripId: string
+) {
+  const sourceTrip = await authorizedTrip(
+    db,
+    context.household.id,
+    sourceTripId
+  );
+  let target = await db
+    .prepare(
+      `SELECT * FROM trips
+       WHERE household_id = ? AND status IN ('planning', 'frozen')
+         AND scheduled_for > ?
+       ORDER BY scheduled_for ASC LIMIT 1`
+    )
+    .bind(context.household.id, sourceTrip.scheduled_for)
+    .first<TripRow>();
+  if (!target) {
+    const scheduledFor = saturdayAfter(sourceTrip.scheduled_for);
+    const now = nowIso();
+    await db
+      .prepare(
+        `INSERT INTO trips (
+          id, household_id, scheduled_for, status, created_by_member_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, 'planning', ?, ?, ?)
+        ON CONFLICT(household_id, scheduled_for) DO NOTHING`
+      )
+      .bind(
+        crypto.randomUUID(),
+        context.household.id,
+        scheduledFor,
+        context.member.id,
+        now,
+        now
+      )
+      .run();
+    target = await db
+      .prepare(
+        `SELECT * FROM trips
+         WHERE household_id = ? AND scheduled_for = ?
+         LIMIT 1`
+      )
+      .bind(context.household.id, scheduledFor)
+      .first<TripRow>();
+  }
+  if (!target || target.status === "completed") {
+    throw new ApiError(500, "Unable to prepare the next Saturday list");
+  }
+  await seedSaturdayList(db, target, nowIso());
+  return target;
+}
+
+async function carryItemForward(
+  db: D1Database,
+  context: HouseholdContext,
+  sourceTripId: string,
+  item: {
+    productId: string | null;
+    label: string;
+    section: ListItemSection;
+    estimatedPriceCents: number | null;
+    quantityMilli: number;
+  }
+) {
+  const target = await followingPlanningTrip(db, context, sourceTripId);
+  const existing = item.productId
+    ? await db
+        .prepare(
+          `SELECT id FROM trip_list_items
+           WHERE trip_id = ? AND product_id = ? LIMIT 1`
+        )
+        .bind(target.id, item.productId)
+        .first<{ id: string }>()
+    : await db
+        .prepare(
+          `SELECT id FROM trip_list_items
+           WHERE trip_id = ? AND lower(trim(label)) = lower(trim(?)) LIMIT 1`
+        )
+        .bind(target.id, item.label)
+        .first<{ id: string }>();
+  const now = nowIso();
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE trip_list_items
+         SET included = 1, updated_at = ? WHERE id = ?`
+      )
+      .bind(now, existing.id)
+      .run();
+    return;
+  }
+  await db
+    .prepare(
+      `INSERT INTO trip_list_items (
+        id, trip_id, product_id, label, section, source,
+        recommendation_reason, included, checked, included_at_freeze,
+        added_after_freeze, estimated_price_cents, quantity_milli,
+        sort_order, added_by_member_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'manual', ?, 1, 0, NULL, 0, ?, ?,
+        (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM trip_list_items WHERE trip_id = ?),
+        ?, ?, ?)`
+    )
+    .bind(
+      crypto.randomUUID(),
+      target.id,
+      item.productId,
+      item.label,
+      item.section,
+      "Carried forward from the previous trip review",
+      item.estimatedPriceCents,
+      item.quantityMilli,
+      target.id,
+      context.member.id,
+      now,
+      now
+    )
+    .run();
+}
+
+async function confirmReceiptProduct(
+  db: D1Database,
+  context: HouseholdContext,
+  receiptItemId: string,
+  requestedProductId?: string | null
+) {
+  const receiptItem = await db
+    .prepare(
+      `SELECT receipt_items.*, receipt_transactions.trip_id,
+              receipt_transactions.household_id
+       FROM receipt_items
+       INNER JOIN receipt_transactions
+         ON receipt_transactions.id = receipt_items.receipt_transaction_id
+       WHERE receipt_items.id = ? AND receipt_transactions.household_id = ?
+       LIMIT 1`
+    )
+    .bind(receiptItemId, context.household.id)
+    .first<ReceiptItemRow & { trip_id: string; household_id: string }>();
+  if (!receiptItem) throw new ApiError(404, "Receipt item not found");
+
+  let productId = requestedProductId ?? receiptItem.product_id;
+  if (productId) {
+    const product = await db
+      .prepare(`SELECT id FROM products WHERE id = ? AND household_id = ?`)
+      .bind(productId, context.household.id)
+      .first<{ id: string }>();
+    if (!product) throw new ApiError(404, "Product not found");
+  } else {
+    productId = crypto.randomUUID();
+    const now = nowIso();
+    await db
+      .prepare(
+        `INSERT INTO products (
+          id, household_id, costco_item_number, canonical_name,
+          active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, ?, ?)`
+      )
+      .bind(
+        productId,
+        context.household.id,
+        receiptItem.costco_item_number,
+        receiptItem.raw_description,
+        now,
+        now
+      )
+      .run();
+  }
+  const normalized = normalizeReceiptDescription(receiptItem.raw_description);
+  const now = nowIso();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO product_aliases (
+          id, household_id, alias_key, raw_description,
+          normalized_description, costco_item_number, product_id,
+          confirmation_source, confirmed_by_member_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'member', ?, ?, ?)
+        ON CONFLICT(household_id, alias_key) DO UPDATE SET
+          product_id = excluded.product_id,
+          raw_description = excluded.raw_description,
+          normalized_description = excluded.normalized_description,
+          confirmed_by_member_id = excluded.confirmed_by_member_id,
+          updated_at = excluded.updated_at`
+      )
+      .bind(
+        crypto.randomUUID(),
+        context.household.id,
+        aliasKeyFor(receiptItem.costco_item_number, normalized),
+        receiptItem.raw_description,
+        normalized,
+        receiptItem.costco_item_number,
+        productId,
+        context.member.id,
+        now,
+        now
+      ),
+    db
+      .prepare(
+        `UPDATE receipt_items
+         SET product_id = ?, normalization_status = 'normalized_from_history',
+             match_confidence_bps = 10000, updated_at = ?
+         WHERE id = ?`
+      )
+      .bind(productId, now, receiptItem.id),
+  ]);
+  return productId;
+}
+
+async function answerReviewQuestion(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const questionId = requiredString(body.questionId, "questionId", 128);
+  const value = requiredString(body.value, "value", 120);
+  const question = await db
+    .prepare(
+      `SELECT * FROM review_questions
+       WHERE id = ? AND household_id = ? LIMIT 1`
+    )
+    .bind(questionId, context.household.id)
+    .first<ReviewQuestionRow>();
+  if (!question) throw new ApiError(404, "Review question not found");
+
+  if (value === "skip") {
+    if (question.status === "answered") {
+      throw new ApiError(409, "This question already has an answer");
+    }
+    if (question.status !== "dismissed") {
+      const now = nowIso();
+      await db
+        .prepare(
+          `UPDATE review_questions
+           SET status = 'dismissed', answer_value = 'skip',
+               answered_by_member_id = ?, answered_at = ?, updated_at = ?
+           WHERE id = ? AND status = 'open'`
+        )
+        .bind(context.member.id, now, now, question.id)
+        .run();
+    }
+    const updated = await db
+      .prepare(`SELECT * FROM review_questions WHERE id = ?`)
+      .bind(question.id)
+      .first<ReviewQuestionRow>();
+    return json({ question: updated ? questionSummary(updated) : null });
+  }
+
+  if (question.status === "answered") {
+    if (question.answer_value !== value) {
+      throw new ApiError(409, "This question already has a different answer");
+    }
+    return json({ question: questionSummary(question) });
+  }
+  if (question.status === "dismissed") {
+    throw new ApiError(409, "This question was skipped");
+  }
+  const options = safeQuestionOptions(question.options_json);
+  if (!options.some((option) => option.value === value)) {
+    throw new ApiError(400, "value is not an option for this question");
+  }
+  const note =
+    body.note === undefined || body.note === null || body.note === ""
+      ? null
+      : requiredString(body.note, "note", 500);
+  const productId = optionalId(body.productId, "productId");
+  const replacementReceiptItemId = optionalId(
+    body.replacementReceiptItemId,
+    "replacementReceiptItemId"
+  );
+  const now = nowIso();
+
+  if (
+    question.receipt_item_id &&
+    (value === "keep_as_written" || productId)
+  ) {
+    await confirmReceiptProduct(
+      db,
+      context,
+      question.receipt_item_id,
+      productId
+    );
+  }
+  if (
+    value === "yes_substitution" &&
+    question.intent_item_id &&
+    (question.receipt_item_id || replacementReceiptItemId)
+  ) {
+    const receiptItemId = question.receipt_item_id ?? replacementReceiptItemId!;
+    await db.batch([
+      db
+        .prepare(
+          `DELETE FROM trip_item_matches
+           WHERE intent_item_id = ? OR receipt_item_id = ?`
+        )
+        .bind(question.intent_item_id, receiptItemId),
+      db
+        .prepare(
+          `INSERT INTO trip_item_matches (
+            id, household_id, trip_id, receipt_transaction_id,
+            intent_item_id, receipt_item_id, match_type, confidence_bps,
+            resolution_source, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'member_confirmed', 10000, 'member', ?, ?)`
+        )
+        .bind(
+          crypto.randomUUID(),
+          context.household.id,
+          question.trip_id,
+          question.receipt_transaction_id,
+          question.intent_item_id,
+          receiptItemId,
+          now,
+          now
+        ),
+    ]);
+  }
+  if (value === "still_need_it" && question.intent_item_id) {
+    const item = await db
+      .prepare(`SELECT * FROM trip_intent_items WHERE id = ? LIMIT 1`)
+      .bind(question.intent_item_id)
+      .first<IntentItemRow>();
+    if (item) {
+      await carryItemForward(db, context, question.trip_id, {
+        productId: item.product_id,
+        label: item.label,
+        section: item.section,
+        estimatedPriceCents: item.estimated_price_cents,
+        quantityMilli: item.quantity_milli,
+      });
+    }
+  }
+  if (value === "regular_next_time" && question.receipt_item_id) {
+    const item = await db
+      .prepare(
+        `SELECT receipt_items.*, products.canonical_name
+         FROM receipt_items
+         LEFT JOIN products ON products.id = receipt_items.product_id
+         WHERE receipt_items.id = ? LIMIT 1`
+      )
+      .bind(question.receipt_item_id)
+      .first<ReceiptItemRow>();
+    if (item) {
+      await carryItemForward(db, context, question.trip_id, {
+        productId: item.product_id,
+        label: item.canonical_name ?? item.raw_description,
+        section: "essentials",
+        estimatedPriceCents:
+          item.unit_price_cents ??
+          Math.round((item.net_amount_cents * 1000) / item.quantity_milli),
+        quantityMilli: item.quantity_milli,
+      });
+    }
+  }
+
+  const feedbackKind: FeedbackKind =
+    question.purpose === "data_quality"
+      ? "receipt_correction"
+      : question.purpose === "intent"
+        ? "fulfillment_reason"
+        : question.purpose === "product_experience"
+          ? "product_experience"
+          : "discovery_outcome";
+  await db
+    .prepare(
+      `INSERT INTO feedback (
+        id, household_id, trip_id, receipt_transaction_id,
+        list_item_id, receipt_item_id, kind, value, rating, note,
+        created_by_member_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING`
+    )
+    .bind(
+      `review-feedback:${question.id}`,
+      context.household.id,
+      question.trip_id,
+      question.receipt_transaction_id,
+      question.list_item_id,
+      question.receipt_item_id,
+      feedbackKind,
+      value,
+      note,
+      context.member.id,
+      now
+    )
+    .run();
+
+  await db
+    .prepare(
+      `UPDATE review_questions
+       SET status = 'answered', answer_value = ?, answer_note = ?,
+           answered_by_member_id = ?, answered_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'open'`
+    )
+    .bind(value, note, context.member.id, now, now, question.id)
+    .run();
+
+  const closedLoop = await rebuildReceiptState(
+    db,
+    context,
+    question.receipt_transaction_id
+  );
+  const updatedQuestion = closedLoop?.questions.find(
+    (entry) => entry.id === question.id
+  );
+  return json({ question: updatedQuestion ?? null, closedLoop });
 }
 
 function handleError(error: unknown) {
@@ -1478,6 +3736,12 @@ export async function handleHouseholdPost(
     if (action === "add_feedback") {
       return await addFeedback(db, context, body);
     }
+    if (action === "ingest_receipt_draft") {
+      return await ingestReceiptDraft(db, context, body);
+    }
+    if (action === "answer_review_question") {
+      return await answerReviewQuestion(db, context, body);
+    }
 
     throw new ApiError(400, "Unsupported action");
   } catch (error) {
@@ -1504,6 +3768,12 @@ export async function handleHouseholdPatch(
     }
     if (action === "freeze_trip") {
       return await freezeTrip(db, context, body);
+    }
+    if (action === "update_receipt_draft") {
+      return await updateReceiptDraft(db, context, body);
+    }
+    if (action === "finalize_receipt") {
+      return await finalizeReceipt(db, context, body);
     }
 
     throw new ApiError(400, "Unsupported action");

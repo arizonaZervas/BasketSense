@@ -15,6 +15,13 @@
       "when": 1784430355548,
       "tag": "0001_gigantic_shiva",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784438771957,
+      "tag": "0002_tricky_marten_broadcloak",
+      "breakpoints": true
     }
   ]
 }

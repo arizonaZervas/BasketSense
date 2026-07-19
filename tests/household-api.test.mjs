@@ -444,3 +444,529 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     db.close();
   }
 });
+
+function receiptDraftLine({
+  sourceLineNumber,
+  costcoItemNumber,
+  rawDescription,
+  quantityMilli = 1000,
+  unitPriceCents,
+  lineSubtotalCents,
+  taxStatus = "non_taxable",
+}) {
+  return {
+    sourceLineNumber,
+    costcoItemNumber,
+    rawDescription,
+    quantityMilli,
+    unitPriceCents,
+    lineSubtotalCents,
+    discountCents: 0,
+    netAmountCents: lineSubtotalCents,
+    taxStatus,
+  };
+}
+
+function productForListItem(state, listItem) {
+  assert.ok(listItem?.productId, `Expected ${listItem?.label ?? "list item"} to have a product`);
+  const product = state.products.find((entry) => entry.id === listItem.productId);
+  assert.ok(product?.costcoItemNumber, `Expected ${listItem.label} to have a Costco item number`);
+  return product;
+}
+
+test("a reconciled receipt closes the frozen intent loop idempotently", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("closed-loop@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const milk = initial.listItems.find(
+      (item) => item.label === "Kirkland Signature organic 2% milk",
+    );
+    const cucumbers = initial.listItems.find(
+      (item) => item.label === "Mini cucumbers",
+    );
+    assert.ok(milk);
+    assert.ok(cucumbers);
+    const milkProduct = productForListItem(initial, milk);
+    const cucumberProduct = productForListItem(initial, cucumbers);
+    const apparelProduct = initial.products.find(
+      (product) => product.costcoItemNumber === "1868328",
+    );
+    assert.ok(apparelProduct, "Expected audited apparel SKU 1868328");
+
+    const includeCucumbers = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: cucumbers.id,
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(includeCucumbers.status, 200);
+
+    const freeze = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freeze.status, 200);
+
+    const snapshot = db.database
+      .prepare(
+        `SELECT * FROM trip_intent_snapshots WHERE trip_id = ?`,
+      )
+      .get(tripId);
+    assert.ok(snapshot);
+    assert.equal(snapshot.evidence_level, "pre_trip");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items WHERE snapshot_id = ?`,
+        )
+        .get(snapshot.id).count,
+      initial.listItems.length,
+    );
+    const frozenMilk = db.database
+      .prepare(
+        `SELECT * FROM trip_intent_items
+         WHERE snapshot_id = ? AND list_item_id = ?`,
+      )
+      .get(snapshot.id, milk.id);
+    assert.ok(frozenMilk);
+    assert.equal(frozenMilk.included, 1);
+
+    const removeAfterFreeze = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "set_item_included",
+        itemId: milk.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(removeAfterFreeze.status, 200);
+    const freezeAgain = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freezeAgain.status, 200);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`,
+        )
+        .get(tripId).count,
+      1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT included FROM trip_intent_items
+           WHERE snapshot_id = ? AND list_item_id = ?`,
+        )
+        .get(snapshot.id, milk.id).included,
+      1,
+      "The frozen milk intent remains immutable after in-store list changes",
+    );
+
+    const body = {
+      action: "ingest_receipt_draft",
+      clientDraftId: "reconciled-july-25",
+      tripId,
+      purchasedAt: "2026-07-25T10:15:00-07:00",
+      subtotalCents: 4846,
+      taxCents: 217,
+      totalCents: 5063,
+      discountCents: 0,
+      items: [
+        receiptDraftLine({
+          sourceLineNumber: 1,
+          costcoItemNumber: milkProduct.costcoItemNumber,
+          rawDescription: "KS ORG 2% MK",
+          unitPriceCents: 1399,
+          lineSubtotalCents: 1399,
+        }),
+        receiptDraftLine({
+          sourceLineNumber: 2,
+          costcoItemNumber: cucumberProduct.costcoItemNumber,
+          rawDescription: "MINI CUKES",
+          unitPriceCents: 649,
+          lineSubtotalCents: 649,
+        }),
+        receiptDraftLine({
+          sourceLineNumber: 3,
+          costcoItemNumber: apparelProduct.costcoItemNumber,
+          rawDescription: "3 DOT PANT",
+          quantityMilli: 2000,
+          unitPriceCents: 1399,
+          lineSubtotalCents: 2798,
+          taxStatus: "taxable",
+        }),
+      ],
+    };
+
+    const ingestResponse = await handleHouseholdPost(
+      householdRequest("closed-loop@example.test", "POST", body),
+      db,
+    );
+    assert.equal(ingestResponse.status, 200);
+    const ingested = await responseJson(ingestResponse);
+    assert.equal(ingested.receipt.tripId, tripId);
+    assert.equal(ingested.receipt.parseStatus, "reconciled");
+    assert.equal(ingested.closedLoop.items.length, 3);
+    assert.equal(ingested.closedLoop.matches.length, 2);
+    assert.equal(ingested.comparison.arithmetic.isReconciled, true);
+    assert.equal(ingested.comparison.isProvisional, false);
+    assert.equal(ingested.comparison.buckets.receiptOnly.length, 1);
+    assert.ok(ingested.questions.length <= 3);
+
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "frozen",
+      "Arithmetic reconciliation alone must not complete the trip",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_items
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(ingested.receiptId).count,
+      3,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_item_matches
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(ingested.receiptId).count,
+      2,
+    );
+
+    const idempotentResponse = await handleHouseholdPost(
+      householdRequest("closed-loop@example.test", "POST", body),
+      db,
+    );
+    assert.equal(idempotentResponse.status, 200);
+    const idempotent = await responseJson(idempotentResponse);
+    assert.equal(idempotent.receiptId, ingested.receiptId);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_transactions
+           WHERE source_transaction_key = ?`,
+        )
+        .get("closed-loop-draft:reconciled-july-25").count,
+      1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_items
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(ingested.receiptId).count,
+      3,
+    );
+
+    const finalizeResponse = await handleHouseholdPatch(
+      householdRequest("closed-loop@example.test", "PATCH", {
+        action: "finalize_receipt",
+        receiptId: ingested.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizeResponse.status, 200);
+    const finalized = await responseJson(finalizeResponse);
+    assert.equal(finalized.receipt.parseStatus, "reconciled");
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "completed",
+      "Only explicit finalization completes the trip",
+    );
+
+    const refreshed = await responseJson(
+      await handleHouseholdGet(householdRequest("closed-loop@example.test"), db),
+    );
+    assert.ok(refreshed.closedLoop);
+    assert.equal(refreshed.closedLoop.receipt.id, ingested.receiptId);
+    assert.equal(refreshed.closedLoop.comparison.arithmetic.isReconciled, true);
+    assert.equal(refreshed.closedLoop.comparison.isProvisional, false);
+  } finally {
+    db.close();
+  }
+});
+
+test("a provisional receipt refuses finalization and review answers have bounded idempotent effects", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("review-loop@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const milk = initial.listItems.find(
+      (item) => item.label === "Kirkland Signature organic 2% milk",
+    );
+    assert.ok(milk);
+    const milkProduct = productForListItem(initial, milk);
+    const apparelProduct = initial.products.find(
+      (product) => product.costcoItemNumber === "1868328",
+    );
+    assert.ok(apparelProduct, "Expected audited apparel SKU 1868328");
+
+    const freezeResponse = await handleHouseholdPatch(
+      householdRequest("review-loop@example.test", "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freezeResponse.status, 200);
+
+    const ingestResponse = await handleHouseholdPost(
+      householdRequest("review-loop@example.test", "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "provisional-july-25",
+        tripId,
+        purchasedAt: "2026-07-25T10:30:00-07:00",
+        subtotalCents: 6203,
+        taxCents: 217,
+        totalCents: 6420,
+        discountCents: 0,
+        items: [
+          receiptDraftLine({
+            sourceLineNumber: 1,
+            costcoItemNumber: milkProduct.costcoItemNumber,
+            rawDescription: "KS ORG 2% MK",
+            unitPriceCents: 1399,
+            lineSubtotalCents: 1399,
+          }),
+          receiptDraftLine({
+            sourceLineNumber: 2,
+            costcoItemNumber: apparelProduct.costcoItemNumber,
+            rawDescription: "3 DOT PANT",
+            quantityMilli: 2000,
+            unitPriceCents: 1399,
+            lineSubtotalCents: 2798,
+            taxStatus: "taxable",
+          }),
+          receiptDraftLine({
+            sourceLineNumber: 3,
+            costcoItemNumber: "9999999",
+            rawDescription: "MYSTERY RECEIPT LINE",
+            unitPriceCents: 2000,
+            lineSubtotalCents: 2000,
+          }),
+        ],
+      }),
+      db,
+    );
+    assert.equal(ingestResponse.status, 200);
+    const draft = await responseJson(ingestResponse);
+    assert.equal(draft.receipt.parseStatus, "needs_review");
+    assert.equal(draft.comparison.arithmetic.subtotalDeltaCents, -6);
+    assert.equal(draft.comparison.arithmetic.isReconciled, false);
+    assert.equal(draft.comparison.isProvisional, true);
+    assert.equal(draft.comparison.buckets.unresolved.length, 1);
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
+        .status,
+      "frozen",
+    );
+
+    assert.equal(draft.questions.length, 3);
+    assert.deepEqual(
+      draft.questions.map((question) => question.purpose),
+      ["data_quality", "intent", "outcome"],
+    );
+
+    const finalizeResponse = await handleHouseholdPatch(
+      householdRequest("review-loop@example.test", "PATCH", {
+        action: "finalize_receipt",
+        receiptId: draft.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizeResponse.status, 409);
+    const finalizeError = await responseJson(finalizeResponse);
+    assert.match(finalizeError.error, /within five cents/i);
+
+    const dataQualityQuestion = draft.questions.find(
+      (question) => question.purpose === "data_quality",
+    );
+    assert.ok(dataQualityQuestion);
+    const countsBeforeSkip = {
+      feedback: db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(draft.receiptId).count,
+      trips: db.database.prepare(`SELECT COUNT(*) AS count FROM trips`).get()
+        .count,
+      listItems: db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_list_items`)
+        .get().count,
+      matches: db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_item_matches
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(draft.receiptId).count,
+      aliases: db.database
+        .prepare(`SELECT COUNT(*) AS count FROM product_aliases`)
+        .get().count,
+    };
+    const skipResponse = await handleHouseholdPost(
+      householdRequest("review-loop@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: dataQualityQuestion.id,
+        value: "skip",
+      }),
+      db,
+    );
+    assert.equal(skipResponse.status, 200);
+    const skipped = await responseJson(skipResponse);
+    assert.equal(skipped.question.status, "dismissed");
+    assert.equal(skipped.question.selectedValue, "skip");
+    assert.deepEqual(
+      {
+        feedback: db.database
+          .prepare(
+            `SELECT COUNT(*) AS count FROM feedback
+             WHERE receipt_transaction_id = ?`,
+          )
+          .get(draft.receiptId).count,
+        trips: db.database.prepare(`SELECT COUNT(*) AS count FROM trips`).get()
+          .count,
+        listItems: db.database
+          .prepare(`SELECT COUNT(*) AS count FROM trip_list_items`)
+          .get().count,
+        matches: db.database
+          .prepare(
+            `SELECT COUNT(*) AS count FROM trip_item_matches
+             WHERE receipt_transaction_id = ?`,
+          )
+          .get(draft.receiptId).count,
+        aliases: db.database
+          .prepare(`SELECT COUNT(*) AS count FROM product_aliases`)
+          .get().count,
+      },
+      countsBeforeSkip,
+    );
+
+    const skipAgain = await handleHouseholdPost(
+      householdRequest("review-loop@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: dataQualityQuestion.id,
+        value: "skip",
+      }),
+      db,
+    );
+    assert.equal(skipAgain.status, 200);
+    assert.equal((await responseJson(skipAgain)).question.status, "dismissed");
+
+    const carryQuestion = draft.questions.find((question) =>
+      question.options.some((option) => option.value === "still_need_it"),
+    );
+    assert.ok(carryQuestion, "Expected a missing-essential carry-forward option");
+    const intent = db.database
+      .prepare(`SELECT * FROM trip_intent_items WHERE id = ?`)
+      .get(carryQuestion.intentItemId);
+    assert.ok(intent);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trips
+           WHERE scheduled_for > '2026-07-25'`,
+        )
+        .get().count,
+      0,
+    );
+
+    const carryResponse = await handleHouseholdPost(
+      householdRequest("review-loop@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: carryQuestion.id,
+        value: "still_need_it",
+      }),
+      db,
+    );
+    assert.equal(carryResponse.status, 200);
+    const carriedAnswer = await responseJson(carryResponse);
+    assert.equal(carriedAnswer.question.status, "answered");
+    assert.equal(carriedAnswer.question.selectedValue, "still_need_it");
+
+    const followingTrip = db.database
+      .prepare(
+        `SELECT * FROM trips
+         WHERE scheduled_for > '2026-07-25'
+         ORDER BY scheduled_for ASC LIMIT 1`,
+      )
+      .get();
+    assert.ok(followingTrip);
+    assert.equal(followingTrip.status, "planning");
+    const carriedCount = () =>
+      db.database
+        .prepare(
+          intent.product_id
+            ? `SELECT COUNT(*) AS count FROM trip_list_items
+               WHERE trip_id = ? AND product_id = ?`
+            : `SELECT COUNT(*) AS count FROM trip_list_items
+               WHERE trip_id = ? AND lower(trim(label)) = lower(trim(?))`,
+        )
+        .get(followingTrip.id, intent.product_id ?? intent.label).count;
+    assert.equal(carriedCount(), 1);
+    assert.equal(
+      db.database
+        .prepare(
+          intent.product_id
+            ? `SELECT included FROM trip_list_items
+               WHERE trip_id = ? AND product_id = ?`
+            : `SELECT included FROM trip_list_items
+               WHERE trip_id = ? AND lower(trim(label)) = lower(trim(?))`,
+        )
+        .get(followingTrip.id, intent.product_id ?? intent.label).included,
+      1,
+    );
+
+    const carryAgain = await handleHouseholdPost(
+      householdRequest("review-loop@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: carryQuestion.id,
+        value: "still_need_it",
+      }),
+      db,
+    );
+    assert.equal(carryAgain.status, 200);
+    assert.equal(carriedCount(), 1);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE id = ?`,
+        )
+        .get(`review-feedback:${carryQuestion.id}`).count,
+      1,
+    );
+  } finally {
+    db.close();
+  }
+});
