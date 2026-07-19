@@ -87,6 +87,15 @@ export const trips = sqliteTable(
       .default("planning"),
     targetCents: integer("target_cents"),
     discoveryAllowanceCents: integer("discovery_allowance_cents"),
+    estimatedListTotalAtFreezeCents: integer(
+      "estimated_list_total_at_freeze_cents"
+    ),
+    estimatedPricedItemCountAtFreeze: integer(
+      "estimated_priced_item_count_at_freeze"
+    ),
+    estimatedUnpricedItemCountAtFreeze: integer(
+      "estimated_unpriced_item_count_at_freeze"
+    ),
     frozenAt: text("frozen_at"),
     completedAt: text("completed_at"),
     createdByMemberId: text("created_by_member_id").references(

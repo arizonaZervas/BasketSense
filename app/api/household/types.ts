@@ -40,6 +40,9 @@ export interface TripSummary {
   status: TripStatus;
   targetCents: number | null;
   discoveryAllowanceCents: number | null;
+  estimatedListTotalAtFreezeCents: number | null;
+  estimatedPricedItemCountAtFreeze: number | null;
+  estimatedUnpricedItemCountAtFreeze: number | null;
   frozenAt: string | null;
   completedAt: string | null;
   createdAt: string;

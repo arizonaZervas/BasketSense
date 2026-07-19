@@ -1698,10 +1698,25 @@ button.price-point:hover {
   border-right: 0;
 }
 
+.week-summary .estimate-summary {
+  background: #f1f6f2;
+}
+
 .week-summary strong {
   display: block;
   margin: 5px 0 2px;
   font-size: 18px;
+}
+
+.week-summary .estimate-summary strong {
+  color: var(--forest);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 24px;
+  letter-spacing: -0.035em;
+}
+
+.estimate-summary small + small {
+  margin-top: 3px;
 }
 
 .device-notice {
@@ -2970,8 +2985,16 @@ button.price-point:hover {
   }
 
   .week-summary {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     margin-bottom: 12px;
+  }
+
+  .week-summary .estimate-summary {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 14px;
   }
 
   .week-summary > div {
@@ -2988,6 +3011,16 @@ button.price-point:hover {
 
   .week-summary small {
     display: none;
+  }
+
+  .week-summary .estimate-summary small {
+    display: block;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .week-summary .estimate-summary strong {
+    font-size: 22px;
   }
 
   .trip-phases {

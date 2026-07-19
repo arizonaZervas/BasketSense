@@ -42,6 +42,9 @@ test("server-renders the BasketSense dashboard", async () => {
     /38(?:<!-- -->)? receipt transactions audited · (?:<!-- -->)?Jan 2–Jul 18, 2026/,
   );
   assert.match(html, /both spouses edit one list/i);
+  assert.match(html, /Estimated list total/i);
+  assert.match(html, /Updates with the live list/i);
+  assert.match(html, /before tax/i);
   assert.match(html, /The database is the shared source of truth/i);
   assert.match(html, /Suggested starting points for (?:<!-- -->)?Jul 25/i);
   assert.match(html, /Kirkland Signature organic 2% milk/i);

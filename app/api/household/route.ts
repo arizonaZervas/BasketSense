@@ -103,6 +103,9 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     status TEXT NOT NULL DEFAULT 'planning',
     target_cents INTEGER,
     discovery_allowance_cents INTEGER,
+    estimated_list_total_at_freeze_cents INTEGER,
+    estimated_priced_item_count_at_freeze INTEGER,
+    estimated_unpriced_item_count_at_freeze INTEGER,
     frozen_at TEXT,
     completed_at TEXT,
     created_by_member_id TEXT,
@@ -258,6 +261,9 @@ interface TripRow {
   status: TripStatus;
   target_cents: number | null;
   discovery_allowance_cents: number | null;
+  estimated_list_total_at_freeze_cents: number | null;
+  estimated_priced_item_count_at_freeze: number | null;
+  estimated_unpriced_item_count_at_freeze: number | null;
   frozen_at: string | null;
   completed_at: string | null;
   created_by_member_id: string | null;
@@ -868,6 +874,12 @@ function tripSummary(row: TripRow): TripSummary {
     status: row.status,
     targetCents: row.target_cents,
     discoveryAllowanceCents: row.discovery_allowance_cents,
+    estimatedListTotalAtFreezeCents:
+      row.estimated_list_total_at_freeze_cents,
+    estimatedPricedItemCountAtFreeze:
+      row.estimated_priced_item_count_at_freeze,
+    estimatedUnpricedItemCountAtFreeze:
+      row.estimated_unpriced_item_count_at_freeze,
     frozenAt: row.frozen_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
@@ -1361,10 +1373,50 @@ async function freezeTrip(
       db
         .prepare(
           `UPDATE trips
-           SET status = 'frozen', frozen_at = ?, updated_at = ?
+           SET status = 'frozen', frozen_at = ?,
+               estimated_list_total_at_freeze_cents = (
+                 SELECT COALESCE(SUM(
+                   CASE
+                     WHEN included_at_freeze = 1 AND estimated_price_cents IS NOT NULL
+                     THEN CAST((estimated_price_cents * quantity_milli + 500) / 1000 AS INTEGER)
+                     ELSE 0
+                   END
+                 ), 0)
+                 FROM trip_list_items
+                 WHERE trip_id = ?
+               ),
+               estimated_priced_item_count_at_freeze = (
+                 SELECT COALESCE(SUM(
+                   CASE
+                     WHEN included_at_freeze = 1 AND estimated_price_cents IS NOT NULL
+                     THEN 1 ELSE 0
+                   END
+                 ), 0)
+                 FROM trip_list_items
+                 WHERE trip_id = ?
+               ),
+               estimated_unpriced_item_count_at_freeze = (
+                 SELECT COALESCE(SUM(
+                   CASE
+                     WHEN included_at_freeze = 1 AND estimated_price_cents IS NULL
+                     THEN 1 ELSE 0
+                   END
+                 ), 0)
+                 FROM trip_list_items
+                 WHERE trip_id = ?
+               ),
+               updated_at = ?
            WHERE id = ? AND household_id = ? AND status = 'planning'`
         )
-        .bind(now, now, trip.id, context.household.id),
+        .bind(
+          now,
+          trip.id,
+          trip.id,
+          trip.id,
+          now,
+          trip.id,
+          context.household.id
+        ),
     ]);
   }
 

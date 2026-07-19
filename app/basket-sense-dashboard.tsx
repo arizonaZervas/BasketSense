@@ -44,6 +44,9 @@ type SharedTrip = {
   id: string;
   scheduledFor: string;
   status: TripStatus;
+  estimatedListTotalAtFreezeCents: number | null;
+  estimatedPricedItemCountAtFreeze: number | null;
+  estimatedUnpricedItemCountAtFreeze: number | null;
   frozenAt: string | null;
 };
 
@@ -61,6 +64,7 @@ type SharedListItem = {
   includedAtFreeze: boolean | null;
   addedAfterFreeze: boolean;
   estimatedPriceCents: number | null;
+  quantityMilli: number;
   addedByMemberId: string | null;
   sortOrder: number;
 };
@@ -222,6 +226,11 @@ function cadenceConfidence(confidenceBps: number | null) {
   if (confidenceBps >= 8000) return "High cadence confidence";
   if (confidenceBps >= 6000) return "Medium cadence confidence";
   return "Check-first signal";
+}
+
+function estimatedItemTotalCents(item: SharedListItem) {
+  if (item.estimatedPriceCents === null) return null;
+  return Math.round((item.estimatedPriceCents * item.quantityMilli) / 1000);
 }
 
 function InlineWriteError({
@@ -843,8 +852,12 @@ function ThisWeekTab({
   const trip = household?.currentTrip;
   const items = household?.listItems ?? [];
   const included = items.filter((item) => item.included);
-  const estimatedCents = included.reduce(
-    (sum, item) => sum + (item.estimatedPriceCents ?? 0),
+  const pricedIncluded = included.filter(
+    (item) => item.estimatedPriceCents !== null,
+  );
+  const unpricedIncluded = included.length - pricedIncluded.length;
+  const estimatedCents = pricedIncluded.reduce(
+    (sum, item) => sum + (estimatedItemTotalCents(item) ?? 0),
     0,
   );
   const sections = [
@@ -858,6 +871,43 @@ function ThisWeekTab({
     household?.members.map((member) => [member.id, member]) ?? [],
   );
   const shoppingStarted = trip?.status === "frozen";
+  const frozenEstimateCents = trip?.estimatedListTotalAtFreezeCents ?? null;
+  const frozenPricedItemCount =
+    trip?.estimatedPricedItemCountAtFreeze ?? null;
+  const frozenUnpricedItemCount =
+    trip?.estimatedUnpricedItemCountAtFreeze ?? null;
+  const frozenItemCount =
+    frozenPricedItemCount !== null && frozenUnpricedItemCount !== null
+      ? frozenPricedItemCount + frozenUnpricedItemCount
+      : null;
+  const estimateChangeCents =
+    shoppingStarted && frozenEstimateCents !== null
+      ? estimatedCents - frozenEstimateCents
+      : null;
+  const estimateDisplay = !household
+    ? "Loading…"
+    : pricedIncluded.length
+      ? `~${currency.format(estimatedCents / 100)}`
+      : "No estimate yet";
+  const estimateCoverage = !household
+    ? "Loading the shared list"
+    : included.length === 0
+      ? "No items on the live list"
+      : `${pricedIncluded.length} of ${included.length} ${included.length === 1 ? "item" : "items"} priced${unpricedIncluded ? ` · ${unpricedIncluded} not yet estimated` : ""}`;
+  const frozenCoverage =
+    frozenPricedItemCount !== null && frozenItemCount !== null
+      ? ` · ${frozenPricedItemCount} of ${frozenItemCount} priced`
+      : "";
+  const freezeEstimateCopy =
+    !shoppingStarted
+      ? "Updates with the live list · before tax · not a spending cap"
+      : frozenEstimateCents === null
+        ? "Shopping started · starting estimate unavailable"
+        : frozenPricedItemCount === 0
+          ? `Started with no price estimate${frozenCoverage}${pricedIncluded.length ? ` · now ~${currency.format(estimatedCents / 100)}` : ""}`
+          : `Started at ~${currency.format(frozenEstimateCents / 100)}${frozenCoverage}${estimateChangeCents
+            ? ` · ${estimateChangeCents > 0 ? "+" : "−"}${currency.format(Math.abs(estimateChangeCents) / 100)} since then`
+            : " · unchanged"}`;
   const removedAfterStart = shoppingStarted
     ? items.filter((item) => item.includedAtFreeze === true && !item.included)
     : [];
@@ -983,10 +1033,11 @@ function ThisWeekTab({
           <span>On the shared list</span>
           <strong>{included.length} items</strong>
         </div>
-        <div>
-          <span>Known-price estimate</span>
-          <strong>{currency.format(estimatedCents / 100)}</strong>
-          <small>Only items with a receipt price</small>
+        <div className="estimate-summary" aria-live="polite">
+          <span>Estimated list total</span>
+          <strong>{estimateDisplay}</strong>
+          <small>{estimateCoverage}</small>
+          <small>{freezeEstimateCopy}</small>
         </div>
         <div>
           <span>List status</span>
@@ -1038,6 +1089,11 @@ function ThisWeekTab({
                         const addedBy = item.addedByMemberId
                           ? memberById.get(item.addedByMemberId)?.displayName
                           : null;
+                        const itemEstimateCents = estimatedItemTotalCents(item);
+                        const quantityLabel = (item.quantityMilli / 1000).toLocaleString(
+                          undefined,
+                          { maximumFractionDigits: 3 },
+                        );
                         return (
                           <div className="list-row-wrap" key={item.id}>
                             <div
@@ -1089,7 +1145,9 @@ function ThisWeekTab({
                                 <span className="estimated-price">
                                   {item.estimatedPriceCents === null
                                     ? "No estimate"
-                                    : `~${currency.format(item.estimatedPriceCents / 100)}`}
+                                    : item.quantityMilli === 1000
+                                      ? `~${currency.format(item.estimatedPriceCents / 100)}`
+                                      : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
                                 </span>
                                 <button
                                   type="button"

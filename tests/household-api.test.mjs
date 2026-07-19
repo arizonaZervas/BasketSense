@@ -254,6 +254,9 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     assert.equal(first.listItems.length, 11);
     assert.equal(first.currentTrip.scheduledFor, "2026-07-25");
     assert.equal(first.currentTrip.status, "planning");
+    assert.equal(first.currentTrip.estimatedListTotalAtFreezeCents, null);
+    assert.equal(first.currentTrip.estimatedPricedItemCountAtFreeze, null);
+    assert.equal(first.currentTrip.estimatedUnpricedItemCountAtFreeze, null);
     assert.equal(
       first.receiptTransactions.reduce(
         (sum, receipt) => sum + receipt.householdFundedCents,
@@ -299,10 +302,46 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     );
     assert.equal(addResponse.status, 201);
 
+    const quantityResponse = await handleHouseholdPost(
+      householdRequest("first@example.test", "POST", {
+        action: "add_list_item",
+        tripId: first.currentTrip.id,
+        label: "Sparkling water",
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 999,
+        quantityMilli: 2000,
+      }),
+      db,
+    );
+    assert.equal(quantityResponse.status, 201);
+    const quantityItem = await responseJson(quantityResponse);
+    assert.equal(quantityItem.item.quantityMilli, 2000);
+    assert.equal(quantityItem.item.estimatedPriceCents, 999);
+
     const sharedAfterAdd = await responseJson(
       await handleHouseholdGet(householdRequest("second@example.test"), db),
     );
     assert.ok(sharedAfterAdd.listItems.some((item) => item.label === "Diapers"));
+    const includedBeforeFreeze = sharedAfterAdd.listItems.filter(
+      (item) => item.included,
+    );
+    const expectedEstimateCents = includedBeforeFreeze.reduce(
+      (sum, item) =>
+        sum +
+        (item.estimatedPriceCents === null
+          ? 0
+          : Math.round(
+              (item.estimatedPriceCents * item.quantityMilli) / 1000,
+            )),
+      0,
+    );
+    const expectedPricedCount = includedBeforeFreeze.filter(
+      (item) => item.estimatedPriceCents !== null,
+    ).length;
+    const expectedUnpricedCount =
+      includedBeforeFreeze.length - expectedPricedCount;
 
     const freezeResponse = await handleHouseholdPatch(
       householdRequest("second@example.test", "PATCH", {
@@ -314,6 +353,18 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     assert.equal(freezeResponse.status, 200);
     const frozen = await responseJson(freezeResponse);
     assert.equal(frozen.trip.status, "frozen");
+    assert.equal(
+      frozen.trip.estimatedListTotalAtFreezeCents,
+      expectedEstimateCents,
+    );
+    assert.equal(
+      frozen.trip.estimatedPricedItemCountAtFreeze,
+      expectedPricedCount,
+    );
+    assert.equal(
+      frozen.trip.estimatedUnpricedItemCountAtFreeze,
+      expectedUnpricedCount,
+    );
 
     const milk = frozen.listItems.find(
       (item) => item.label === "Kirkland Signature organic 2% milk",
@@ -348,6 +399,18 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     assert.equal(inStore.item.source, "in_store");
     assert.equal(inStore.item.addedAfterFreeze, true);
     assert.equal(inStore.item.includedAtFreeze, false);
+
+    const afterShoppingChanges = await responseJson(
+      await handleHouseholdGet(householdRequest("second@example.test"), db),
+    );
+    assert.equal(
+      afterShoppingChanges.currentTrip.estimatedListTotalAtFreezeCents,
+      expectedEstimateCents,
+    );
+    assert.equal(
+      afterShoppingChanges.currentTrip.estimatedUnpricedItemCountAtFreeze,
+      expectedUnpricedCount,
+    );
 
     const feedbackResponse = await handleHouseholdPost(
       householdRequest("second@example.test", "POST", {
