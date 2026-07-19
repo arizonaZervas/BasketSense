@@ -217,9 +217,18 @@ export interface ProductSummary {
   costcoItemNumber: string | null;
   canonicalName: string;
   category: string | null;
+  categoryStatus: "reviewed" | "rule_based" | "needs_review";
+  categoryReviewedAt: string | null;
+  categoryReviewedByDisplayName: string | null;
+  latestRawDescription: string | null;
+  latestPurchasedAt: string | null;
+  latestRegularUnitPriceCents: number | null;
+  latestPaidUnitPriceCents: number | null;
+  latestDiscountUnitCents: number | null;
   brand: string | null;
   unitDescription: string | null;
   active: boolean;
+  updatedAt: string;
 }
 
 export interface ReceiptTransactionSummary {
@@ -340,4 +349,11 @@ export type HouseholdPatchRequest =
   | {
       action: "finalize_receipt";
       receiptId: string;
+    }
+  | {
+      action: "confirm_product_metadata";
+      productId: string;
+      canonicalName: string;
+      category: string;
+      expectedUpdatedAt: string;
     };

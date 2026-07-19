@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
@@ -105,6 +106,81 @@ async function responseJson(response) {
   assert.ok(body && typeof body === "object");
   return body;
 }
+
+test("product metadata migration upgrades an existing catalog safely", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE household_members (
+        id TEXT PRIMARY KEY NOT NULL
+      );
+      CREATE TABLE products (
+        id TEXT PRIMARY KEY NOT NULL,
+        household_id TEXT NOT NULL,
+        costco_item_number TEXT,
+        canonical_name TEXT NOT NULL,
+        category TEXT,
+        brand TEXT,
+        unit_description TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0003_ambiguous_dark_beast.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    const columns = db.database
+      .prepare(`PRAGMA table_info(products)`)
+      .all()
+      .map((column) => column.name);
+    for (const expected of [
+      "category_status",
+      "category_reviewed_at",
+      "category_reviewed_by_member_id",
+      "catalog_revision",
+    ]) {
+      assert.ok(columns.includes(expected), `Expected ${expected} to be migrated`);
+    }
+    db.database
+      .prepare(`INSERT INTO household_members (id) VALUES (?)`)
+      .run("reviewer");
+    db.database
+      .prepare(
+        `INSERT INTO products (
+          id, household_id, costco_item_number, canonical_name,
+          category, brand, unit_description, active, created_at, updated_at,
+          category_reviewed_by_member_id
+        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 1, ?, ?, ?)`,
+      )
+      .run(
+        "product-test",
+        "household-test",
+        "123",
+        "Test product",
+        "household_supplies",
+        "2026-07-18T00:00:00.000Z",
+        "2026-07-18T00:00:00.000Z",
+        "reviewer",
+      );
+    db.database.prepare(`DELETE FROM household_members WHERE id = ?`).run("reviewer");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT category_reviewed_by_member_id AS reviewer
+           FROM products WHERE id = ?`,
+        )
+        .get("product-test").reviewer,
+      null,
+    );
+  } finally {
+    db.close();
+  }
+});
 
 test("receipt cadence produces a conservative, explainable July 25 list", () => {
   const recommendations = buildSaturdayRecommendations(
@@ -440,6 +516,146 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
       db,
     );
     assert.equal(thirdResponse.status, 403);
+  } finally {
+    db.close();
+  }
+});
+
+test("historical catalog prices list items and household review preserves receipt truth", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("catalog-owner@example.test"), db),
+    );
+    await responseJson(
+      await handleHouseholdGet(householdRequest("catalog-spouse@example.test"), db),
+    );
+
+    const byItemNumber = new Map(
+      initial.products.map((product) => [product.costcoItemNumber, product]),
+    );
+    const redOnions = byItemNumber.get("9218");
+    const strawberries = byItemNumber.get("27003");
+    const organicStrawberries = byItemNumber.get("512515");
+    const huggies = byItemNumber.get("1935002");
+    assert.ok(redOnions);
+    assert.ok(strawberries);
+    assert.ok(organicStrawberries);
+    assert.ok(huggies);
+    assert.equal(redOnions.latestRegularUnitPriceCents, 549);
+    assert.equal(strawberries.latestRegularUnitPriceCents, 649);
+    assert.equal(organicStrawberries.latestRegularUnitPriceCents, 1099);
+    assert.equal(huggies.canonicalName, "Huggies Pull-Ups diapers, 4T–5T");
+    assert.equal(huggies.latestRawDescription, "HUG PU 4T-5T");
+    assert.equal(huggies.latestRegularUnitPriceCents, 3999);
+    assert.equal(huggies.latestPaidUnitPriceCents, 3199);
+    assert.equal(huggies.latestDiscountUnitCents, 800);
+
+    const redOnionAdd = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("catalog-owner@example.test", "POST", {
+          action: "add_list_item",
+          tripId: initial.currentTrip.id,
+          productId: redOnions.id,
+          label: "red onions",
+          source: "manual",
+          section: "essentials",
+          included: true,
+        }),
+        db,
+      ),
+    );
+    assert.equal(redOnionAdd.item.productId, redOnions.id);
+    assert.equal(redOnionAdd.item.label, redOnions.canonicalName);
+    assert.equal(redOnionAdd.item.estimatedPriceCents, 549);
+
+    const strawberryAdd = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("catalog-owner@example.test", "POST", {
+          action: "add_list_item",
+          tripId: initial.currentTrip.id,
+          label: "strawberries",
+          source: "manual",
+          section: "essentials",
+          included: true,
+        }),
+        db,
+      ),
+    );
+    assert.equal(strawberryAdd.item.productId, strawberries.id);
+    assert.equal(strawberryAdd.item.estimatedPriceCents, 649);
+
+    const partialAdd = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("catalog-owner@example.test", "POST", {
+          action: "add_list_item",
+          tripId: initial.currentTrip.id,
+          label: "straw",
+          source: "manual",
+          section: "essentials",
+          included: true,
+        }),
+        db,
+      ),
+    );
+    assert.equal(partialAdd.item.productId, null);
+    assert.equal(partialAdd.item.estimatedPriceCents, null);
+
+    const ambiguous = byItemNumber.get("1901772");
+    assert.ok(ambiguous);
+    assert.equal(ambiguous.categoryStatus, "needs_review");
+    const rawBefore = db.database
+      .prepare(
+        `SELECT raw_description FROM receipt_items
+         WHERE product_id = ? ORDER BY id LIMIT 1`,
+      )
+      .get(ambiguous.id).raw_description;
+
+    const reviewResponse = await handleHouseholdPatch(
+      householdRequest("catalog-spouse@example.test", "PATCH", {
+        action: "confirm_product_metadata",
+        productId: ambiguous.id,
+        canonicalName: "Household-confirmed two-pack combo",
+        category: "household_supplies",
+        expectedUpdatedAt: ambiguous.updatedAt,
+      }),
+      db,
+    );
+    assert.equal(reviewResponse.status, 200);
+
+    const refreshed = await responseJson(
+      await handleHouseholdGet(householdRequest("catalog-owner@example.test"), db),
+    );
+    const reviewed = refreshed.products.find(
+      (product) => product.id === ambiguous.id,
+    );
+    assert.ok(reviewed);
+    assert.equal(reviewed.canonicalName, "Household-confirmed two-pack combo");
+    assert.equal(reviewed.category, "household_supplies");
+    assert.equal(reviewed.categoryStatus, "reviewed");
+    assert.equal(reviewed.categoryReviewedByDisplayName, "catalog-spouse");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT raw_description FROM receipt_items
+           WHERE product_id = ? ORDER BY id LIMIT 1`,
+        )
+        .get(ambiguous.id).raw_description,
+      rawBefore,
+      "Household metadata must not rewrite immutable receipt text",
+    );
+
+    const staleReview = await handleHouseholdPatch(
+      householdRequest("catalog-owner@example.test", "PATCH", {
+        action: "confirm_product_metadata",
+        productId: ambiguous.id,
+        canonicalName: "Stale overwrite",
+        category: "clothing_accessories",
+        expectedUpdatedAt: ambiguous.updatedAt,
+      }),
+      db,
+    );
+    assert.equal(staleReview.status, 409);
   } finally {
     db.close();
   }

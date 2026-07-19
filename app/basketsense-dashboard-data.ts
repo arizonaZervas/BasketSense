@@ -290,6 +290,10 @@ function buildProducts(
           purchasedOn: transaction.purchasedOn,
           quantity: (existing?.quantity ?? 0) + line.quantity,
           unitPriceCents: line.unitPriceCents,
+          grossAmountCents:
+            (existing?.grossAmountCents ?? 0) + line.grossAmountCents,
+          discountCents:
+            (existing?.discountCents ?? 0) + line.discountCents,
           netAmountCents: (existing?.netAmountCents ?? 0) + line.netAmountCents,
         });
       }

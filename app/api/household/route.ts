@@ -5,6 +5,11 @@ import {
 } from "../../basketsense-data";
 import { buildSaturdayRecommendations } from "../../recommendation-engine";
 import {
+  classifyReceiptItem,
+  type ClassificationStatus,
+  type ProductCategoryKey,
+} from "../../product-categories";
+import {
   matchReceiptItemsToIntent,
   normalizeReceiptDescription,
   reconcileReceipt,
@@ -44,6 +49,16 @@ const HOUSEHOLD_ID = "household_basketsense";
 const HOUSEHOLD_SLUG = "basket-sense-household";
 const HOUSEHOLD_NAME = "BasketSense household";
 const HOUSEHOLD_TIME_ZONE = "America/Los_Angeles";
+const PRODUCT_CATALOG_REVISION = "audited-2026-07-18-v2";
+
+const REVIEWABLE_PRODUCT_CATEGORIES = new Set<ProductCategoryKey>([
+  "groceries_beverages",
+  "clothing_accessories",
+  "household_supplies",
+  "health_personal_care",
+  "home_kitchen_seasonal",
+  "toys_books_activities",
+]);
 
 const LIST_ITEM_SOURCES = new Set<ListItemSource>([
   "manual",
@@ -105,17 +120,24 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     costco_item_number TEXT,
     canonical_name TEXT NOT NULL,
     category TEXT,
+    category_status TEXT NOT NULL DEFAULT 'needs_review',
+    category_reviewed_at TEXT,
+    category_reviewed_by_member_id TEXT,
+    catalog_revision TEXT,
     brand TEXT,
     unit_description TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (category_reviewed_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS products_household_item_number_unique
     ON products (household_id, costco_item_number)`,
   `CREATE INDEX IF NOT EXISTS products_household_name_idx
     ON products (household_id, canonical_name)`,
+  `CREATE INDEX IF NOT EXISTS products_household_category_status_idx
+    ON products (household_id, category_status)`,
   `CREATE TABLE IF NOT EXISTS trips (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -471,9 +493,21 @@ interface ProductRow {
   costco_item_number: string | null;
   canonical_name: string;
   category: string | null;
+  category_status: ClassificationStatus;
+  category_reviewed_at: string | null;
+  category_reviewed_by_member_id: string | null;
+  catalog_revision: string | null;
   brand: string | null;
   unit_description: string | null;
   active: number;
+  created_at: string;
+  updated_at: string;
+  category_reviewed_by_display_name?: string | null;
+  latest_raw_description?: string | null;
+  latest_purchased_at?: string | null;
+  latest_regular_unit_price_cents?: number | null;
+  latest_paid_unit_price_cents?: number | null;
+  latest_discount_unit_cents?: number | null;
 }
 
 interface ReceiptTransactionRow {
@@ -713,7 +747,20 @@ async function runPreparedInChunks(
 }
 
 async function seedAuditedHistory(db: D1Database, householdId: string) {
-  const [transactionCount, itemCount] = await Promise.all([
+  const productByItemNumber = new Map<string, string>();
+  for (const item of AUDITED_RECEIPT_ITEMS_2026) {
+    if (!productByItemNumber.has(item.itemNumber)) {
+      productByItemNumber.set(item.itemNumber, productIdFor(item.itemNumber));
+    }
+  }
+  const transactionById = new Map(
+    AUDITED_RECEIPT_TRANSACTIONS_2026.map((transaction) => [
+      transaction.id,
+      transaction,
+    ])
+  );
+
+  const [transactionCount, itemCount, currentCatalogCount] = await Promise.all([
     db
       .prepare(
         `SELECT COUNT(*) AS count FROM receipt_transactions
@@ -726,11 +773,80 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
         `SELECT COUNT(*) AS count FROM receipt_items
          WHERE receipt_transaction_id IN (
            SELECT id FROM receipt_transactions WHERE household_id = ?
-         )`
+      )`
       )
       .bind(householdId)
       .first<{ count: number }>(),
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM products
+         WHERE household_id = ? AND catalog_revision = ?`
+      )
+      .bind(householdId, PRODUCT_CATALOG_REVISION)
+      .first<{ count: number }>(),
   ]);
+
+  const now = nowIso();
+  if ((currentCatalogCount?.count ?? 0) !== productByItemNumber.size) {
+    const productStatements: D1PreparedStatement[] = [];
+    const seenProducts = new Set<string>();
+
+    for (const item of AUDITED_RECEIPT_ITEMS_2026) {
+      if (seenProducts.has(item.itemNumber)) continue;
+      seenProducts.add(item.itemNumber);
+      const transaction = transactionById.get(item.transactionId);
+      if (!transaction) {
+        throw new ApiError(500, `Missing audited transaction ${item.transactionId}`);
+      }
+      const classification = classifyReceiptItem({
+        channel: transaction.category,
+        itemNumber: item.itemNumber,
+        rawDescription: item.rawDescription,
+        canonicalName: item.canonicalName,
+        taxStatus: item.taxStatus,
+      });
+      productStatements.push(
+        db
+          .prepare(
+            `INSERT INTO products (
+              id, household_id, costco_item_number, canonical_name,
+              category, category_status, catalog_revision,
+              active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              canonical_name = CASE
+                WHEN products.category_reviewed_at IS NOT NULL
+                  THEN products.canonical_name
+                ELSE excluded.canonical_name
+              END,
+              category = CASE
+                WHEN products.category_reviewed_at IS NOT NULL
+                  THEN products.category
+                ELSE excluded.category
+              END,
+              category_status = CASE
+                WHEN products.category_reviewed_at IS NOT NULL
+                  THEN 'reviewed'
+                ELSE excluded.category_status
+              END,
+              catalog_revision = excluded.catalog_revision,
+              updated_at = excluded.updated_at`
+          )
+          .bind(
+            productIdFor(item.itemNumber),
+            householdId,
+            item.itemNumber,
+            item.canonicalName,
+            classification.key,
+            classification.status,
+            PRODUCT_CATALOG_REVISION,
+            now,
+            now
+          )
+      );
+    }
+    await runPreparedInChunks(db, productStatements);
+  }
 
   if (
     transactionCount?.count === AUDITED_RECEIPT_TRANSACTIONS_2026.length &&
@@ -738,37 +854,6 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
   ) {
     return;
   }
-
-  const now = nowIso();
-  const productByItemNumber = new Map<string, string>();
-  const productStatements: D1PreparedStatement[] = [];
-
-  for (const item of AUDITED_RECEIPT_ITEMS_2026) {
-    if (productByItemNumber.has(item.itemNumber)) continue;
-    const productId = productIdFor(item.itemNumber);
-    productByItemNumber.set(item.itemNumber, productId);
-    productStatements.push(
-      db
-        .prepare(
-          `INSERT INTO products (
-            id, household_id, costco_item_number, canonical_name,
-            active, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 1, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            canonical_name = excluded.canonical_name,
-            updated_at = excluded.updated_at`
-        )
-        .bind(
-          productId,
-          householdId,
-          item.itemNumber,
-          item.canonicalName,
-          now,
-          now
-        )
-    );
-  }
-  await runPreparedInChunks(db, productStatements);
 
   const transactionStatements = AUDITED_RECEIPT_TRANSACTIONS_2026.map(
     (transaction) =>
@@ -1253,9 +1338,20 @@ function productSummary(row: ProductRow): ProductSummary {
     costcoItemNumber: row.costco_item_number,
     canonicalName: row.canonical_name,
     category: row.category,
+    categoryStatus: row.category_status,
+    categoryReviewedAt: row.category_reviewed_at,
+    categoryReviewedByDisplayName:
+      row.category_reviewed_by_display_name ?? null,
+    latestRawDescription: row.latest_raw_description ?? null,
+    latestPurchasedAt: row.latest_purchased_at ?? null,
+    latestRegularUnitPriceCents:
+      row.latest_regular_unit_price_cents ?? null,
+    latestPaidUnitPriceCents: row.latest_paid_unit_price_cents ?? null,
+    latestDiscountUnitCents: row.latest_discount_unit_cents ?? null,
     brand: row.brand,
     unitDescription: row.unit_description,
     active: Boolean(row.active),
+    updatedAt: row.updated_at,
   };
 }
 
@@ -1326,9 +1422,52 @@ async function readHouseholdState(
       .bind(context.currentTrip.id),
     db
       .prepare(
-        `SELECT * FROM products
-         WHERE household_id = ? AND active = 1
-         ORDER BY canonical_name COLLATE NOCASE ASC`
+        `SELECT products.*,
+                reviewer.display_name AS category_reviewed_by_display_name,
+                latest.raw_description AS latest_raw_description,
+                latest.purchased_at AS latest_purchased_at,
+                latest.regular_unit_price_cents AS latest_regular_unit_price_cents,
+                latest.paid_unit_price_cents AS latest_paid_unit_price_cents,
+                latest.discount_unit_cents AS latest_discount_unit_cents
+         FROM products
+         LEFT JOIN household_members AS reviewer
+           ON reviewer.id = products.category_reviewed_by_member_id
+         LEFT JOIN (
+           SELECT ranked.* FROM (
+             SELECT receipt_items.product_id,
+                    receipt_items.raw_description,
+                    receipt_transactions.purchased_at,
+                    CAST(ROUND(
+                      receipt_items.line_subtotal_cents * 1000.0 /
+                      receipt_items.quantity_milli
+                    ) AS INTEGER) AS regular_unit_price_cents,
+                    CAST(ROUND(
+                      receipt_items.net_amount_cents * 1000.0 /
+                      receipt_items.quantity_milli
+                    ) AS INTEGER) AS paid_unit_price_cents,
+                    CAST(ROUND(
+                      receipt_items.discount_cents * 1000.0 /
+                      receipt_items.quantity_milli
+                    ) AS INTEGER) AS discount_unit_cents,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY receipt_items.product_id
+                      ORDER BY receipt_transactions.purchased_at DESC,
+                               receipt_items.source_line_number DESC,
+                               receipt_items.id DESC
+                    ) AS price_rank
+             FROM receipt_items
+             INNER JOIN receipt_transactions
+               ON receipt_transactions.id = receipt_items.receipt_transaction_id
+             WHERE receipt_items.product_id IS NOT NULL
+               AND receipt_items.is_return = 0
+               AND receipt_items.quantity_milli > 0
+               AND receipt_transactions.transaction_type = 'warehouse'
+               AND receipt_transactions.parse_status = 'reconciled'
+           ) AS ranked
+           WHERE ranked.price_rank = 1
+         ) AS latest ON latest.product_id = products.id
+         WHERE products.household_id = ? AND products.active = 1
+         ORDER BY products.canonical_name COLLATE NOCASE ASC`
       )
       .bind(context.household.id),
     db
@@ -1409,6 +1548,86 @@ async function authorizedListItem(
   return item;
 }
 
+type CatalogListMatch = {
+  id: string;
+  canonical_name: string;
+  latest_regular_unit_price_cents: number | null;
+};
+
+async function catalogMatchForListItem(
+  db: D1Database,
+  householdId: string,
+  requestedProductId: string | null,
+  label: string
+): Promise<CatalogListMatch | null> {
+  let product: { id: string; canonical_name: string } | null = null;
+
+  if (requestedProductId) {
+    product = await db
+      .prepare(
+        `SELECT id, canonical_name
+         FROM products
+         WHERE id = ? AND household_id = ? AND active = 1
+         LIMIT 1`
+      )
+      .bind(requestedProductId, householdId)
+      .first<{ id: string; canonical_name: string }>();
+    if (!product) throw new ApiError(404, "Product not found");
+  } else {
+    const candidates = await db
+      .prepare(
+        `SELECT DISTINCT products.id, products.canonical_name
+         FROM products
+         LEFT JOIN receipt_items ON receipt_items.product_id = products.id
+         WHERE products.household_id = ?
+           AND products.active = 1
+           AND (
+             LOWER(TRIM(products.canonical_name)) = LOWER(TRIM(?))
+             OR products.costco_item_number = TRIM(?)
+             OR LOWER(TRIM(receipt_items.raw_description)) = LOWER(TRIM(?))
+           )
+         ORDER BY products.updated_at DESC, products.id ASC
+         LIMIT 2`
+      )
+      .bind(householdId, label, label, label)
+      .all<{ id: string; canonical_name: string }>();
+    if (candidates.results.length === 1) {
+      product = candidates.results[0];
+    }
+  }
+
+  if (!product) return null;
+
+  const price = await db
+    .prepare(
+      `SELECT CAST(ROUND(
+                receipt_items.line_subtotal_cents * 1000.0 /
+                receipt_items.quantity_milli
+              ) AS INTEGER) AS latest_regular_unit_price_cents
+       FROM receipt_items
+       INNER JOIN receipt_transactions
+         ON receipt_transactions.id = receipt_items.receipt_transaction_id
+       WHERE receipt_items.product_id = ?
+         AND receipt_items.is_return = 0
+         AND receipt_items.quantity_milli > 0
+         AND receipt_transactions.household_id = ?
+         AND receipt_transactions.transaction_type = 'warehouse'
+         AND receipt_transactions.parse_status = 'reconciled'
+       ORDER BY receipt_transactions.purchased_at DESC,
+                receipt_items.source_line_number DESC,
+                receipt_items.id DESC
+       LIMIT 1`
+    )
+    .bind(product.id, householdId)
+    .first<{ latest_regular_unit_price_cents: number }>();
+
+  return {
+    ...product,
+    latest_regular_unit_price_cents:
+      price?.latest_regular_unit_price_cents ?? null,
+  };
+}
+
 async function addListItem(
   db: D1Database,
   context: HouseholdContext,
@@ -1421,17 +1640,16 @@ async function addListItem(
     throw new ApiError(409, "Completed trips cannot be changed");
   }
 
-  const label = requiredString(body.label, "label", 140);
-  const productId = optionalId(body.productId, "productId");
-  if (productId) {
-    const product = await db
-      .prepare(
-        `SELECT id FROM products WHERE id = ? AND household_id = ? LIMIT 1`
-      )
-      .bind(productId, context.household.id)
-      .first<{ id: string }>();
-    if (!product) throw new ApiError(404, "Product not found");
-  }
+  const requestedLabel = requiredString(body.label, "label", 140);
+  const requestedProductId = optionalId(body.productId, "productId");
+  const catalogMatch = await catalogMatchForListItem(
+    db,
+    context.household.id,
+    requestedProductId,
+    requestedLabel
+  );
+  const label = catalogMatch?.canonical_name ?? requestedLabel;
+  const productId = catalogMatch?.id ?? null;
 
   const sourceValue = body.source ?? "manual";
   if (
@@ -1472,12 +1690,16 @@ async function addListItem(
     body.included === undefined
       ? true
       : requiredBoolean(body.included, "included");
-  const estimatedPriceCents = optionalInteger(
+  const requestedEstimatedPriceCents = optionalInteger(
     body.estimatedPriceCents,
     "estimatedPriceCents",
     0,
     10_000_000
   );
+  const estimatedPriceCents =
+    requestedEstimatedPriceCents ??
+    catalogMatch?.latest_regular_unit_price_cents ??
+    null;
   const quantityMilli =
     optionalInteger(body.quantityMilli, "quantityMilli", 1, 1_000_000) ??
     1000;
@@ -3498,6 +3720,86 @@ async function confirmReceiptProduct(
   return productId;
 }
 
+async function confirmProductMetadata(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const productId = requiredString(body.productId, "productId", 128);
+  const canonicalName = requiredString(
+    body.canonicalName,
+    "canonicalName",
+    140
+  );
+  const categoryValue = requiredString(body.category, "category", 80);
+  if (
+    !REVIEWABLE_PRODUCT_CATEGORIES.has(categoryValue as ProductCategoryKey)
+  ) {
+    throw new ApiError(400, "category is invalid");
+  }
+  const category = categoryValue as ProductCategoryKey;
+  const expectedUpdatedAt = requiredString(
+    body.expectedUpdatedAt,
+    "expectedUpdatedAt",
+    80
+  );
+
+  const product = await db
+    .prepare(
+      `SELECT * FROM products
+       WHERE id = ? AND household_id = ?
+       LIMIT 1`
+    )
+    .bind(productId, context.household.id)
+    .first<ProductRow>();
+  if (!product) throw new ApiError(404, "Product not found");
+  if (product.updated_at !== expectedUpdatedAt) {
+    throw new ApiError(
+      409,
+      "This product was updated on another device. Review the latest details and try again."
+    );
+  }
+
+  const now = nowIso();
+  const update = await db
+    .prepare(
+      `UPDATE products
+       SET canonical_name = ?, category = ?, category_status = 'reviewed',
+           category_reviewed_at = ?, category_reviewed_by_member_id = ?,
+           updated_at = ?
+       WHERE id = ? AND household_id = ? AND updated_at = ?`
+    )
+    .bind(
+      canonicalName,
+      category,
+      now,
+      context.member.id,
+      now,
+      product.id,
+      context.household.id,
+      expectedUpdatedAt
+    )
+    .run();
+  if ((update.meta.changes ?? 0) !== 1) {
+    throw new ApiError(
+      409,
+      "This product was updated on another device. Review the latest details and try again."
+    );
+  }
+
+  return json({
+    product: {
+      id: product.id,
+      canonicalName,
+      category,
+      categoryStatus: "reviewed",
+      categoryReviewedAt: now,
+      categoryReviewedByDisplayName: context.member.display_name,
+      updatedAt: now,
+    },
+  });
+}
+
 async function answerReviewQuestion(
   db: D1Database,
   context: HouseholdContext,
@@ -3774,6 +4076,9 @@ export async function handleHouseholdPatch(
     }
     if (action === "finalize_receipt") {
       return await finalizeReceipt(db, context, body);
+    }
+    if (action === "confirm_product_metadata") {
+      return await confirmProductMetadata(db, context, body);
     }
 
     throw new ApiError(400, "Unsupported action");

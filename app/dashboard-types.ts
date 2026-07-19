@@ -85,6 +85,8 @@ export type DashboardProduct = {
     purchasedOn: string;
     quantity: number;
     unitPriceCents: number | null;
+    grossAmountCents: number;
+    discountCents: number;
     netAmountCents: number;
   }[];
 };

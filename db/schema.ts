@@ -56,6 +56,16 @@ export const products = sqliteTable(
     costcoItemNumber: text("costco_item_number"),
     canonicalName: text("canonical_name").notNull(),
     category: text("category"),
+    categoryStatus: text("category_status", {
+      enum: ["reviewed", "rule_based", "needs_review"],
+    })
+      .notNull()
+      .default("needs_review"),
+    categoryReviewedAt: text("category_reviewed_at"),
+    categoryReviewedByMemberId: text(
+      "category_reviewed_by_member_id"
+    ).references(() => householdMembers.id, { onDelete: "set null" }),
+    catalogRevision: text("catalog_revision"),
     brand: text("brand"),
     unitDescription: text("unit_description"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
@@ -70,6 +80,10 @@ export const products = sqliteTable(
     index("products_household_name_idx").on(
       table.householdId,
       table.canonicalName
+    ),
+    index("products_household_category_status_idx").on(
+      table.householdId,
+      table.categoryStatus
     ),
   ]
 );

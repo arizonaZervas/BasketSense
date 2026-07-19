@@ -22,6 +22,13 @@
       "when": 1784438771957,
       "tag": "0002_tricky_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784442472341,
+      "tag": "0003_ambiguous_dark_beast",
+      "breakpoints": true
     }
   ]
 }

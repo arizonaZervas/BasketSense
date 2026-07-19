@@ -16,7 +16,16 @@ import type {
   DashboardTransaction,
   DashboardViewData,
 } from "./dashboard-types";
-import type { ProductCategoryKey } from "./product-categories";
+import {
+  isProductCategoryKey,
+  mergeHouseholdProductMetadata,
+  scopedCategories,
+  type HouseholdCatalogProductMetadata,
+} from "./dashboard-product-metadata";
+import {
+  PRODUCT_CATEGORY_PRESENTATION,
+  type ProductCategoryKey,
+} from "./product-categories";
 import {
   ClosedLoopReview,
   ReceiptFlowDialog,
@@ -76,10 +85,15 @@ type SharedListItem = {
   sortOrder: number;
 };
 
-type SharedProduct = {
+type SharedProduct = HouseholdCatalogProductMetadata & {
   id: string;
-  costcoItemNumber: string | null;
-  canonicalName: string;
+  categoryReviewedAt: string | null;
+  categoryReviewedByDisplayName: string | null;
+  latestPurchasedAt: string | null;
+  latestRegularUnitPriceCents: number | null;
+  latestPaidUnitPriceCents: number | null;
+  latestDiscountUnitCents: number | null;
+  updatedAt: string;
 };
 
 type SharedFeedback = {
@@ -241,6 +255,65 @@ function estimatedItemTotalCents(item: SharedListItem) {
   return Math.round((item.estimatedPriceCents * item.quantityMilli) / 1000);
 }
 
+function normalizedCatalogLabel(value: string) {
+  return value.trim().toLocaleLowerCase();
+}
+
+function catalogSelectionValue(
+  product: SharedProduct,
+  products: readonly SharedProduct[],
+) {
+  const hasDuplicateName =
+    products.filter(
+      (candidate) =>
+        normalizedCatalogLabel(candidate.canonicalName) ===
+        normalizedCatalogLabel(product.canonicalName),
+    ).length > 1;
+  return hasDuplicateName && product.costcoItemNumber
+    ? `${product.canonicalName} · item ${product.costcoItemNumber}`
+    : product.canonicalName;
+}
+
+function exactCatalogMatch(
+  products: readonly SharedProduct[],
+  label: string,
+) {
+  const normalized = normalizedCatalogLabel(label);
+  if (!normalized) return null;
+  const matches = products.filter((product) =>
+    [
+      product.canonicalName,
+      product.latestRawDescription ?? "",
+      product.costcoItemNumber ?? "",
+      catalogSelectionValue(product, products),
+    ].some((value) => normalizedCatalogLabel(value) === normalized),
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function isReviewableProductCategory(
+  value: string | null,
+): value is ProductCategoryKey {
+  return (
+    isProductCategoryKey(value) &&
+    value !== "fuel" &&
+    value !== "optical_services" &&
+    value !== "needs_review"
+  );
+}
+
+const reviewableProductCategories = PRODUCT_CATEGORY_PRESENTATION.filter(
+  (category) => isReviewableProductCategory(category.key),
+);
+
+function productDisplayName(product: DashboardProduct) {
+  const raw = product.rawDescription.trim();
+  const friendly = product.name.trim();
+  return normalizedCatalogLabel(raw) === normalizedCatalogLabel(friendly)
+    ? friendly
+    : `${raw} (${friendly})`;
+}
+
 function InlineWriteError({
   failure,
   onRetry,
@@ -283,6 +356,9 @@ export function BasketSenseDashboard({
     viewData.products[0]?.id ?? "",
   );
   const [productDetailOpen, setProductDetailOpen] = useState(false);
+  const [productOrigin, setProductOrigin] = useState<"insights" | "products">(
+    "products",
+  );
   const [insightMonth, setInsightMonth] = useState<string>("all");
   const [insightCategoryKey, setInsightCategoryKey] =
     useState<ProductCategoryKey | null>(null);
@@ -300,6 +376,11 @@ export function BasketSenseDashboard({
   const toastTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
+  const productReturnFocus = useRef<string | null>(null);
+  const effectiveViewData = useMemo(
+    () => mergeHouseholdProductMetadata(viewData, household?.products ?? []),
+    [household?.products, viewData],
+  );
 
   const refreshHousehold = useCallback(async (quiet = false, forceFresh = false) => {
     if (refreshPromise.current) {
@@ -367,6 +448,26 @@ export function BasketSenseDashboard({
     [],
   );
 
+  useEffect(() => {
+    if (activeTab !== "overview" || productDetailOpen || !productReturnFocus.current) {
+      return;
+    }
+
+    const productId = productReturnFocus.current;
+    const frame = window.requestAnimationFrame(() => {
+      const target = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-open-product-id]"),
+      ).find((element) => element.dataset.openProductId === productId);
+
+      if (target) {
+        target.focus();
+        productReturnFocus.current = null;
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, productDetailOpen]);
+
   function flash(message: string) {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast(message);
@@ -375,16 +476,30 @@ export function BasketSenseDashboard({
 
   function changeTab(tab: Tab) {
     setActiveTab(tab);
-    if (tab === "products") setProductDetailOpen(false);
+    if (tab === "products") {
+      setProductOrigin("products");
+      setProductDetailOpen(false);
+      productReturnFocus.current = null;
+    }
     window.scrollTo({ top: 0 });
   }
 
   function openProduct(productId: string) {
+    productReturnFocus.current = productId;
     setSelectedProductId(productId);
     setProductSearch("");
     setProductCategory("all");
     setProductDetailOpen(true);
+    setProductOrigin("insights");
     setActiveTab("products");
+    window.scrollTo({ top: 0 });
+  }
+
+  function closeProductDetail() {
+    setProductDetailOpen(false);
+    if (productOrigin === "insights") {
+      setActiveTab("overview");
+    }
     window.scrollTo({ top: 0 });
   }
 
@@ -530,12 +645,14 @@ export function BasketSenseDashboard({
     event.preventDefault();
     const label = newItem.trim();
     if (!label || !household) return;
+    const catalogProduct = exactCatalogMatch(household.products, label);
     const request: WriteRequest = {
       method: "POST",
       body: {
         action: "add_list_item",
         tripId: household.currentTrip.id,
         label,
+        productId: catalogProduct?.id ?? null,
         source:
           household.currentTrip.status === "frozen" ? "in_store" : "manual",
         section: "essentials",
@@ -548,6 +665,24 @@ export function BasketSenseDashboard({
     };
     const saved = await performWrite("quick-add", request);
     if (saved) setNewItem("");
+  }
+
+  async function confirmProductMetadata(
+    product: SharedProduct,
+    canonicalName: string,
+    category: ProductCategoryKey,
+  ) {
+    return await performWrite(`product-review-${product.id}`, {
+      method: "PATCH",
+      body: {
+        action: "confirm_product_metadata",
+        productId: product.id,
+        canonicalName,
+        category,
+        expectedUpdatedAt: product.updatedAt,
+      },
+      successMessage: `${canonicalName} saved to the household catalog`,
+    });
   }
 
   function addSuggestion(suggestion: DashboardSuggestion) {
@@ -628,8 +763,8 @@ export function BasketSenseDashboard({
     role: "member" as const,
   };
   const auditRange = formatAuditRange(
-    viewData.transactions,
-    viewData.audit.through,
+    effectiveViewData.transactions,
+    effectiveViewData.audit.through,
   );
 
   return (
@@ -704,7 +839,7 @@ export function BasketSenseDashboard({
           <div className="topbar-context">
             <span className="mobile-kicker">BasketSense</span>
             <p className="data-label">
-              {viewData.audit.transactionCount} receipt transactions audited · {auditRange}
+              {effectiveViewData.audit.transactionCount} receipt transactions audited · {auditRange}
             </p>
           </div>
           <div className="topbar-actions">
@@ -747,8 +882,8 @@ export function BasketSenseDashboard({
             syncStatus={syncStatus}
             syncError={syncError}
             lastSyncedAt={lastSyncedAt}
-            suggestions={viewData.suggestions}
-            suggestionPlanDate={viewData.suggestionPlanDate}
+            suggestions={effectiveViewData.suggestions}
+            suggestionPlanDate={effectiveViewData.suggestionPlanDate}
             newItem={newItem}
             setNewItem={setNewItem}
             pendingWrites={pendingWrites}
@@ -766,7 +901,7 @@ export function BasketSenseDashboard({
 
         {activeTab === "overview" ? (
           <OverviewTab
-            viewData={viewData}
+            viewData={effectiveViewData}
             changeTab={changeTab}
             selectedMonth={insightMonth}
             setSelectedMonth={setInsightMonth}
@@ -780,7 +915,8 @@ export function BasketSenseDashboard({
 
         {activeTab === "products" ? (
           <ProductsTab
-            products={viewData.products}
+            products={effectiveViewData.products}
+            catalogProducts={household?.products ?? []}
             search={productSearch}
             setSearch={setProductSearch}
             category={productCategory}
@@ -789,8 +925,12 @@ export function BasketSenseDashboard({
             setSelectedProductId={setSelectedProductId}
             detailOpen={productDetailOpen}
             setDetailOpen={setProductDetailOpen}
-            categories={viewData.productCategories}
-            auditThrough={viewData.audit.through}
+            categories={effectiveViewData.productCategories}
+            auditThrough={effectiveViewData.audit.through}
+            openedFromInsights={productOrigin === "insights"}
+            onBack={closeProductDetail}
+            onConfirmProduct={confirmProductMetadata}
+            failedWrites={failedWrites}
             onOpenTransaction={openTransaction}
           />
         ) : null}
@@ -828,7 +968,7 @@ export function BasketSenseDashboard({
 
       {isDataDialogOpen ? (
         <DataDialog
-          viewData={viewData}
+          viewData={effectiveViewData}
           returnFocusRef={dialogReturnFocus}
           onClose={closeDataDialog}
         />
@@ -960,6 +1100,13 @@ function ThisWeekTab({
   const visibleItems = shoppingStarted
     ? items.filter((item) => item.included || item.addedAfterFreeze)
     : items;
+  const catalogOptions = (household?.products ?? []).filter(
+    (product) =>
+      product.latestRegularUnitPriceCents !== null &&
+      product.category !== "fuel" &&
+      product.category !== "optical_services",
+  );
+  const matchedCatalogProduct = exactCatalogMatch(catalogOptions, newItem);
   const itemsBySection = new Map(
     sections.map((section) => [
       section,
@@ -1052,11 +1199,21 @@ function ThisWeekTab({
         </label>
         <input
           id="quick-item"
+          list="household-product-catalog"
           value={newItem}
           onChange={(event) => setNewItem(event.target.value)}
           placeholder={shoppingStarted ? "Add something found during the trip…" : "Add milk, fruit, diapers…"}
           disabled={!household || pendingWrites.has("quick-add")}
         />
+        <datalist id="household-product-catalog">
+          {catalogOptions.map((product) => (
+            <option
+              key={product.id}
+              value={catalogSelectionValue(product, catalogOptions)}
+              label={`${product.latestRawDescription ?? product.costcoItemNumber ?? "Past receipt item"} · ${currency.format((product.latestRegularUnitPriceCents ?? 0) / 100)}`}
+            />
+          ))}
+        </datalist>
         <button
           className="primary-button"
           type="submit"
@@ -1069,6 +1226,14 @@ function ThisWeekTab({
               : "Add item"}
         </button>
       </form>
+      <p className="quick-add-hint" aria-live="polite">
+        {matchedCatalogProduct &&
+        matchedCatalogProduct.latestRegularUnitPriceCents !== null
+          ? `Estimate will use its latest regular package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}${matchedCatalogProduct.latestPurchasedAt ? ` from ${formatShortDate(matchedCatalogProduct.latestPurchasedAt)}` : ""}.`
+          : newItem.trim()
+            ? "Choose an exact past product to add its receipt-based estimate; genuinely new items can stay unpriced."
+            : `${catalogOptions.length} past warehouse products are available for quick add.`}
+      </p>
       <InlineWriteError
         failure={failedWrites["quick-add"]}
         onRetry={() => onRetry("quick-add")}
@@ -1434,40 +1599,6 @@ function classificationTone(status: DashboardReceiptLine["classificationStatus"]
     : status === "rule_based"
       ? ("suggestion" as const)
       : ("unknown" as const);
-}
-
-function scopedCategories(
-  viewData: DashboardViewData,
-  transactions: readonly DashboardTransaction[],
-) {
-  const transactionIds = new Set(transactions.map((transaction) => transaction.id));
-  const lines = viewData.receiptLines.filter((line) =>
-    transactionIds.has(line.transactionId),
-  );
-
-  return viewData.productCategories.map((category) => {
-    const channel =
-      category.key === "fuel"
-        ? "gas"
-        : category.key === "optical_services"
-          ? "optical"
-          : null;
-    const categoryLines = lines.filter((line) => line.categoryKey === category.key);
-    const householdViewCents = channel
-      ? transactions
-          .filter((transaction) => transaction.channel === channel)
-          .reduce((sum, transaction) => sum + transaction.householdFundedCents, 0)
-      : categoryLines.reduce((sum, line) => sum + line.netAmountCents, 0);
-
-    return {
-      ...category,
-      householdViewCents,
-      itemCount: categoryLines.reduce((sum, line) => sum + line.quantity, 0),
-      transactionCount: channel
-        ? transactions.filter((transaction) => transaction.channel === channel).length
-        : new Set(categoryLines.map((line) => line.transactionId)).size,
-    } satisfies DashboardProductCategory;
-  });
 }
 
 function OverviewTab({
@@ -2017,7 +2148,14 @@ function CategoryDetail({
                 </>
               );
               return product ? (
-                <button type="button" key={line.itemNumber} onClick={() => onOpenProduct(product.id)}>{content}</button>
+                <button
+                  type="button"
+                  key={line.itemNumber}
+                  data-open-product-id={product.id}
+                  onClick={() => onOpenProduct(product.id)}
+                >
+                  {content}
+                </button>
               ) : (
                 <div key={line.itemNumber}>{content}</div>
               );
@@ -2134,7 +2272,14 @@ function ReceiptDetail({
               </>
             );
             return product ? (
-              <button type="button" key={line.id} onClick={() => onOpenProduct(product.id)}>{content}</button>
+              <button
+                type="button"
+                key={line.id}
+                data-open-product-id={product.id}
+                onClick={() => onOpenProduct(product.id)}
+              >
+                {content}
+              </button>
             ) : (
               <div key={line.id}>{content}</div>
             );
@@ -2147,6 +2292,7 @@ function ReceiptDetail({
 
 function ProductsTab({
   products,
+  catalogProducts,
   search,
   setSearch,
   category,
@@ -2157,9 +2303,14 @@ function ProductsTab({
   setDetailOpen,
   categories,
   auditThrough,
+  openedFromInsights,
+  onBack,
+  onConfirmProduct,
+  failedWrites,
   onOpenTransaction,
 }: {
   products: readonly DashboardProduct[];
+  catalogProducts: readonly SharedProduct[];
   search: string;
   setSearch: (value: string) => void;
   category: ProductCategoryKey | "all";
@@ -2170,10 +2321,24 @@ function ProductsTab({
   setDetailOpen: (open: boolean) => void;
   categories: readonly DashboardProductCategory[];
   auditThrough: string;
+  openedFromInsights: boolean;
+  onBack: () => void;
+  onConfirmProduct: (
+    product: SharedProduct,
+    canonicalName: string,
+    category: ProductCategoryKey,
+  ) => Promise<boolean>;
+  failedWrites: Record<string, FailedWrite>;
   onOpenTransaction: (transactionId: string) => void;
 }) {
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewName, setReviewName] = useState("");
+  const [reviewCategory, setReviewCategory] = useState<
+    ProductCategoryKey | ""
+  >("");
+  const [reviewSaving, setReviewSaving] = useState(false);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     return products.filter((product) => {
@@ -2186,6 +2351,12 @@ function ProductsTab({
   }, [category, products, search]);
   const selected =
     products.find((product) => product.id === selectedProductId) ?? products[0];
+  const catalogProduct = catalogProducts.find(
+    (product) => product.costcoItemNumber === selected?.itemNumber,
+  );
+  const reviewFailure = catalogProduct
+    ? failedWrites[`product-review-${catalogProduct.id}`]
+    : undefined;
 
   useEffect(() => {
     if (!detailOpen) return;
@@ -2194,8 +2365,38 @@ function ProductsTab({
   }, [detailOpen, selectedProductId]);
 
   function closeProductDetail() {
+    if (openedFromInsights) {
+      onBack();
+      return;
+    }
     setDetailOpen(false);
     window.requestAnimationFrame(() => returnFocus.current?.focus());
+  }
+
+  function toggleProductReview() {
+    if (reviewOpen) {
+      setReviewOpen(false);
+      return;
+    }
+    setReviewName(catalogProduct?.canonicalName ?? selected?.name ?? "");
+    const currentCategory = catalogProduct?.category ?? selected?.categoryKey ?? null;
+    setReviewCategory(
+      isReviewableProductCategory(currentCategory) ? currentCategory : "",
+    );
+    setReviewOpen(true);
+  }
+
+  async function saveProductReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!catalogProduct || !reviewName.trim() || !reviewCategory) return;
+    setReviewSaving(true);
+    const saved = await onConfirmProduct(
+      catalogProduct,
+      reviewName.trim(),
+      reviewCategory,
+    );
+    setReviewSaving(false);
+    if (saved) setReviewOpen(false);
   }
 
   if (!selected) return null;
@@ -2279,13 +2480,16 @@ function ProductsTab({
                   returnFocus.current = event.currentTarget;
                   setSelectedProductId(product.id);
                   setDetailOpen(true);
+                  setReviewOpen(false);
                 }}
               >
                 <span className="product-initial" aria-hidden="true">
                   {product.name.charAt(0)}
                 </span>
                 <span className="product-main">
-                  <strong>{product.name}</strong>
+                  <strong title={productDisplayName(product)}>
+                    {productDisplayName(product)}
+                  </strong>
                   <small>
                     {product.categoryLabel} · {product.purchaseCount}{" "}
                     {product.purchaseCount === 1 ? "purchase" : "purchases"}
@@ -2319,34 +2523,118 @@ function ProductsTab({
         <article className="product-detail card" aria-live="polite">
           <button
             type="button"
-            className="back-button product-mobile-back"
+            className={`back-button product-context-back ${
+              openedFromInsights ? "from-insights" : "from-products"
+            }`}
             onClick={closeProductDetail}
           >
-            ← Back to products
+            ← Back to {openedFromInsights ? "Insights" : "products"}
           </button>
           <div className="product-detail-top">
             <div>
               <p className="section-label">Item {selected.itemNumber}</p>
-              <h2 ref={detailHeading} tabIndex={-1}>{selected.name}</h2>
+              <h2 ref={detailHeading} tabIndex={-1}>
+                {productDisplayName(selected)}
+              </h2>
               <p>{selected.categoryLabel} · receipt history through {formatShortDate(auditThrough)}</p>
             </div>
-            <EvidenceBadge
-              label={
-                selected.classificationStatus === "reviewed"
-                  ? "Reviewed category"
-                  : selected.classificationStatus === "rule_based"
-                    ? "Rule-matched category"
-                    : "Category needs review"
-              }
-              tone={
-                selected.classificationStatus === "reviewed"
-                  ? "confirmed"
-                  : selected.classificationStatus === "rule_based"
-                    ? "suggestion"
-                    : "unknown"
-              }
-            />
+            <div className="product-identification-actions">
+              <EvidenceBadge
+                label={
+                  selected.classificationStatus === "reviewed"
+                    ? "Reviewed category"
+                    : selected.classificationStatus === "rule_based"
+                      ? "Rule-matched category"
+                      : "Category needs review"
+                }
+                tone={
+                  selected.classificationStatus === "reviewed"
+                    ? "confirmed"
+                    : selected.classificationStatus === "rule_based"
+                      ? "suggestion"
+                      : "unknown"
+                }
+              />
+              <button
+                type="button"
+                className="text-button product-review-trigger"
+                onClick={toggleProductReview}
+                disabled={!catalogProduct}
+              >
+                {selected.classificationStatus === "needs_review"
+                  ? "Help identify this item"
+                  : "Edit identification"}
+              </button>
+            </div>
           </div>
+          {reviewOpen && catalogProduct ? (
+            <form className="product-review-form" onSubmit={saveProductReview}>
+              <div className="product-review-copy">
+                <strong>Help the household recognize this product</strong>
+                <p>
+                  This updates the friendly name and category for both spouses. The
+                  original receipt text stays unchanged.
+                </p>
+              </div>
+              <label>
+                <span>Receipt text</span>
+                <input value={selected.rawDescription} readOnly />
+              </label>
+              <label>
+                <span>Friendly product name</span>
+                <input
+                  value={reviewName}
+                  onChange={(event) => setReviewName(event.target.value)}
+                  maxLength={140}
+                  autoComplete="off"
+                  required
+                />
+              </label>
+              <label>
+                <span>Category</span>
+                <select
+                  value={reviewCategory}
+                  onChange={(event) =>
+                    setReviewCategory(event.target.value as ProductCategoryKey | "")
+                  }
+                  required
+                >
+                  <option value="">Choose the best fit</option>
+                  {reviewableProductCategories.map((candidate) => (
+                    <option key={candidate.key} value={candidate.key}>
+                      {candidate.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {reviewFailure ? (
+                <p className="product-review-error" role="alert">
+                  {reviewFailure.message} Review the latest details, then save again.
+                </p>
+              ) : null}
+              <div className="product-review-buttons">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setReviewOpen(false)}
+                >
+                  Not sure yet
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={reviewSaving || !reviewName.trim() || !reviewCategory}
+                >
+                  {reviewSaving ? "Saving…" : "Save identification"}
+                </button>
+              </div>
+              {catalogProduct.categoryReviewedByDisplayName ? (
+                <small>
+                  Last reviewed by {catalogProduct.categoryReviewedByDisplayName}
+                </small>
+              ) : null}
+            </form>
+          ) : null}
           <div className="detail-metrics">
             <div>
               <span>Median purchase interval</span>
@@ -2391,12 +2679,19 @@ function ProductsTab({
                   onClick={() => onOpenTransaction(point.transactionId)}
                 >
                   <span>{formatShortDate(point.purchasedOn)}</span>
-                  <strong>
-                    {point.unitPriceCents === null
-                      ? currency.format(point.netAmountCents / 100)
-                      : currency.format(point.unitPriceCents / 100)}
-                  </strong>
-                  <small>{point.quantity !== 1 ? `${point.quantity} units · ` : ""}Open receipt →</small>
+                  <strong>{currency.format(point.netAmountCents / 100)} paid</strong>
+                  {point.discountCents > 0 ? (
+                    <small className="price-discount">
+                      Regular {currency.format(point.grossAmountCents / 100)} · saved{" "}
+                      {currency.format(point.discountCents / 100)}
+                    </small>
+                  ) : (
+                    <small>Receipt price · no line discount</small>
+                  )}
+                  <small>
+                    {point.quantity !== 1 ? `${point.quantity} units · ` : ""}
+                    Open receipt →
+                  </small>
                 </button>
               ))}
             </div>
