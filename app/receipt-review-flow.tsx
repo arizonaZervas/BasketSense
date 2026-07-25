@@ -8,6 +8,10 @@ import {
   useState,
 } from "react";
 import { parseCostcoOcrText, reconcileReceipt } from "./receipt-logic";
+import {
+  PRODUCT_CATEGORY_PRESENTATION,
+  type ProductCategoryKey,
+} from "./product-categories";
 
 export type ClosedLoopReceipt = {
   id: string;
@@ -35,6 +39,9 @@ export type ClosedLoopReceiptItem = {
   discountCents?: number | null;
   netAmountCents?: number | null;
   taxStatus?: "taxable" | "non_taxable" | "unknown" | null;
+  productId?: string | null;
+  canonicalName?: string | null;
+  category?: ProductCategoryKey | null;
 };
 
 export type ClosedLoopQuestion = {
@@ -49,6 +56,7 @@ export type ClosedLoopQuestion = {
   status?: string | null;
   selectedValue?: string | null;
   effectTarget?: string | null;
+  receiptItemId?: string | null;
 };
 
 export type ClosedLoopComparison = {
@@ -1254,6 +1262,9 @@ export function ClosedLoopReview({
 }) {
   const [answeringId, setAnsweringId] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
+  const [catalogQuestionId, setCatalogQuestionId] = useState<string | null>(null);
+  const [catalogName, setCatalogName] = useState("");
+  const [catalogCategory, setCatalogCategory] = useState<ProductCategoryKey | "">("");
   const receipt = closedLoop?.receipt;
   const questions = (closedLoop?.questions ?? []).slice(0, 3);
   const openQuestions = questions.filter(
@@ -1268,7 +1279,27 @@ export function ClosedLoopReview({
     closedLoop?.upload?.status ?? "",
   );
 
-  async function answer(question: ClosedLoopQuestion, value: string) {
+  const receiptItemsById = useMemo(
+    () => new Map((closedLoop?.items ?? []).flatMap((item) => item.id ? [[item.id, item] as const] : [])),
+    [closedLoop?.items],
+  );
+  const reviewableCategories = PRODUCT_CATEGORY_PRESENTATION.filter(
+    (category) => !["fuel", "optical_services", "needs_review"].includes(category.key),
+  );
+
+  function beginCatalogConfirmation(question: ClosedLoopQuestion) {
+    const item = question.receiptItemId ? receiptItemsById.get(question.receiptItemId) : null;
+    setCatalogQuestionId(question.id);
+    setCatalogName(item?.canonicalName ?? item?.rawDescription ?? "");
+    setCatalogCategory(item?.taxStatus === "non_taxable" ? "groceries_beverages" : "");
+    setAnswerError(null);
+  }
+
+  async function answer(
+    question: ClosedLoopQuestion,
+    value: string,
+    details?: { canonicalName?: string; category?: ProductCategoryKey },
+  ) {
     setAnsweringId(question.id);
     setAnswerError(null);
     try {
@@ -1279,10 +1310,12 @@ export function ClosedLoopReview({
           action: "answer_review_question",
           questionId: question.id,
           value,
+          ...details,
         }),
       });
       await responseJson(response, "That answer could not be saved.");
       await onRefresh();
+      setCatalogQuestionId(null);
     } catch (error) {
       setAnswerError(error instanceof Error ? error.message : "That answer could not be saved.");
     } finally {
@@ -1376,13 +1409,60 @@ export function ClosedLoopReview({
                   <span>{question.purpose ?? "Trip context"}</span>
                 </div>
                 <h3>{question.prompt}</h3>
-                <div className="question-options">
+                {catalogQuestionId === question.id ? (
+                  <form
+                    className="catalog-confirmation-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!catalogName.trim() || !catalogCategory) {
+                        setAnswerError("Add a household name and choose a category first.");
+                        return;
+                      }
+                      void answer(question, "add_to_catalog", {
+                        canonicalName: catalogName.trim(),
+                        category: catalogCategory,
+                      });
+                    }}
+                  >
+                    <p>This keeps the receipt wording as an alias and uses this confirmed line for its first package price.</p>
+                    <label>
+                      <span>Household name</span>
+                      <input
+                        value={catalogName}
+                        onChange={(event) => setCatalogName(event.target.value)}
+                        maxLength={140}
+                        autoFocus
+                      />
+                    </label>
+                    <label>
+                      <span>Category</span>
+                      <select
+                        value={catalogCategory}
+                        onChange={(event) => setCatalogCategory(event.target.value as ProductCategoryKey | "")}
+                      >
+                        <option value="">Choose a category</option>
+                        {reviewableCategories.map((category) => (
+                          <option key={category.key} value={category.key}>{category.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="catalog-confirmation-actions">
+                      <button type="submit" className="primary-button" disabled={!connected || answeringId === question.id}>
+                        {answeringId === question.id ? "Adding…" : "Add to catalog"}
+                      </button>
+                      <button type="button" className="secondary-button" disabled={answeringId === question.id} onClick={() => setCatalogQuestionId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="question-options">
                   {question.options.map((option) => (
                     <button
                       type="button"
                       key={option.value}
                       disabled={!connected || answeringId === question.id}
-                      onClick={() => void answer(question, option.value)}
+                      onClick={() => option.value === "add_to_catalog" ? beginCatalogConfirmation(question) : void answer(question, option.value)}
                     >
                       <strong>{option.label}</strong>
                       {option.effect ? <small>This will {option.effect}</small> : null}
@@ -1397,7 +1477,8 @@ export function ClosedLoopReview({
                     <strong>Skip</strong>
                     <small>This will leave the current evidence unchanged.</small>
                   </button>
-                </div>
+                  </div>
+                )}
               </article>
             ))}
           </div>

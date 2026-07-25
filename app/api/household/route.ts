@@ -519,6 +519,7 @@ interface ProductRow {
   latest_regular_unit_price_cents?: number | null;
   latest_paid_unit_price_cents?: number | null;
   latest_discount_unit_cents?: number | null;
+  receipt_purchase_count?: number | null;
 }
 
 interface ReceiptTransactionRow {
@@ -1359,6 +1360,7 @@ function productSummary(row: ProductRow): ProductSummary {
       row.latest_regular_unit_price_cents ?? null,
     latestPaidUnitPriceCents: row.latest_paid_unit_price_cents ?? null,
     latestDiscountUnitCents: row.latest_discount_unit_cents ?? null,
+    purchaseCount: row.receipt_purchase_count ?? 0,
     brand: row.brand,
     unitDescription: row.unit_description,
     active: Boolean(row.active),
@@ -1439,7 +1441,8 @@ async function readHouseholdState(
                 latest.purchased_at AS latest_purchased_at,
                 latest.regular_unit_price_cents AS latest_regular_unit_price_cents,
                 latest.paid_unit_price_cents AS latest_paid_unit_price_cents,
-                latest.discount_unit_cents AS latest_discount_unit_cents
+                latest.discount_unit_cents AS latest_discount_unit_cents,
+                latest.receipt_purchase_count AS receipt_purchase_count
          FROM products
          LEFT JOIN household_members AS reviewer
            ON reviewer.id = products.category_reviewed_by_member_id
@@ -1460,6 +1463,9 @@ async function readHouseholdState(
                       receipt_items.discount_cents * 1000.0 /
                       receipt_items.quantity_milli
                     ) AS INTEGER) AS discount_unit_cents,
+                    COUNT(*) OVER (
+                      PARTITION BY receipt_items.product_id
+                    ) AS receipt_purchase_count,
                     ROW_NUMBER() OVER (
                       PARTITION BY receipt_items.product_id
                       ORDER BY receipt_transactions.purchased_at DESC,
@@ -3679,27 +3685,22 @@ async function rebuildReviewQuestions(
     candidates.push({
       key: `verify-line:${materialUnresolved.id}`,
       purpose: "data_quality",
-      prompt: `We read “${materialUnresolved.raw_description}” as ${moneyLabel(
+      prompt: `Add “${materialUnresolved.raw_description}” (${moneyLabel(
         materialUnresolved.net_amount_cents
-      )}, but could not identify the product. Is the receipt wording usable?`,
+      )}) to your household catalog?`,
       options: [
         {
-          value: "keep_as_written",
-          label: "Yes, keep it",
-          effect: "Creates a household product using this wording and resolves the line.",
-        },
-        {
-          value: "correct_line",
-          label: "I’ll correct it",
-          effect: "Keeps the receipt provisional until the line is corrected.",
+          value: "add_to_catalog",
+          label: "Add to catalog",
+          effect: "Lets you choose a friendly name and category, then remembers this receipt alias.",
         },
         {
           value: "leave_unresolved",
-          label: "Not sure yet",
-          effect: "Keeps this amount visibly unresolved.",
+          label: "Not now",
+          effect: "Keeps this line outside the catalog until you decide.",
         },
       ],
-      declaredEffect: "Updates receipt product resolution or keeps it provisional",
+      declaredEffect: "Creates one confirmed household catalog product or leaves this line unresolved",
       effectTarget: "receipt_record",
       receiptItemId: materialUnresolved.id,
       priority: 10,
@@ -4587,7 +4588,8 @@ async function confirmReceiptProduct(
   db: D1Database,
   context: HouseholdContext,
   receiptItemId: string,
-  requestedProductId?: string | null
+  requestedProductId?: string | null,
+  metadata?: { canonicalName?: string; category?: string }
 ) {
   const receiptItem = await db
     .prepare(
@@ -4611,20 +4613,33 @@ async function confirmReceiptProduct(
       .first<{ id: string }>();
     if (!product) throw new ApiError(404, "Product not found");
   } else {
+    const canonicalName = requiredString(
+      metadata?.canonicalName,
+      "canonicalName",
+      140
+    );
+    const category = requiredString(metadata?.category, "category", 80);
+    if (!REVIEWABLE_PRODUCT_CATEGORIES.has(category as ProductCategoryKey)) {
+      throw new ApiError(400, "Choose a household product category");
+    }
     productId = crypto.randomUUID();
     const now = nowIso();
     await db
       .prepare(
         `INSERT INTO products (
-          id, household_id, costco_item_number, canonical_name,
+          id, household_id, costco_item_number, canonical_name, category,
+          category_status, category_reviewed_at, category_reviewed_by_member_id,
           active, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 1, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, 'reviewed', ?, ?, 1, ?, ?)`
       )
       .bind(
         productId,
         context.household.id,
         receiptItem.costco_item_number,
-        receiptItem.raw_description,
+        canonicalName,
+        category,
+        now,
+        context.member.id,
         now,
         now
       )
@@ -4808,22 +4823,30 @@ async function answerReviewQuestion(
       ? null
       : requiredString(body.note, "note", 500);
   const productId = optionalId(body.productId, "productId");
+  const canonicalName =
+    body.canonicalName === undefined || body.canonicalName === null
+      ? undefined
+      : requiredString(body.canonicalName, "canonicalName", 140);
+  const category =
+    body.category === undefined || body.category === null
+      ? undefined
+      : requiredString(body.category, "category", 80);
   const replacementReceiptItemId = optionalId(
     body.replacementReceiptItemId,
     "replacementReceiptItemId"
   );
   const now = nowIso();
 
-  if (
-    question.receipt_item_id &&
-    (value === "keep_as_written" || productId)
-  ) {
+  if (question.receipt_item_id && value === "add_to_catalog") {
     await confirmReceiptProduct(
       db,
       context,
       question.receipt_item_id,
-      productId
+      productId,
+      { canonicalName, category }
     );
+  } else if (question.receipt_item_id && productId) {
+    await confirmReceiptProduct(db, context, question.receipt_item_id, productId);
   }
   if (
     value === "yes_substitution" &&

@@ -2026,6 +2026,149 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
   }
 });
 
+test("an unknown receipt item becomes a catalog product only after an explicit named confirmation", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("confirm-once@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const productCountBefore = db.database
+      .prepare(`SELECT COUNT(*) AS count FROM products`)
+      .get().count;
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest("confirm-once@example.test", "PATCH", {
+            action: "freeze_trip",
+            tripId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const ingest = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("confirm-once@example.test", "POST", {
+          action: "ingest_receipt_draft",
+          clientDraftId: "confirm-once-rice",
+          tripId,
+          purchasedAt: "2026-07-25T10:30:00-07:00",
+          subtotalCents: 2400,
+          taxCents: 0,
+          totalCents: 2400,
+          discountCents: 0,
+          items: [
+            receiptDraftLine({
+              sourceLineNumber: 1,
+              costcoItemNumber: "9988776",
+              rawDescription: "BASMATI RICE 20LB",
+              unitPriceCents: 2400,
+              lineSubtotalCents: 2400,
+            }),
+          ],
+        }),
+        db,
+      ),
+    );
+    const catalogQuestion = ingest.questions.find((question) =>
+      question.options.some((option) => option.value === "add_to_catalog"),
+    );
+    assert.ok(catalogQuestion);
+    assert.ok(catalogQuestion.receiptItemId);
+
+    const missingMetadata = await handleHouseholdPost(
+      householdRequest("confirm-once@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: catalogQuestion.id,
+        value: "add_to_catalog",
+      }),
+      db,
+    );
+    assert.equal(missingMetadata.status, 400);
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM products`).get().count,
+      productCountBefore,
+      "Raw receipt text must never silently create a catalog product",
+    );
+
+    const confirmed = await handleHouseholdPost(
+      householdRequest("confirm-once@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: catalogQuestion.id,
+        value: "add_to_catalog",
+        canonicalName: "Royal basmati rice, 20 lb",
+        category: "groceries_beverages",
+      }),
+      db,
+    );
+    assert.equal(confirmed.status, 200);
+    const confirmedBody = await responseJson(confirmed);
+    assert.equal(confirmedBody.question.selectedValue, "add_to_catalog");
+
+    const product = db.database
+      .prepare(
+        `SELECT * FROM products
+         WHERE household_id = ? AND canonical_name = ?`,
+      )
+      .get("household_basketsense", "Royal basmati rice, 20 lb");
+    assert.ok(product);
+    assert.equal(product.category, "groceries_beverages");
+    assert.equal(product.category_status, "reviewed");
+    assert.equal(product.costco_item_number, "9988776");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT raw_description, product_id FROM product_aliases
+           WHERE household_id = ? AND costco_item_number = ?`,
+        )
+        .get("household_basketsense", "9988776").raw_description,
+      "BASMATI RICE 20LB",
+    );
+    const receiptItem = db.database
+      .prepare(`SELECT * FROM receipt_items WHERE id = ?`)
+      .get(catalogQuestion.receiptItemId);
+    assert.equal(receiptItem.product_id, product.id);
+    assert.equal(receiptItem.line_subtotal_cents, 2400);
+    assert.equal(receiptItem.net_amount_cents, 2400);
+
+    const refreshed = await responseJson(
+      await handleHouseholdGet(householdRequest("confirm-once@example.test"), db),
+    );
+    const searchable = refreshed.products.find((entry) => entry.id === product.id);
+    assert.ok(searchable);
+    assert.equal(searchable.purchaseCount, 1);
+    assert.equal(searchable.latestRegularUnitPriceCents, 2400);
+    assert.equal(searchable.latestPaidUnitPriceCents, 2400);
+    assert.equal(
+      refreshed.listItems.some((item) => item.productId === product.id),
+      false,
+      "One confirmed purchase is searchable but is not auto-added to the Saturday list",
+    );
+
+    const addedToLiveList = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("confirm-once@example.test", "POST", {
+          action: "add_list_item",
+          tripId,
+          productId: product.id,
+          label: "Royal basmati rice, 20 lb",
+          section: "essentials",
+          source: "manual",
+          included: true,
+        }),
+        db,
+      ),
+    );
+    assert.equal(addedToLiveList.item.productId, product.id);
+    assert.equal(addedToLiveList.item.estimatedPriceCents, 2400);
+  } finally {
+    db.close();
+  }
+});
+
 test("a provisional receipt refuses finalization and review answers have bounded idempotent effects", async () => {
   const db = new D1DatabaseAdapter();
   try {

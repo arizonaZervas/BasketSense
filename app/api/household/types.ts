@@ -227,6 +227,7 @@ export interface ProductSummary {
   latestRegularUnitPriceCents: number | null;
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
+  purchaseCount: number;
   brand: string | null;
   unitDescription: string | null;
   active: boolean;
@@ -456,6 +457,8 @@ export type HouseholdPostRequest =
       value: string;
       note?: string | null;
       productId?: string | null;
+      canonicalName?: string;
+      category?: string;
       replacementReceiptItemId?: string | null;
     };
 

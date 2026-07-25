@@ -101,6 +101,7 @@ type SharedProduct = HouseholdCatalogProductMetadata & {
   latestRegularUnitPriceCents: number | null;
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
+  purchaseCount: number;
   updatedAt: string;
 };
 
@@ -1829,7 +1830,9 @@ function ThisWeekTab({
                           : `~${currency.format(product.latestRegularUnitPriceCents / 100)}`}
                       </strong>
                       <small>
-                        {product.latestPurchasedAt
+                        {product.purchaseCount === 1
+                          ? "Based on last purchase · low confidence"
+                          : product.latestPurchasedAt
                           ? `Last bought ${formatShortDate(product.latestPurchasedAt)}`
                           : "Past receipt product"}
                       </small>
@@ -1859,7 +1862,7 @@ function ThisWeekTab({
       >
         {matchedCatalogProduct &&
         matchedCatalogProduct.latestRegularUnitPriceCents !== null
-          ? `Estimate will use its latest regular package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}${matchedCatalogProduct.latestPurchasedAt ? ` from ${formatShortDate(matchedCatalogProduct.latestPurchasedAt)}` : ""}.`
+          ? `Estimate will use its latest regular package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}${matchedCatalogProduct.latestPurchasedAt ? ` from ${formatShortDate(matchedCatalogProduct.latestPurchasedAt)}` : ""}${matchedCatalogProduct.purchaseCount === 1 ? " · one purchase, low confidence." : "."}`
           : newItem.trim()
             ? "Choose an exact past product to add its receipt-based estimate; genuinely new items can stay unpriced."
             : `Search ${catalogOptions.length} past warehouse products. Select a match to reuse its latest regular package price.`}
