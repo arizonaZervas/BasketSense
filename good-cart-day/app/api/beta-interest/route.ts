@@ -36,5 +36,5 @@ export async function POST(request: Request) {
     const emailHash = await digest(`${email}|${runtime.BETA_INTEREST_HASH_PEPPER}`);
     await db.prepare(`INSERT INTO beta_interest (id, email, email_hash, consent_at) VALUES (?, ?, ?, ?) ON CONFLICT(email_hash) DO NOTHING`).bind(crypto.randomUUID(), email, emailHash, now.toISOString()).run();
     return genericSuccess();
-  } catch { return genericSuccess(); }
+  } catch { return json({ accepted: false, error: "Beta signup is temporarily unavailable." }, 503); }
 }

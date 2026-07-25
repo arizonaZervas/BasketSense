@@ -28,7 +28,7 @@ test("Good Cart Day public build contains no seeded family receipt markers", asy
 
 test("public interest collection is consented and protected", async () => {
   const source = await readFile(new URL("../good-cart-day/app/api/beta-interest/route.ts", import.meta.url), "utf8");
-  for (const required of ["TURNSTILE_SECRET_KEY", "BETA_INTEREST_HASH_PEPPER", "beta_interest_rate_limits", "genericSuccess", "consent"]) assert.match(source, new RegExp(required));
+  for (const required of ["TURNSTILE_SECRET_KEY", "BETA_INTEREST_HASH_PEPPER", "beta_interest_rate_limits", "genericSuccess", "consent", "temporarily unavailable"]) assert.match(source, new RegExp(required));
 });
 
 test("Good Cart Day only provides a neutral uninvited state", async () => {
