@@ -29,14 +29,15 @@ the sequence, but feature work may not silently skip a decision gate.
 | 1 | [BS-001](BS-001-family-closed-loop.md) | Prove the family closed loop | Ready | Harsh and Navni complete four measured Saturday cycles. |
 | 2 | [BS-002](BS-002-live-data-visibility.md) | Live data visibility and ownership | In progress | Owners can safely explore and export actual hosted household data. |
 | 3 | [BS-003](BS-003-recommendation-engine-v2.md) | Recommendation engine v2 | Proposed | Explainable, household-specific recommendations pass shadow evaluation. |
-| 4 | [BS-004](BS-004-production-safety.md) | Production safety and migration foundation | Blocked by Gate A | Private family data and migration risk are removed from the external-user path. |
-| 5 | [BS-005](BS-005-tenant-isolation.md) | Multi-tenant identity and isolation | Blocked by BS-004 | Every request and object is scoped to an authenticated household membership. |
-| 6 | [BS-006](BS-006-household-lifecycle.md) | Household lifecycle | Blocked by BS-005 | Owners can safely create and manage a two-person household. |
-| 7 | [BS-007](BS-007-zero-history-onboarding.md) | Zero-history onboarding | Blocked by BS-006 | A new household reaches a useful first list within five minutes. |
-| 8 | [BS-008](BS-008-batch-receipt-ingestion.md) | Batch receipt ingestion | Blocked by BS-005 | Historical PDFs and photos can be ingested safely with focused review. |
-| 9 | [BS-009](BS-009-privacy-and-operations.md) | Privacy and operational readiness | Blocked by BS-005 | Export, deletion, retention, recovery, and operating controls are proven. |
-| 10 | [BS-010](BS-010-controlled-friend-beta.md) | Controlled friend beta | Blocked by Gate B | One, then five, then ten invited households complete the weekly loop safely. |
-| 11 | [BS-011](BS-011-measured-scale.md) | Scale based on measured usage | Blocked by BS-010 | Saturday-shaped load for 100 households is understood and measured bottlenecks are addressed. |
+| 4 | [BS-004A](BS-004A-public-safe-boundary.md) | Public-safe boundary and marketing surface | In progress | A parallel Good Cart Day public surface contains only synthetic data and cannot expose the family product. |
+| 5 | [BS-004B](BS-004B-family-migration.md) | Family migration and production cutover | Blocked by Gate A | The family app moves only after shadow parity, export/restore, and rollback evidence. |
+| 6 | [BS-005](BS-005-tenant-isolation.md) | Multi-tenant identity and isolation | Blocked by BS-004B | Every request and object is scoped to an authenticated household membership. |
+| 7 | [BS-006](BS-006-household-lifecycle.md) | Household lifecycle | Blocked by BS-005 | Owners can safely create and manage a two-person household. |
+| 8 | [BS-007](BS-007-zero-history-onboarding.md) | Zero-history onboarding | Blocked by BS-006 | A new household reaches a useful first list within five minutes. |
+| 9 | [BS-008](BS-008-batch-receipt-ingestion.md) | Batch receipt ingestion | Blocked by BS-005 | Historical PDFs and photos can be ingested safely with focused review. |
+| 10 | [BS-009](BS-009-privacy-and-operations.md) | Privacy and operational readiness | Blocked by BS-005 | Export, deletion, retention, recovery, and operating controls are proven. |
+| 11 | [BS-010](BS-010-controlled-friend-beta.md) | Controlled friend beta | Blocked by Gate B | One, then five, then ten invited households complete the weekly loop safely. |
+| 12 | [BS-011](BS-011-measured-scale.md) | Scale based on measured usage | Blocked by BS-010 | Saturday-shaped load for 100 households is understood and measured bottlenecks are addressed. |
 
 ## Decision gates
 

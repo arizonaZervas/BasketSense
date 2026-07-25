@@ -37,6 +37,8 @@ yarn-error.log*
 # typescript
 next-env.d.ts
 /dist/
+/good-cart-day/dist/
+/good-cart-day/.wrangler/
 /.wrangler/
 /outputs/
 /output/

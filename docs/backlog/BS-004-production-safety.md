@@ -1,8 +1,12 @@
-# BS-004 — Production safety and migration foundation
+# BS-004 — Superseded by BS-004A and BS-004B
 
-**Status:** Blocked by Gate A  
-**Priority:** 4  
+**Status:** Superseded
+**Priority:** historical record
 **Decision gate:** Gate B
+
+This original item is split into [BS-004A](BS-004A-public-safe-boundary.md)
+for the parallel Good Cart Day marketing boundary and
+[BS-004B](BS-004B-family-migration.md) for the later family cutover.
 
 ## Outcome
 
@@ -68,4 +72,3 @@ production-shaped copy as private, temporary, access-controlled, and deletable.
 Pending. Retain parity results, bundle inspection, migration rehearsal,
 export/restore evidence, and confirmation that the family deployment did not
 change unexpectedly.
-
