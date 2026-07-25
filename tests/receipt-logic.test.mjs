@@ -288,6 +288,46 @@ test("comparison uses neutral receipt-only language and keeps bridge components 
   assert.doesNotMatch(JSON.stringify(comparison), /impulse/i);
 });
 
+test("a productless planned estimate stays planned and reports its estimated-item difference", () => {
+  const intentItems = [
+    {
+      id: "rice-plan",
+      productId: null,
+      label: "Rice",
+      section: "essentials",
+      includedAtFreeze: true,
+      estimatedPriceCents: 2400,
+      quantityMilli: 1000,
+    },
+  ];
+  const receiptItems = [
+    {
+      id: "rice-actual",
+      productId: null,
+      rawDescription: "RICE",
+      quantityMilli: 1000,
+      netAmountCents: 2700,
+    },
+  ];
+  const matchResult = matchReceiptItemsToIntent({
+    intentItems,
+    receiptItems,
+  });
+  assert.equal(matchResult.matches.length, 1);
+
+  const comparison = buildTripComparison({
+    intentItems,
+    receiptItems,
+    matches: matchResult.matches,
+    estimatedTotalCents: 2400,
+    actualTotalCents: 2700,
+  });
+
+  assert.equal(comparison.buckets.savedAndPurchased.length, 1);
+  assert.equal(comparison.buckets.receiptOnlyAdditions.length, 0);
+  assert.equal(comparison.bridge.priceAndQuantityVarianceCents, 300);
+});
+
 test("review questions are evidence-triggered, deterministic, and capped at three", () => {
   const intentItems = [
     {

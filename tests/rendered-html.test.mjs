@@ -105,4 +105,15 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(source, /unfreezeTriggerRef\.current\?\.focus\(\)/);
   assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/);
   assert.match(source, /onPointerDown=\{\(event\) => event\.preventDefault\(\)\}/);
+  assert.match(source, /No estimate · Add estimate/);
+  assert.match(source, /household estimate/);
+  assert.match(source, /parseManualEstimateDollars/);
+  assert.match(source, /item\.includedAtFreeze !== true/);
+
+  const reviewSource = await readFile(
+    new URL("../app/receipt-review-flow.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(reviewSource, /Estimated-item difference/);
+  assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });

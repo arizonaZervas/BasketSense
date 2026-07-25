@@ -29,6 +29,10 @@ import {
   type ProductCategoryKey,
 } from "./product-categories";
 import {
+  manualEstimateDraft,
+  parseManualEstimateDollars,
+} from "./manual-estimate";
+import {
   ClosedLoopReview,
   ReceiptFlowDialog,
   ReceiptNextStepCard,
@@ -873,6 +877,40 @@ export function BasketSenseDashboard({
     });
   }
 
+  async function setManualEstimate(
+    item: SharedListItem,
+    estimatedPriceCents: number,
+  ) {
+    const key = `estimate-${item.id}`;
+    setHousehold((current) =>
+      current
+        ? {
+            ...current,
+            listItems: current.listItems.map((candidate) =>
+              candidate.id === item.id
+                ? { ...candidate, estimatedPriceCents }
+                : candidate,
+            ),
+          }
+        : current,
+    );
+    return performWrite(key, {
+      method: "POST",
+      body: {
+        action: "add_list_item",
+        tripId: item.tripId,
+        label: item.label,
+        productId: item.productId,
+        source: item.source,
+        section: item.section,
+        included: true,
+        estimatedPriceCents,
+        quantityMilli: item.quantityMilli,
+      },
+      successMessage: `${item.label} estimate added for this trip`,
+    });
+  }
+
   async function addManualItem(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const label = newItem.trim();
@@ -1165,6 +1203,7 @@ export function BasketSenseDashboard({
             failedWrites={failedWrites}
             onRetry={retryWrite}
             onAdd={addManualItem}
+            onSetEstimate={setManualEstimate}
             onToggleIncluded={toggleIncluded}
             onToggleChecked={toggleChecked}
             onFreeze={freezeTrip}
@@ -1287,6 +1326,7 @@ function ThisWeekTab({
   failedWrites,
   onRetry,
   onAdd,
+  onSetEstimate,
   onToggleIncluded,
   onToggleChecked,
   onFreeze,
@@ -1305,6 +1345,10 @@ function ThisWeekTab({
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => void;
+  onSetEstimate: (
+    item: SharedListItem,
+    estimatedPriceCents: number,
+  ) => Promise<boolean>;
   onToggleIncluded: (item: SharedListItem) => void;
   onToggleChecked: (item: SharedListItem) => void;
   onFreeze: () => void;
@@ -1317,6 +1361,13 @@ function ThisWeekTab({
   const [unfreezeConfirmationKey, setUnfreezeConfirmationKey] = useState<
     string | null
   >(null);
+  const [estimateEditorItemId, setEstimateEditorItemId] = useState<
+    string | null
+  >(null);
+  const [estimateDraft, setEstimateDraft] = useState("");
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const estimateReturnFocus = useRef<HTMLButtonElement | null>(null);
+  const estimateReturnItemId = useRef<string | null>(null);
   const quickItemRef = useRef<HTMLInputElement>(null);
   const unfreezeTriggerRef = useRef<HTMLButtonElement>(null);
   const startShoppingRef = useRef<HTMLButtonElement>(null);
@@ -1525,6 +1576,40 @@ function ThisWeekTab({
       return;
     }
     if (event.key === "Tab") setCatalogOpen(false);
+  }
+
+  function openEstimateEditor(
+    item: SharedListItem,
+    trigger: HTMLButtonElement,
+  ) {
+    estimateReturnItemId.current = item.id;
+    estimateReturnFocus.current = trigger;
+    setEstimateEditorItemId(item.id);
+    setEstimateDraft(manualEstimateDraft(item.estimatedPriceCents));
+    setEstimateError(null);
+  }
+
+  function closeEstimateEditor(restoreFocus = true) {
+    setEstimateEditorItemId(null);
+    setEstimateDraft("");
+    setEstimateError(null);
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => estimateReturnFocus.current?.focus());
+    }
+  }
+
+  async function saveEstimate(
+    event: FormEvent<HTMLFormElement>,
+    item: SharedListItem,
+  ) {
+    event.preventDefault();
+    const parsed = parseManualEstimateDollars(estimateDraft);
+    if (parsed.error) {
+      setEstimateError(parsed.error);
+      return;
+    }
+    const saved = await onSetEstimate(item, parsed.cents);
+    if (saved) closeEstimateEditor();
   }
 
   return (
@@ -1837,7 +1922,9 @@ function ThisWeekTab({
               <div className="list-rows" role="list">
                 {included.map((item) => {
                   const key = `item-${item.id}`;
+                  const estimateKey = `estimate-${item.id}`;
                   const pending = pendingWrites.has(key);
+                  const estimatePending = pendingWrites.has(estimateKey);
                   const addedBy = item.addedByMemberId
                     ? memberById.get(item.addedByMemberId)?.displayName
                     : null;
@@ -1846,6 +1933,13 @@ function ThisWeekTab({
                     undefined,
                     { maximumFractionDigits: 3 },
                   );
+                  const isHouseholdEstimate = item.productId === null;
+                  const estimateIsEditable =
+                    isHouseholdEstimate &&
+                    item.quantityMilli === 1000 &&
+                    (!shoppingStarted || item.includedAtFreeze !== true);
+                  const estimateEditorOpen =
+                    estimateEditorItemId === item.id && estimateIsEditable;
                   return (
                     <div
                       className="list-row-wrap"
@@ -1901,18 +1995,105 @@ function ThisWeekTab({
                           )}
                         </div>
                         <div className="list-row-actions">
-                          <span className="estimated-price">
-                            {item.estimatedPriceCents === null
-                              ? "No estimate"
-                              : item.quantityMilli === 1000
-                                ? `~${currency.format(item.estimatedPriceCents / 100)}`
-                                : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
-                          </span>
+                          {estimateEditorOpen ? (
+                            <form
+                              className="manual-estimate-form"
+                              onSubmit={(event) => void saveEstimate(event, item)}
+                            >
+                              <label
+                                className="sr-only"
+                                htmlFor={`manual-estimate-${item.id}`}
+                              >
+                                Estimated package price for {item.label}
+                              </label>
+                              <span className="manual-estimate-prefix" aria-hidden="true">
+                                $
+                              </span>
+                              <input
+                                id={`manual-estimate-${item.id}`}
+                                value={estimateDraft}
+                                onChange={(event) => {
+                                  setEstimateDraft(event.target.value);
+                                  setEstimateError(null);
+                                }}
+                                inputMode="decimal"
+                                autoComplete="off"
+                                placeholder="24"
+                                maxLength={12}
+                                autoFocus
+                                aria-invalid={Boolean(estimateError)}
+                                aria-describedby={
+                                  estimateError
+                                    ? `manual-estimate-error-${item.id}`
+                                    : undefined
+                                }
+                              />
+                              <button
+                                type="submit"
+                                className="estimate-save-button"
+                                disabled={estimatePending}
+                              >
+                                {estimatePending ? "Saving…" : "Save"}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() => closeEstimateEditor()}
+                                disabled={estimatePending}
+                              >
+                                Not now
+                              </button>
+                              {estimateError ? (
+                                <small
+                                  className="manual-estimate-error"
+                                  id={`manual-estimate-error-${item.id}`}
+                                  role="alert"
+                                >
+                                  {estimateError}
+                                </small>
+                              ) : null}
+                            </form>
+                          ) : estimateIsEditable ? (
+                            <button
+                              ref={(node) => {
+                                if (
+                                  node &&
+                                  estimateReturnItemId.current === item.id
+                                ) {
+                                  estimateReturnFocus.current = node;
+                                }
+                              }}
+                              type="button"
+                              className="estimated-price estimate-edit-button"
+                              onClick={(event) =>
+                                openEstimateEditor(item, event.currentTarget)
+                              }
+                              aria-label={
+                                item.estimatedPriceCents === null
+                                  ? `Add an estimated package price for ${item.label}`
+                                  : `Edit this trip's estimated package price for ${item.label}`
+                              }
+                            >
+                              {item.estimatedPriceCents === null
+                                ? "No estimate · Add estimate"
+                                : `~${currency.format(item.estimatedPriceCents / 100)} · household estimate`}
+                            </button>
+                          ) : (
+                            <span className="estimated-price">
+                              {item.estimatedPriceCents === null
+                                ? "No estimate"
+                                : isHouseholdEstimate
+                                  ? `~${currency.format(item.estimatedPriceCents / 100)} · household estimate`
+                                  : item.quantityMilli === 1000
+                                    ? `~${currency.format(item.estimatedPriceCents / 100)}`
+                                    : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
+                            </span>
+                          )}
                           <button
                             type="button"
                             className="text-button"
                             onClick={() => onToggleIncluded(item)}
-                            disabled={pending}
+                            disabled={pending || estimatePending}
                             aria-label={`Remove ${item.label} from the Active List`}
                           >
                             {pending ? "Saving…" : "Remove"}
@@ -1922,6 +2103,10 @@ function ThisWeekTab({
                       <InlineWriteError
                         failure={failedWrites[key]}
                         onRetry={() => onRetry(key)}
+                      />
+                      <InlineWriteError
+                        failure={failedWrites[estimateKey]}
+                        onRetry={() => onRetry(estimateKey)}
                       />
                     </div>
                   );

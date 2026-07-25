@@ -1159,7 +1159,7 @@ export function ExpectedActualBridge({
   const provisional = comparison.isProvisional || unresolvedCents > 5;
   const bridgeRows = [
     ["Saved-list estimate", comparison.frozenEstimateCents],
-    ["Matched price or quantity change", comparison.matchedVarianceCents],
+    ["Estimated-item difference", comparison.matchedVarianceCents],
     ["Saved-list items without estimates", comparison.unpricedPlannedActualCents],
     ["Added during trip or not on saved list", comparison.additionsCents],
     ["Saved-list items not found", comparison.skippedEstimateCents === null || comparison.skippedEstimateCents === undefined ? null : -Math.abs(comparison.skippedEstimateCents)],

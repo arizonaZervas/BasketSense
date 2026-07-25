@@ -2697,6 +2697,86 @@ button.price-point:hover {
   font-size: 12px;
 }
 
+.estimate-edit-button {
+  min-height: 36px;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  padding: 7px 10px;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease,
+    background 150ms ease;
+}
+
+.estimate-edit-button:hover {
+  border-color: var(--forest);
+  background: var(--mint);
+  color: var(--forest);
+}
+
+.estimate-edit-button:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.manual-estimate-form {
+  display: grid;
+  grid-template-columns: auto minmax(70px, 92px) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.manual-estimate-prefix {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 13px;
+}
+
+.manual-estimate-form input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper-strong);
+  color: var(--ink);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 14px;
+  padding: 7px 9px;
+}
+
+.manual-estimate-form input:focus {
+  border-color: var(--forest);
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.estimate-save-button {
+  min-height: 38px;
+  border: 1px solid var(--forest);
+  border-radius: 10px;
+  background: var(--forest);
+  color: var(--paper-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  padding: 7px 10px;
+}
+
+.estimate-save-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.manual-estimate-error {
+  grid-column: 1 / -1;
+  color: var(--danger-ink);
+  font-family: var(--font-geist-sans), sans-serif;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .add-button {
   min-width: 58px;
   border: 1px solid var(--forest);
@@ -3958,6 +4038,17 @@ button.price-point:hover {
   .list-row-actions {
     grid-column: 2;
     justify-content: space-between;
+    flex-wrap: wrap;
+  }
+
+  .manual-estimate-form {
+    grid-template-columns: auto minmax(68px, 1fr) auto;
+    width: 100%;
+  }
+
+  .manual-estimate-form .text-button {
+    grid-column: 2 / -1;
+    justify-self: start;
   }
 
   .review-card {

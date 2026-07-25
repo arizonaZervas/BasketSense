@@ -569,6 +569,142 @@ test("freeze rolls back flags, header, and intent children as one D1 batch", asy
   }
 });
 
+test("a productless manual estimate updates the trip total, freezes, and then locks", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "manual-estimate@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+
+    const zeroEstimate = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Zero estimate",
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 0,
+      }),
+      db,
+    );
+    assert.equal(zeroEstimate.status, 400);
+
+    const addRice = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Rice",
+        productId: null,
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 2400,
+      }),
+      db,
+    );
+    assert.equal(addRice.status, 201);
+    const rice = (await responseJson(addRice)).item;
+    assert.equal(rice.productId, null);
+    assert.equal(rice.estimatedPriceCents, 2400);
+
+    const beforeFreeze = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          email,
+          "GET",
+          undefined,
+          `?scope=list&tripId=${encodeURIComponent(tripId)}`,
+        ),
+        db,
+      ),
+    );
+    const expectedTotalCents = beforeFreeze.listItems
+      .filter(
+        (item) => item.included && item.estimatedPriceCents !== null,
+      )
+      .reduce(
+        (sum, item) =>
+          sum +
+          Math.round(
+            (item.estimatedPriceCents * item.quantityMilli) / 1000,
+          ),
+        0,
+      );
+
+    const freeze = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freeze.status, 200);
+    assert.equal(
+      (await responseJson(freeze)).trip.estimatedListTotalAtFreezeCents,
+      expectedTotalCents,
+    );
+    const frozenRice = db.database
+      .prepare(
+        `SELECT product_id, estimated_price_cents
+         FROM trip_intent_items
+         WHERE trip_id = ? AND lower(trim(label)) = 'rice'
+         LIMIT 1`,
+      )
+      .get(tripId);
+    assert.equal(frozenRice.product_id, null);
+    assert.equal(frozenRice.estimated_price_cents, 2400);
+
+    const rewrite = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Rice",
+        productId: null,
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 2700,
+      }),
+      db,
+    );
+    assert.equal(rewrite.status, 409);
+    assert.match((await responseJson(rewrite)).error, /cannot change/i);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT estimated_price_cents
+           FROM trip_list_items WHERE id = ?`,
+        )
+        .get(rice.id).estimated_price_cents,
+      2400,
+    );
+
+    const addAttaDuringTrip = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Atta",
+        productId: null,
+        source: "in_store",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 1800,
+      }),
+      db,
+    );
+    assert.equal(addAttaDuringTrip.status, 201);
+    const atta = (await responseJson(addAttaDuringTrip)).item;
+    assert.equal(atta.includedAtFreeze, false);
+    assert.equal(atta.addedAfterFreeze, true);
+    assert.equal(atta.estimatedPriceCents, 1800);
+  } finally {
+    db.close();
+  }
+});
+
 test("shopping can return to planning atomically before receipt evidence", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -789,7 +925,7 @@ test("shopping can return to planning atomically before receipt evidence", async
       )
       .run(
         "not-current-shopping-trip",
-        "2026-08-01",
+        "2030-01-05",
         "2026-07-26T08:00:00.000Z",
         "2026-07-26T08:00:00.000Z",
         tripId,
@@ -995,7 +1131,7 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
 
     assert.equal(first.receiptTransactions.length, 38);
     assert.equal(first.listItems.length, 11);
-    assert.equal(first.currentTrip.scheduledFor, "2026-07-25");
+    assert.match(first.currentTrip.scheduledFor, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(first.currentTrip.status, "planning");
     assert.equal(first.currentTrip.estimatedListTotalAtFreezeCents, null);
     assert.equal(first.currentTrip.estimatedPricedItemCountAtFreeze, null);
@@ -1897,6 +2033,7 @@ test("a provisional receipt refuses finalization and review answers have bounded
       await handleHouseholdGet(householdRequest("review-loop@example.test"), db),
     );
     const tripId = initial.currentTrip.id;
+    const sourceScheduledFor = initial.currentTrip.scheduledFor;
     const milk = initial.listItems.find(
       (item) => item.label === "Kirkland Signature organic 2% milk",
     );
@@ -2063,6 +2200,13 @@ test("a provisional receipt refuses finalization and review answers have bounded
       question.options.some((option) => option.value === "still_need_it"),
     );
     assert.ok(carryQuestion, "Expected a missing-essential carry-forward option");
+    db.database
+      .prepare(
+        `UPDATE trip_intent_items
+         SET product_id = NULL, label = 'Atta', estimated_price_cents = 2400
+         WHERE id = ?`,
+      )
+      .run(carryQuestion.intentItemId);
     const intent = db.database
       .prepare(`SELECT * FROM trip_intent_items WHERE id = ?`)
       .get(carryQuestion.intentItemId);
@@ -2071,9 +2215,9 @@ test("a provisional receipt refuses finalization and review answers have bounded
       db.database
         .prepare(
           `SELECT COUNT(*) AS count FROM trips
-           WHERE scheduled_for > '2026-07-25'`,
+           WHERE scheduled_for > ?`,
         )
-        .get().count,
+        .get(sourceScheduledFor).count,
       0,
     );
 
@@ -2093,10 +2237,10 @@ test("a provisional receipt refuses finalization and review answers have bounded
     const followingTrip = db.database
       .prepare(
         `SELECT * FROM trips
-         WHERE scheduled_for > '2026-07-25'
+         WHERE scheduled_for > ?
          ORDER BY scheduled_for ASC LIMIT 1`,
       )
-      .get();
+      .get(sourceScheduledFor);
     assert.ok(followingTrip);
     assert.equal(followingTrip.status, "planning");
     const carriedCount = () =>
@@ -2114,13 +2258,24 @@ test("a provisional receipt refuses finalization and review answers have bounded
       db.database
         .prepare(
           intent.product_id
-            ? `SELECT included FROM trip_list_items
+            ? `SELECT included, estimated_price_cents FROM trip_list_items
                WHERE trip_id = ? AND product_id = ?`
-            : `SELECT included FROM trip_list_items
+            : `SELECT included, estimated_price_cents FROM trip_list_items
                WHERE trip_id = ? AND lower(trim(label)) = lower(trim(?))`,
         )
         .get(followingTrip.id, intent.product_id ?? intent.label).included,
       1,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT estimated_price_cents
+           FROM trip_list_items
+           WHERE trip_id = ? AND lower(trim(label)) = lower(trim(?))`,
+        )
+        .get(followingTrip.id, intent.label).estimated_price_cents,
+      null,
+      "A household guess expires instead of becoming a future price",
     );
 
     const carryAgain = await handleHouseholdPost(

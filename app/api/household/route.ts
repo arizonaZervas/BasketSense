@@ -2168,6 +2168,17 @@ async function addListItem(
     0,
     10_000_000
   );
+  const estimateWasProvided = Object.prototype.hasOwnProperty.call(
+    body,
+    "estimatedPriceCents"
+  );
+  if (
+    estimateWasProvided &&
+    requestedEstimatedPriceCents !== null &&
+    requestedEstimatedPriceCents <= 0
+  ) {
+    throw new ApiError(400, "estimatedPriceCents must be greater than zero");
+  }
   const estimatedPriceCents =
     requestedEstimatedPriceCents ??
     catalogMatch?.latest_regular_unit_price_cents ??
@@ -2177,7 +2188,18 @@ async function addListItem(
     1000;
   const now = nowIso();
 
-  const existingItem = productId
+  const explicitEstimateItem = estimateWasProvided
+    ? await db
+        .prepare(
+          `SELECT * FROM trip_list_items
+           WHERE trip_id = ? AND LOWER(TRIM(label)) = LOWER(TRIM(?))
+           ORDER BY created_at ASC
+           LIMIT 1`
+        )
+        .bind(trip.id, requestedLabel)
+        .first<ListItemRow>()
+    : null;
+  const existingItem = explicitEstimateItem ?? (productId
     ? await db
         .prepare(
           `SELECT * FROM trip_list_items
@@ -2195,9 +2217,20 @@ async function addListItem(
            LIMIT 1`
         )
         .bind(trip.id, label)
-        .first<ListItemRow>();
+        .first<ListItemRow>());
 
   if (existingItem) {
+    if (
+      trip.status === "frozen" &&
+      existingItem.included_at_freeze === 1 &&
+      estimateWasProvided &&
+      requestedEstimatedPriceCents !== existingItem.estimated_price_cents
+    ) {
+      throw new ApiError(
+        409,
+        "Starting-list estimates cannot change after shopping starts"
+      );
+    }
     const reusedEstimateCents =
       requestedEstimatedPriceCents ??
       catalogMatch?.latest_regular_unit_price_cents ??
@@ -4540,7 +4573,7 @@ async function carryItemForward(
       item.label,
       item.section,
       "Carried forward from the previous trip review",
-      item.estimatedPriceCents,
+      item.productId ? item.estimatedPriceCents : null,
       item.quantityMilli,
       target.id,
       context.member.id,
