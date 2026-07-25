@@ -27,7 +27,8 @@ marketing deployment.
    protected beta product. Do not rebind the private BasketSense deployment.
 3. Bind a dedicated D1 database as `BETA_INTEREST` to the marketing project.
    It may contain only beta-interest records and rate-limit hashes.
-4. Create a Supabase project for Auth only. Configure Google OAuth, magic-link
+4. The separate **Good Cart Day Auth** Supabase project is created in
+   `us-west-1` (2026-07-25) for Auth only. Configure Google OAuth, magic-link
    email, approved redirect `https://app.goodcartday.com/api/auth/callback`,
    and a branded auth domain before broadening the beta.
 5. Use an asymmetric Supabase signing key so the Worker can validate JWTs using
