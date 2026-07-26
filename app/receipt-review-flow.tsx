@@ -495,6 +495,8 @@ export function ReceiptFlowDialog({
   const dialog = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement | null>(null);
   const stepHeading = useRef<HTMLHeadingElement | null>(null);
+  const cameraPicker = useRef<HTMLInputElement | null>(null);
+  const libraryPicker = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -696,6 +698,8 @@ export function ReceiptFlowDialog({
   function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
+    // Clearing the native picker lets someone reselect the same saved photo.
+    event.target.value = "";
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     const nextPreview = URL.createObjectURL(file);
     setPhoto(file);
@@ -906,13 +910,21 @@ export function ReceiptFlowDialog({
               </div>
             ) : null}
 
-            <label className="receipt-photo-picker">
+            <div className="receipt-photo-picker">
               <input
+                ref={cameraPicker}
                 type="file"
                 accept="image/*"
                 capture="environment"
                 onChange={choosePhoto}
-                aria-label="Take or choose a Costco receipt photo"
+                aria-label="Take a Costco receipt photo"
+              />
+              <input
+                ref={libraryPicker}
+                type="file"
+                accept="image/*"
+                onChange={choosePhoto}
+                aria-label="Choose a Costco receipt photo from your library"
               />
               {previewUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element -- local camera preview uses a temporary blob URL
@@ -920,9 +932,26 @@ export function ReceiptFlowDialog({
               ) : (
                 <span aria-hidden="true">▣</span>
               )}
-              <strong>{previewUrl ? "Choose a different photo" : "Take receipt photo"}</strong>
-              <small>Camera or photo library · JPG, PNG, or WebP for automatic reading</small>
-            </label>
+              <strong>{previewUrl ? "Choose another receipt photo" : "Add a receipt photo"}</strong>
+              <small>Use your camera now, or choose a photo you took earlier.</small>
+              <div className="receipt-photo-actions">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => cameraPicker.current?.click()}
+                >
+                  Take photo
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => libraryPicker.current?.click()}
+                >
+                  Choose from library
+                </button>
+              </div>
+              <small>JPG, PNG, or WebP work best for automatic reading.</small>
+            </div>
 
             {ocrStatus ? (
               <div className="ocr-progress" role="status" aria-live="polite">

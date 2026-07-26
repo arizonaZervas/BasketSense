@@ -4435,7 +4435,7 @@ button.price-point:hover {
   outline-offset: 2px;
 }
 
-.receipt-photo-picker input {
+.receipt-photo-picker > input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -4467,6 +4467,18 @@ button.price-point:hover {
 .receipt-photo-picker small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.receipt-photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.receipt-photo-actions button {
+  min-height: 44px;
 }
 
 .ocr-progress {
