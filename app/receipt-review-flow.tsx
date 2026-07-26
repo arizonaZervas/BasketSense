@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { parseCostcoOcrText, reconcileReceipt } from "./receipt-logic";
+import { reconcileReceipt } from "./receipt-logic";
 import {
   PRODUCT_CATEGORY_PRESENTATION,
   type ProductCategoryKey,
@@ -284,17 +284,6 @@ function draftFromParser(value: unknown): ReceiptDraft {
   };
 }
 
-function friendlyOcrStatus(status?: string) {
-  if (!status) return "Reading receipt on this device…";
-  return status
-    .replace(/^loading tesseract core$/i, "Preparing receipt reader")
-    .replace(/^initializing tesseract$/i, "Starting receipt reader")
-    .replace(/^loading language traineddata$/i, "Loading text patterns")
-    .replace(/^initializing api$/i, "Getting ready")
-    .replace(/^recognizing text$/i, "Drafting receipt lines")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
 async function responseJson(response: Response, fallback: string) {
   const body = (await response.json().catch(() => null)) as
     | Record<string, unknown>
@@ -491,7 +480,6 @@ export function ReceiptFlowDialog({
   );
   const [photo, setPhoto] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [ocrText, setOcrText] = useState("");
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrError, setOcrError] = useState<string | null>(null);
@@ -663,55 +651,44 @@ export function ReceiptFlowDialog({
 
   if (!open) return null;
 
-  function applyParsedText(text: string) {
-    const parsed = parseCostcoOcrText(text);
+  function applyParsedDraft(parsed: unknown) {
     setDraft(draftFromParser(parsed));
-    setOcrText(text);
     setOcrError(null);
     setStep("check");
   }
 
   async function runOcr(file: File) {
     setOcrError(null);
-    setOcrStatus("Preparing receipt reader");
-    setOcrProgress(0);
+    setOcrStatus("Reading receipt securely");
+    setOcrProgress(0.2);
     try {
-      const tesseract = (await import("tesseract.js")) as {
-        createWorker?: (
-          language: string,
-          engineMode: number,
-          options: {
-            logger: (message: { status?: string; progress?: number }) => void;
-          },
-        ) => Promise<{
-          recognize: (file: File) => Promise<{ data: { text: string } }>;
-          terminate: () => Promise<void>;
-        }>;
-      };
-      if (typeof tesseract.createWorker !== "function") {
-        throw new Error("The on-device receipt reader is unavailable.");
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetchWithTimeout(
+        "/api/receipt-ocr",
+        { method: "POST", body: form },
+        30_000,
+      );
+      const body = await responseJson(
+        response,
+        "The receipt reader could not process that photo.",
+      );
+      if (!body.draft || typeof body.draft !== "object") {
+        throw new Error("The receipt reader returned an incomplete draft.");
       }
-      const worker = await tesseract.createWorker("eng", 1, {
-        logger(message: { status?: string; progress?: number }) {
-          setOcrStatus(friendlyOcrStatus(message.status));
-          if (typeof message.progress === "number") setOcrProgress(message.progress);
-        },
-      });
-      try {
-        const result = await worker.recognize(file);
-        if (!result.data.text.trim()) throw new Error("No receipt text was found.");
-        setOcrProgress(1);
-        setOcrStatus("Draft ready");
-        applyParsedText(result.data.text);
-      } finally {
-        await worker.terminate();
+      const parsed = (body.draft as { parsed?: unknown }).parsed;
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("The receipt reader returned an incomplete draft.");
       }
+      setOcrProgress(1);
+      setOcrStatus("Draft ready to check");
+      applyParsedDraft(parsed);
     } catch (error) {
       setOcrStatus(null);
       setOcrError(
         error instanceof Error
-          ? `${error.message} Your photo is still here—paste text or enter the receipt manually.`
-          : "The receipt reader could not load. Your photo is still here—paste text or enter the receipt manually.",
+          ? `${error.message} Your photo is still here—enter the receipt totals manually if needed.`
+          : "The receipt reader could not process that photo. Your photo is still here—enter the receipt totals manually if needed.",
       );
     }
   }
@@ -914,8 +891,8 @@ export function ReceiptFlowDialog({
                 Take a clear photo
               </h2>
               <p>
-                Text is drafted on this device. The photo is uploaded privately only after
-                you save the structured receipt.
+                BasketSense drafts the receipt securely on the server. The photo is
+                uploaded privately only after you confirm the structured receipt.
               </p>
             </div>
 
@@ -944,7 +921,7 @@ export function ReceiptFlowDialog({
                 <span aria-hidden="true">▣</span>
               )}
               <strong>{previewUrl ? "Choose a different photo" : "Take receipt photo"}</strong>
-              <small>Camera or photo library · JPG, PNG, or HEIC when supported</small>
+              <small>Camera or photo library · JPG, PNG, or WebP for automatic reading</small>
             </label>
 
             {ocrStatus ? (
@@ -954,30 +931,11 @@ export function ReceiptFlowDialog({
                   <span>{Math.round(ocrProgress * 100)}%</span>
                 </div>
                 <progress value={ocrProgress} max={1} aria-label="Receipt drafting progress" />
-                <small>Drafted on this device — check before saving.</small>
+                <small>Drafted securely — check the printed totals before saving.</small>
               </div>
             ) : null}
 
             {ocrError ? <div className="receipt-flow-error" role="alert">{ocrError}</div> : null}
-
-            <details className="receipt-paste-fallback" open={Boolean(ocrError)}>
-              <summary>Paste receipt text instead</summary>
-              <label htmlFor="receipt-ocr-text">Receipt text</label>
-              <textarea
-                id="receipt-ocr-text"
-                value={ocrText}
-                onChange={(event) => setOcrText(event.target.value)}
-                placeholder="Paste text copied from a receipt PDF, photo, or scanner…"
-              />
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={!ocrText.trim()}
-                onClick={() => applyParsedText(ocrText)}
-              >
-                Draft from pasted text
-              </button>
-            </details>
 
             <div className="receipt-flow-actions split">
               <button type="button" className="primary-button" onClick={() => setStep("check")}>
