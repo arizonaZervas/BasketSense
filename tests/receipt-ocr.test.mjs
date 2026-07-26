@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createCloudflareRestOcrProvider,
   extractReceiptDraft,
   ReceiptOcrError,
 } from "../app/receipt-ocr.ts";
@@ -10,6 +11,12 @@ import { handleReceiptOcr } from "../app/api/receipt-ocr/route.ts";
 function receiptPhoto() {
   return new File(["not-an-actual-image"], "costco.jpg", {
     type: "image/jpeg",
+  });
+}
+
+function receiptPdf() {
+  return new File(["Costco receipt PDF"], "costco-receipt.pdf", {
+    type: "application/pdf",
   });
 }
 
@@ -69,6 +76,51 @@ test("server OCR rejects unsupported uploads before sending them to the provider
     (error) => error instanceof ReceiptOcrError && error.status === 415,
   );
   assert.equal(called, false);
+});
+
+test("server OCR accepts Costco PDFs and applies the same deterministic parser", async () => {
+  const draft = await extractReceiptDraft(
+    {
+      async toMarkdown() {
+        return { format: "text", data: "BASMATI RICE 24.99\nSUBTOTAL 24.99\nTOTAL 24.99" };
+      },
+    },
+    receiptPdf(),
+  );
+
+  assert.equal(draft.parsed.items[0].rawDescription, "BASMATI RICE");
+  assert.equal(draft.parsed.totalCents, 2499);
+});
+
+test("Cloudflare REST receipt provider sends the file and conversion options server-side", async () => {
+  const calls = [];
+  const provider = createCloudflareRestOcrProvider({
+    accountId: "a".repeat(32),
+    apiToken: "server-only-token",
+    async fetchImpl(input, init) {
+      calls.push({ input: String(input), init });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: { format: "text", data: "TOTAL 20.48" },
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      );
+    },
+  });
+
+  const result = await provider.toMarkdown(
+    { name: "costco-receipt.pdf", blob: new Blob(["pdf"], { type: "application/pdf" }) },
+    { conversionOptions: { output: { format: "text" } } },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].input, /\/ai\/tomarkdown$/);
+  assert.equal(calls[0].init.headers.Authorization, "Bearer server-only-token");
+  const form = calls[0].init.body;
+  assert.equal(form.get("files").name, "costco-receipt.pdf");
+  assert.equal(form.get("conversionOptions"), '{"output":{"format":"text"}}');
+  assert.deepEqual(result, { format: "text", data: "TOTAL 20.48" });
 });
 
 test("authenticated OCR route returns only the structured server draft", async () => {

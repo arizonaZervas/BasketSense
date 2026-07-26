@@ -1,7 +1,8 @@
 export const dynamic = "force-dynamic";
 
-const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
-const ALLOWED_IMAGE_TYPES = new Set([
+const MAX_RECEIPT_FILE_BYTES = 12 * 1024 * 1024;
+const ALLOWED_RECEIPT_FILE_TYPES = new Set([
+  "application/pdf",
   "image/jpeg",
   "image/png",
   "image/heic",
@@ -61,7 +62,7 @@ async function runtime() {
     throw new PhotoApiError(503, "Household storage is unavailable");
   }
   if (!workersRuntime.env.RECEIPTS) {
-    throw new PhotoApiError(503, "Private receipt photo storage is unavailable");
+    throw new PhotoApiError(503, "Private receipt file storage is unavailable");
   }
   return { db: workersRuntime.env.DB, bucket: workersRuntime.env.RECEIPTS };
 }
@@ -148,8 +149,8 @@ function handleError(error: unknown) {
   if (error instanceof PhotoApiError) {
     return responseJson({ error: error.message }, error.status);
   }
-  console.error("BasketSense receipt photo API error", error);
-  return responseJson({ error: "Unable to store the receipt photo" }, 500);
+  console.error("BasketSense receipt file API error");
+  return responseJson({ error: "Unable to store the receipt file" }, 500);
 }
 
 export async function POST(request: Request) {
@@ -164,19 +165,19 @@ export async function POST(request: Request) {
       throw new PhotoApiError(400, "Upload must be multipart form data");
     }
     const receiptId = requiredReceiptId(form.get("receiptId"));
-    const image = form.get("file") ?? form.get("image");
-    if (!(image instanceof File)) {
+    const receiptFile = form.get("file") ?? form.get("image");
+    if (!(receiptFile instanceof File)) {
       throw new PhotoApiError(400, "file is required");
     }
-    const contentType = image.type.toLowerCase();
-    if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
+    const contentType = receiptFile.type.toLowerCase();
+    if (!ALLOWED_RECEIPT_FILE_TYPES.has(contentType)) {
       throw new PhotoApiError(
         415,
-        "Receipt photo must be JPEG, PNG, HEIC, or WebP"
+        "Receipt file must be a PDF, JPEG, PNG, HEIC, or WebP"
       );
     }
-    if (image.size <= 0 || image.size > MAX_IMAGE_BYTES) {
-      throw new PhotoApiError(413, "Receipt photo must be 12 MB or smaller");
+    if (receiptFile.size <= 0 || receiptFile.size > MAX_RECEIPT_FILE_BYTES) {
+      throw new PhotoApiError(413, "Receipt file must be 12 MB or smaller");
     }
     const authorization = await authorizedReceipt(db, email, receiptId);
     const previous = await db
@@ -187,8 +188,8 @@ export async function POST(request: Request) {
       .bind(receiptId)
       .first<UploadRow>();
     const storageKey = `households/${authorization.household_id}/receipts/${receiptId}/${crypto.randomUUID()}`;
-    const filename = safeFilename(image.name);
-    await bucket.put(storageKey, image.stream(), {
+    const filename = safeFilename(receiptFile.name);
+    await bucket.put(storageKey, receiptFile.stream(), {
       httpMetadata: { contentType },
       customMetadata: {
         receiptId,
@@ -220,7 +221,7 @@ export async function POST(request: Request) {
           storageKey,
           filename,
           contentType,
-          image.size,
+          receiptFile.size,
           authorization.member_id,
           now,
           now
@@ -239,7 +240,7 @@ export async function POST(request: Request) {
           receiptId,
           originalFilename: filename,
           contentType,
-          byteSize: image.size,
+          byteSize: receiptFile.size,
           imageUrl: `/api/receipt-photo?receiptId=${encodeURIComponent(
             receiptId
           )}`,
@@ -269,9 +270,9 @@ export async function GET(request: Request) {
       )
       .bind(receiptId)
       .first<UploadRow>();
-    if (!upload) throw new PhotoApiError(404, "Receipt photo not found");
+    if (!upload) throw new PhotoApiError(404, "Receipt file not found");
     const object = await bucket.get(upload.storage_key);
-    if (!object) throw new PhotoApiError(404, "Receipt photo not found");
+    if (!object) throw new PhotoApiError(404, "Receipt file not found");
     const headers = new Headers({
       "Cache-Control": "private, no-store",
       "Content-Type": upload.content_type,

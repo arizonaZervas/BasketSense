@@ -118,7 +118,7 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 
-test("receipt capture offers separate camera and photo-library actions", async () => {
+test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {
   const source = await readFile(
     new URL("../app/receipt-review-flow.tsx", import.meta.url),
     "utf8",
@@ -126,6 +126,7 @@ test("receipt capture offers separate camera and photo-library actions", async (
 
   assert.match(source, /capture="environment"/);
   assert.match(source, /Take photo/);
-  assert.match(source, /Choose from library/);
-  assert.match(source, /Choose a Costco receipt photo from your library/);
+  assert.match(source, /Choose photo or PDF/);
+  assert.match(source, /accept="image\/\*,application\/pdf"/);
+  assert.match(source, /Choose a Costco receipt photo or PDF from your library/);
 });

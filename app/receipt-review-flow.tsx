@@ -439,7 +439,7 @@ export function ReceiptNextStepCard({
         <p>
           {tripStatus === "planning"
             ? "Start shopping first to capture what you intended to buy. You can still add a receipt now, but the intent comparison will be weaker."
-            : "Take a photo, check the draft, then see what changed from the saved list."}
+            : "Add a photo or Costco PDF, check the draft, then see what changed from the saved list."}
         </p>
       </div>
       <button
@@ -478,7 +478,7 @@ export function ReceiptFlowDialog({
   const [draft, setDraft] = useState<ReceiptDraft>(() =>
     draftFromClosedLoop(closedLoop),
   );
-  const [photo, setPhoto] = useState<File | null>(null);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -645,7 +645,7 @@ export function ReceiptFlowDialog({
     Boolean(draft.subtotal.trim()) && Boolean(draft.total.trim());
   const canFinalize = hasRequiredReceiptValues && arithmetic.isReconciled;
   const hasAnyDraftData = Boolean(
-    photo ||
+    receiptFile ||
       draft.subtotal.trim() ||
       draft.total.trim() ||
       draft.items.some((item) => item.description.trim() || item.amount.trim()),
@@ -673,7 +673,7 @@ export function ReceiptFlowDialog({
       );
       const body = await responseJson(
         response,
-        "The receipt reader could not process that photo.",
+        "The receipt reader could not process that receipt.",
       );
       if (!body.draft || typeof body.draft !== "object") {
         throw new Error("The receipt reader returned an incomplete draft.");
@@ -689,20 +689,22 @@ export function ReceiptFlowDialog({
       setOcrStatus(null);
       setOcrError(
         error instanceof Error
-          ? `${error.message} Your photo is still here—enter the receipt totals manually if needed.`
-          : "The receipt reader could not process that photo. Your photo is still here—enter the receipt totals manually if needed.",
+          ? `${error.message} Your receipt file is still here—enter the totals manually if needed.`
+          : "The receipt reader could not process that receipt. Your receipt file is still here—enter the totals manually if needed.",
       );
     }
   }
 
-  function choosePhoto(event: ChangeEvent<HTMLInputElement>) {
+  function chooseReceiptFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    // Clearing the native picker lets someone reselect the same saved photo.
+    // Clearing the native picker lets someone reselect the same saved receipt.
     event.target.value = "";
     if (previewUrl) URL.revokeObjectURL(previewUrl);
-    const nextPreview = URL.createObjectURL(file);
-    setPhoto(file);
+    const nextPreview = file.type.toLowerCase().startsWith("image/")
+      ? URL.createObjectURL(file)
+      : null;
+    setReceiptFile(file);
     setPreviewUrl(nextPreview);
     setPhotoError(null);
     void runOcr(file);
@@ -737,11 +739,11 @@ export function ReceiptFlowDialog({
     setSaveError(null);
   }
 
-  async function uploadPhoto(savedReceiptId: string) {
-    if (!photo) return true;
+  async function uploadReceiptFile(savedReceiptId: string) {
+    if (!receiptFile) return true;
     const form = new FormData();
     form.append("receiptId", savedReceiptId);
-    form.append("file", photo);
+    form.append("file", receiptFile);
     try {
       const response = await fetchWithTimeout("/api/receipt-photo", {
         method: "POST",
@@ -753,7 +755,7 @@ export function ReceiptFlowDialog({
           | null;
         setPhotoError(
           body?.error ??
-            "The structured receipt was saved, but private photo storage needs a retry.",
+            "The structured receipt was saved, but private receipt storage needs a retry.",
         );
         return false;
       }
@@ -762,8 +764,8 @@ export function ReceiptFlowDialog({
     } catch (error) {
       setPhotoError(
         error instanceof Error
-          ? `The structured receipt was saved, but the photo needs a retry: ${error.message}`
-          : "The structured receipt was saved, but private photo storage needs a retry.",
+          ? `The structured receipt was saved, but the receipt file needs a retry: ${error.message}`
+          : "The structured receipt was saved, but private receipt storage needs a retry.",
       );
       return false;
     }
@@ -775,7 +777,7 @@ export function ReceiptFlowDialog({
       return;
     }
     if (!hasAnyDraftData) {
-      setSaveError("Add a photo, receipt total, or line item before saving a draft.");
+      setSaveError("Add a receipt file, total, or line item before saving a draft.");
       return;
     }
     if (finalize && !canFinalize) {
@@ -810,7 +812,7 @@ export function ReceiptFlowDialog({
         receiptId;
       if (!savedReceiptId) throw new Error("The receipt saved without a usable receipt ID.");
       setReceiptId(savedReceiptId);
-      await uploadPhoto(savedReceiptId);
+      await uploadReceiptFile(savedReceiptId);
 
       if (finalize) {
         const finalizeResponse = await fetchWithTimeout("/api/household", {
@@ -892,11 +894,11 @@ export function ReceiptFlowDialog({
             <div className="receipt-step-heading">
               <p className="section-label">Add today’s receipt</p>
               <h2 id="receipt-flow-title" ref={stepHeading} tabIndex={-1}>
-                Take a clear photo
+                Add a photo or Costco PDF
               </h2>
               <p>
-                BasketSense drafts the receipt securely on the server. The photo is
-                uploaded privately only after you confirm the structured receipt.
+                BasketSense drafts the receipt securely on the server. The original
+                file is uploaded privately only after you confirm the structured receipt.
               </p>
             </div>
 
@@ -916,24 +918,30 @@ export function ReceiptFlowDialog({
                 type="file"
                 accept="image/*"
                 capture="environment"
-                onChange={choosePhoto}
+                onChange={chooseReceiptFile}
                 aria-label="Take a Costco receipt photo"
               />
               <input
                 ref={libraryPicker}
                 type="file"
-                accept="image/*"
-                onChange={choosePhoto}
-                aria-label="Choose a Costco receipt photo from your library"
+                accept="image/*,application/pdf"
+                onChange={chooseReceiptFile}
+                aria-label="Choose a Costco receipt photo or PDF from your library"
               />
               {previewUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element -- local camera preview uses a temporary blob URL
                 <img src={previewUrl} alt="Preview of the selected Costco receipt" />
               ) : (
-                <span aria-hidden="true">▣</span>
+                <span aria-hidden="true">{receiptFile?.type === "application/pdf" ? "PDF" : "▣"}</span>
               )}
-              <strong>{previewUrl ? "Choose another receipt photo" : "Add a receipt photo"}</strong>
-              <small>Use your camera now, or choose a photo you took earlier.</small>
+              <strong>
+                {receiptFile
+                  ? receiptFile.type === "application/pdf"
+                    ? receiptFile.name
+                    : "Choose another receipt photo"
+                  : "Add a receipt"}
+              </strong>
+              <small>Use your camera now, a saved photo, or Costco’s PDF when it appears later.</small>
               <div className="receipt-photo-actions">
                 <button
                   type="button"
@@ -947,10 +955,10 @@ export function ReceiptFlowDialog({
                   className="secondary-button"
                   onClick={() => libraryPicker.current?.click()}
                 >
-                  Choose from library
+                  Choose photo or PDF
                 </button>
               </div>
-              <small>JPG, PNG, or WebP work best for automatic reading.</small>
+              <small>PDF, JPG, PNG, and WebP can be drafted automatically.</small>
             </div>
 
             {ocrStatus ? (
@@ -968,7 +976,7 @@ export function ReceiptFlowDialog({
 
             <div className="receipt-flow-actions split">
               <button type="button" className="primary-button" onClick={() => setStep("check")}>
-                {previewUrl ? "Confirm what we found" : "Enter receipt totals"}
+                {receiptFile ? "Confirm what we found" : "Enter receipt totals"}
               </button>
               <button type="button" className="secondary-button" onClick={onClose}>
                 Cancel
@@ -1135,14 +1143,14 @@ export function ReceiptFlowDialog({
               <div className="receipt-flow-note warning" role="alert">
                 <strong>Structured receipt saved</strong>
                 <p>{photoError}</p>
-                {receiptId && photo ? (
+                {receiptId && receiptFile ? (
                   <button
                     type="button"
                     className="text-button"
                     disabled={saving}
-                    onClick={() => void uploadPhoto(receiptId)}
+                    onClick={() => void uploadReceiptFile(receiptId)}
                   >
-                    Retry photo storage
+                    Retry receipt storage
                   </button>
                 ) : null}
               </div>
@@ -1165,7 +1173,7 @@ export function ReceiptFlowDialog({
                       ? "Update needs-review draft"
                       : hasRequiredReceiptValues
                         ? "Save needs-review draft"
-                        : "Save photo for later"}
+                        : "Save receipt for later"}
                 </button>
               ) : null}
               <button
@@ -1206,16 +1214,16 @@ export function ReceiptFlowDialog({
             )}
             {photoError ? (
               <div className="receipt-flow-note warning" role="alert">
-                <strong>Receipt saved; photo still needs storage</strong>
+                <strong>Receipt saved; original file still needs storage</strong>
                 <p>{photoError}</p>
-                {receiptId && photo ? (
+                {receiptId && receiptFile ? (
                   <button
                     type="button"
                     className="text-button"
                     disabled={saving}
-                    onClick={() => void uploadPhoto(receiptId)}
+                    onClick={() => void uploadReceiptFile(receiptId)}
                   >
-                    Retry photo storage
+                    Retry receipt storage
                   </button>
                 ) : null}
               </div>
@@ -1279,7 +1287,7 @@ export function ExpectedActualBridge({
         <div className="receipt-flow-note warning" role="note">
           <strong>Exact total saved; products were not read</strong>
           <p>
-            This trip updates spending exactly. Upload a clearer photo or add product
+            This trip updates spending exactly. Upload a clearer receipt file or add product
             lines later to unlock planned-versus-actual item insights.
           </p>
         </div>
@@ -1436,7 +1444,7 @@ export function ClosedLoopReview({
                 <strong>{provisional ? "Receipt needs a quick check" : "Receipt arithmetic checked"}</strong>
                 <p>
                   {money.format((receipt.totalCents ?? 0) / 100)} total
-                  {uploadStored ? " · original photo stored privately" : " · structured receipt saved"}
+                  {uploadStored ? " · original receipt stored privately" : " · structured receipt saved"}
                 </p>
               </div>
             </div>
@@ -1448,7 +1456,7 @@ export function ClosedLoopReview({
           <article className="receipt-check-card card empty">
             <div>
               <strong>No receipt linked to this trip yet</strong>
-              <p>Add the photo, check the arithmetic, and BasketSense will build the comparison.</p>
+              <p>Add a receipt photo or PDF, check the arithmetic, and BasketSense will build the comparison.</p>
             </div>
             <button type="button" className="primary-button" onClick={() => onOpenReceipt("capture")}>
               Add today’s receipt

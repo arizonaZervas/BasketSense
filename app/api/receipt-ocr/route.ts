@@ -1,4 +1,5 @@
 import {
+  createCloudflareRestOcrProvider,
   extractReceiptDraft,
   ReceiptOcrError,
   type ReceiptOcrProvider,
@@ -8,6 +9,8 @@ export const dynamic = "force-dynamic";
 
 interface RuntimeEnv {
   AI?: ReceiptOcrProvider;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_WORKERS_AI_TOKEN?: string;
 }
 
 function responseJson(body: unknown, status = 200) {
@@ -30,13 +33,13 @@ async function workerProvider() {
   const workersRuntime = (await import("cloudflare:workers")) as unknown as {
     env: RuntimeEnv;
   };
-  if (!workersRuntime.env.AI) {
-    throw new ReceiptOcrError(
-      503,
-      "Server receipt reading is not configured yet. You can still enter the receipt totals manually.",
-    );
+  if (workersRuntime.env.AI) {
+    return workersRuntime.env.AI;
   }
-  return workersRuntime.env.AI;
+  return createCloudflareRestOcrProvider({
+    accountId: workersRuntime.env.CLOUDFLARE_ACCOUNT_ID ?? "",
+    apiToken: workersRuntime.env.CLOUDFLARE_WORKERS_AI_TOKEN ?? "",
+  });
 }
 
 export async function handleReceiptOcr(
@@ -48,11 +51,11 @@ export async function handleReceiptOcr(
   try {
     form = await request.formData();
   } catch {
-    throw new ReceiptOcrError(400, "Receipt reading expects a photo upload");
+    throw new ReceiptOcrError(400, "Receipt reading expects a receipt file upload");
   }
   const image = form.get("file") ?? form.get("image");
   if (!(image instanceof File)) {
-    throw new ReceiptOcrError(400, "Receipt photo is required");
+    throw new ReceiptOcrError(400, "Receipt file is required");
   }
   const draft = await extractReceiptDraft(provider, image);
   return responseJson({ draft }, 200);
@@ -68,7 +71,7 @@ export async function POST(request: Request) {
     // Do not log image contents or extracted receipt text.
     console.error("BasketSense receipt OCR failed");
     return responseJson(
-      { error: "The receipt reader could not process that photo" },
+      { error: "The receipt reader could not process that receipt" },
       500,
     );
   }

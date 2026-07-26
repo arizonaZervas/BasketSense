@@ -3,20 +3,26 @@ import {
   type ParsedCostcoReceiptDraft,
 } from "./receipt-logic";
 
-export const MAX_RECEIPT_IMAGE_BYTES = 12 * 1024 * 1024;
+export const MAX_RECEIPT_DOCUMENT_BYTES = 12 * 1024 * 1024;
+// Kept as an alias so existing callers do not need to know whether the
+// selected receipt came from a camera or Costco's PDF download.
+export const MAX_RECEIPT_IMAGE_BYTES = MAX_RECEIPT_DOCUMENT_BYTES;
 
-export const RECEIPT_IMAGE_TYPES = new Set([
+export const RECEIPT_DOCUMENT_TYPES = new Set([
+  "application/pdf",
   "image/jpeg",
   "image/png",
   "image/webp",
 ]);
+export const RECEIPT_IMAGE_TYPES = RECEIPT_DOCUMENT_TYPES;
 
-export interface ReceiptImageInput {
+export interface ReceiptDocumentInput {
   name: string;
   type: string;
   size: number;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
+export type ReceiptImageInput = ReceiptDocumentInput;
 
 export interface MarkdownConversionResult {
   format: "markdown" | "text" | "error";
@@ -29,6 +35,59 @@ export interface ReceiptOcrProvider {
     file: { name: string; blob: Blob },
     options: { conversionOptions: { output: { format: "text" } } },
   ): Promise<MarkdownConversionResult | MarkdownConversionResult[]>;
+}
+
+type ReceiptOcrFetch = typeof fetch;
+
+interface CloudflareRestOcrOptions {
+  accountId: string;
+  apiToken: string;
+  fetchImpl?: ReceiptOcrFetch;
+}
+
+/**
+ * Sites does not currently expose an AI binding configuration surface for this
+ * Worker. This adapter is a narrow fallback for Workers AI Markdown
+ * Conversion: the API token remains in the server runtime and raw OCR text
+ * never crosses the browser boundary.
+ */
+export function createCloudflareRestOcrProvider({
+  accountId,
+  apiToken,
+  fetchImpl = fetch,
+}: CloudflareRestOcrOptions): ReceiptOcrProvider {
+  const normalizedAccountId = accountId.trim();
+  const normalizedToken = apiToken.trim();
+  if (!/^[a-f0-9]{32}$/i.test(normalizedAccountId) || !normalizedToken) {
+    throw new ReceiptOcrError(
+      503,
+      "Server receipt reading is not configured yet. You can still enter the receipt totals manually.",
+    );
+  }
+
+  return {
+    async toMarkdown(file, options) {
+      const form = new FormData();
+      form.append("files", file.blob, file.name || "costco-receipt");
+      form.append("conversionOptions", JSON.stringify(options.conversionOptions));
+
+      const response = await fetchImpl(
+        `https://api.cloudflare.com/client/v4/accounts/${normalizedAccountId}/ai/tomarkdown`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${normalizedToken}` },
+          body: form,
+        },
+      );
+      const payload = (await response.json().catch(() => null)) as
+        | { success?: boolean; result?: MarkdownConversionResult | MarkdownConversionResult[] }
+        | null;
+      if (!response.ok || payload?.success === false || !payload?.result) {
+        throw new Error("Cloudflare Workers AI conversion failed");
+      }
+      return payload.result;
+    },
+  };
 }
 
 export class ReceiptOcrError extends Error {
@@ -46,18 +105,20 @@ export interface ServerReceiptDraft {
   extractedItemCount: number;
 }
 
-export function validateReceiptImage(file: ReceiptImageInput) {
+export function validateReceiptDocument(file: ReceiptDocumentInput) {
   const contentType = file.type.toLowerCase();
-  if (!RECEIPT_IMAGE_TYPES.has(contentType)) {
+  if (!RECEIPT_DOCUMENT_TYPES.has(contentType)) {
     throw new ReceiptOcrError(
       415,
-      "For automatic reading, use a JPEG, PNG, or WebP receipt photo. You can still enter totals from another photo format.",
+      "For automatic reading, use a Costco PDF or a JPEG, PNG, or WebP receipt photo.",
     );
   }
-  if (!Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_RECEIPT_IMAGE_BYTES) {
-    throw new ReceiptOcrError(413, "Receipt photo must be 12 MB or smaller");
+  if (!Number.isFinite(file.size) || file.size <= 0 || file.size > MAX_RECEIPT_DOCUMENT_BYTES) {
+    throw new ReceiptOcrError(413, "Receipt file must be 12 MB or smaller");
   }
 }
+
+export const validateReceiptImage = validateReceiptDocument;
 
 function firstConversionResult(
   result: MarkdownConversionResult | MarkdownConversionResult[],
@@ -72,9 +133,9 @@ function firstConversionResult(
  */
 export async function extractReceiptDraft(
   provider: ReceiptOcrProvider,
-  file: ReceiptImageInput,
+  file: ReceiptDocumentInput,
 ): Promise<ServerReceiptDraft> {
-  validateReceiptImage(file);
+  validateReceiptDocument(file);
 
   let converted: MarkdownConversionResult | MarkdownConversionResult[];
   try {
@@ -97,7 +158,7 @@ export async function extractReceiptDraft(
   if (!text) {
     throw new ReceiptOcrError(
       422,
-      "We could not read receipt text from that photo. Try a brighter, flatter photo or enter the totals manually.",
+      "We could not read receipt text from that file. Try a clearer photo, Costco PDF, or enter the totals manually.",
     );
   }
 
