@@ -68,11 +68,14 @@ class PreparedStatementAdapter {
 }
 
 class D1DatabaseAdapter {
-  constructor() {
-    this.database = new DatabaseSync(":memory:");
+  constructor(database = null) {
+    this.database = database ?? new DatabaseSync(":memory:");
+    this.ownsDatabase = database === null;
     this.database.exec("PRAGMA foreign_keys = ON");
     this.failNextBatchPattern = null;
     this.beforeNextStatement = null;
+    this.batchCalls = 0;
+    this.schemaBatchCalls = 0;
   }
 
   prepare(sql) {
@@ -89,6 +92,14 @@ class D1DatabaseAdapter {
   }
 
   async batch(statements) {
+    this.batchCalls += 1;
+    if (
+      statements.some((statement) =>
+        /CREATE TABLE IF NOT EXISTS households/i.test(statement.sql),
+      )
+    ) {
+      this.schemaBatchCalls += 1;
+    }
     this.database.exec("BEGIN");
     try {
       const results = statements.map((statement) => {
@@ -118,7 +129,7 @@ class D1DatabaseAdapter {
   }
 
   close() {
-    this.database.close();
+    if (this.ownsDatabase) this.database.close();
   }
 }
 
@@ -154,6 +165,29 @@ test("D1 dashboard matches the audited historical view before client cutover", a
     assert.deepEqual(response.dashboard, buildDashboardViewData());
   } finally {
     db.close();
+  }
+});
+
+test("ready household reads avoid repeating runtime schema DDL", async () => {
+  const initialized = new D1DatabaseAdapter();
+  const reusedConnection = new D1DatabaseAdapter(initialized.database);
+  try {
+    await handleHouseholdGet(
+      householdRequest("read-only-owner@example.test"),
+      initialized,
+    );
+    reusedConnection.schemaBatchCalls = 0;
+
+    const response = await handleHouseholdGet(
+      householdRequest("read-only-owner@example.test"),
+      reusedConnection,
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(reusedConnection.schemaBatchCalls, 0);
+  } finally {
+    reusedConnection.close();
+    initialized.close();
   }
 });
 

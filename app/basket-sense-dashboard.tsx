@@ -52,6 +52,8 @@ type SyncStatus = "connecting" | "shared" | "refreshing" | "offline";
 type ThemePreference = "system" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 
+const HOUSEHOLD_REQUEST_TIMEOUT_MS = 10_000;
+
 type DashboardUser = {
   displayName: string;
   email: string;
@@ -436,6 +438,30 @@ export function BasketSenseDashboard({
   const resolvedTheme: ResolvedTheme =
     themePreference === "system" ? systemTheme : themePreference;
 
+  const fetchHousehold = useCallback(
+    async (url: string, init?: RequestInit) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(
+        () => controller.abort(),
+        HOUSEHOLD_REQUEST_TIMEOUT_MS,
+      );
+
+      try {
+        return await fetch(url, { ...init, signal: controller.signal });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw new Error(
+            "The shared list took too long to respond. Check your connection and retry.",
+          );
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
     const updateSystemTheme = () =>
@@ -503,7 +529,7 @@ export function BasketSenseDashboard({
         setSyncStatus((status) => (status === "shared" ? "refreshing" : "connecting"));
       }
       try {
-        const response = await fetch("/api/household", {
+        const response = await fetchHousehold("/api/household", {
           headers: { Accept: "application/json" },
           cache: "no-store",
         });
@@ -531,7 +557,7 @@ export function BasketSenseDashboard({
 
     refreshPromise.current = refresh;
     return refresh;
-  }, []);
+  }, [fetchHousehold]);
 
   const refreshHouseholdList = useCallback(
     async (tripId: string) => {
@@ -541,7 +567,7 @@ export function BasketSenseDashboard({
       let shouldRefreshFullSnapshot = false;
       const refresh = (async () => {
         try {
-          const response = await fetch(
+          const response = await fetchHousehold(
             `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}`,
             {
               headers: { Accept: "application/json" },
@@ -595,7 +621,7 @@ export function BasketSenseDashboard({
       listRefreshPromise.current = refresh;
       return refresh;
     },
-    [refreshHousehold],
+    [fetchHousehold, refreshHousehold],
   );
 
   useEffect(() => {
@@ -771,7 +797,7 @@ export function BasketSenseDashboard({
     });
 
     try {
-      const response = await fetch("/api/household", {
+      const response = await fetchHousehold("/api/household", {
         method: request.method,
         headers: {
           Accept: "application/json",
@@ -1192,7 +1218,7 @@ export function BasketSenseDashboard({
         </header>
 
         {activeTab === "week" ? (
-          <ThisWeekTab
+        <ThisWeekTab
             household={household}
             syncStatus={syncStatus}
             syncError={syncError}
@@ -1201,8 +1227,9 @@ export function BasketSenseDashboard({
             newItem={newItem}
             setNewItem={setNewItem}
             pendingWrites={pendingWrites}
-            failedWrites={failedWrites}
-            onRetry={retryWrite}
+          failedWrites={failedWrites}
+          onRetry={retryWrite}
+          onRetryLoad={() => void refreshHousehold(false, true)}
             onAdd={addManualItem}
             onSetEstimate={setManualEstimate}
             onToggleIncluded={toggleIncluded}
@@ -1326,6 +1353,7 @@ function ThisWeekTab({
   pendingWrites,
   failedWrites,
   onRetry,
+  onRetryLoad,
   onAdd,
   onSetEstimate,
   onToggleIncluded,
@@ -1345,6 +1373,7 @@ function ThisWeekTab({
   pendingWrites: Set<string>;
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
+  onRetryLoad: () => void;
   onAdd: (event: FormEvent<HTMLFormElement>) => void;
   onSetEstimate: (
     item: SharedListItem,
@@ -1730,6 +1759,11 @@ function ThisWeekTab({
           <strong>{syncTitle}</strong>
           <p>{syncCopy}</p>
         </div>
+        {syncStatus === "offline" ? (
+          <button type="button" className="secondary-button" onClick={onRetryLoad}>
+            Retry list
+          </button>
+        ) : null}
       </section>
 
       <InlineWriteError
@@ -1919,7 +1953,18 @@ function ThisWeekTab({
                 {included.length} {included.length === 1 ? "item" : "items"}
               </span>
             </div>
-            {!household && syncStatus !== "offline" ? (
+            {!household && syncStatus === "offline" ? (
+              <div className="empty-state active-list-empty">
+                <strong>Shared list unavailable</strong>
+                <p>
+                  Your list is safely stored with the household. Reconnect to
+                  load it before making changes.
+                </p>
+                <button type="button" className="secondary-button" onClick={onRetryLoad}>
+                  Retry list
+                </button>
+              </div>
+            ) : !household ? (
               <ListSkeleton />
             ) : included.length ? (
               <div className="list-rows" role="list">

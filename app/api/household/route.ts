@@ -743,6 +743,18 @@ async function ensureSchema(db: D1Database) {
   await initialization;
 }
 
+async function ensureReadableSchema(db: D1Database) {
+  try {
+    await db.prepare("SELECT 1 FROM households LIMIT 1").first();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such table:\s*households/i.test(message)) {
+      throw error;
+    }
+    await ensureSchema(db);
+  }
+}
+
 const SEED_BATCH_SIZE = 75;
 
 function productIdFor(itemNumber: string) {
@@ -4987,7 +4999,10 @@ export async function handleHouseholdGet(
 ) {
   try {
     const user = authenticatedUser(request);
-    await ensureSchema(db);
+    // Reads happen every few seconds while a household is shopping. A ready
+    // database only needs this lightweight availability check; running the
+    // full DDL batch here can contend with those refreshes on cold isolates.
+    await ensureReadableSchema(db);
     const url = new URL(request.url);
     if (url.searchParams.get("scope") === "list") {
       const tripId = optionalId(url.searchParams.get("tripId"), "tripId");
