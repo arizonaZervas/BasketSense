@@ -61,6 +61,7 @@ export type ClosedLoopQuestion = {
 
 export type ClosedLoopComparison = {
   isProvisional?: boolean;
+  isTotalsOnly?: boolean;
   frozenEstimateCents?: number | null;
   actualMerchandiseCents?: number | null;
   actualTotalCents?: number | null;
@@ -587,21 +588,26 @@ export function ReceiptFlowDialog({
       taxCents: inputToCents(draft.tax),
       totalCents: inputToCents(draft.total),
       discountCents: Math.abs(inputToCents(draft.discount)),
+      captureMode:
+        draft.items.some((item) => item.description.trim() || item.amount.trim())
+          ? ("itemized" as const)
+          : ("totals_only" as const),
     }),
     [draft],
   );
 
   const arithmetic = useMemo(() => {
+    const totalsOnly = values.captureMode === "totals_only";
     const fallbackItemNetCents = values.items.reduce(
       (sum, item) => sum + item.lineSubtotalCents,
       0,
     );
     const fallbackSubtotalDeltaCents =
-      fallbackItemNetCents - values.subtotalCents;
+      totalsOnly ? 0 : fallbackItemNetCents - values.subtotalCents;
     const fallbackTotalDeltaCents =
       values.subtotalCents + values.taxCents - values.totalCents;
     try {
-      const result = reconcileReceipt(values) as unknown as {
+      const result = reconcileReceipt({ ...values, totalsOnly }) as unknown as {
         itemNetCents?: number;
         computedSubtotalCents?: number;
         subtotalDeltaCents?: number;
@@ -646,7 +652,7 @@ export function ReceiptFlowDialog({
   }, [values]);
 
   const hasRequiredReceiptValues =
-    values.items.length > 0 && Boolean(draft.subtotal.trim()) && Boolean(draft.total.trim());
+    Boolean(draft.subtotal.trim()) && Boolean(draft.total.trim());
   const canFinalize = hasRequiredReceiptValues && arithmetic.isReconciled;
   const hasAnyDraftData = Boolean(
     photo ||
@@ -670,8 +676,7 @@ export function ReceiptFlowDialog({
     setOcrStatus("Preparing receipt reader");
     setOcrProgress(0);
     try {
-      const optionalOcrModule = "tesseract.js";
-      const tesseract = (await import(optionalOcrModule)) as {
+      const tesseract = (await import("tesseract.js")) as {
         createWorker?: (
           language: string,
           engineMode: number,
@@ -741,18 +746,12 @@ export function ReceiptFlowDialog({
   function addReceiptSummaryLine() {
     const subtotal = draft.subtotal.trim();
     if (!subtotal) {
-      setSaveError("Enter the subtotal first, then add a receipt summary line.");
+      setSaveError("Enter the subtotal first, then save this as a totals-only receipt.");
       return;
     }
     setDraft((current) => ({
       ...current,
-      items: [
-        {
-          ...blankLine(),
-          description: "Receipt summary — product details not entered",
-          amount: current.subtotal,
-        },
-      ],
+      items: [blankLine()],
     }));
     setSaveError(null);
   }
@@ -982,7 +981,7 @@ export function ReceiptFlowDialog({
 
             <div className="receipt-flow-actions split">
               <button type="button" className="primary-button" onClick={() => setStep("check")}>
-                {previewUrl ? "Check receipt details" : "Enter receipt details"}
+                {previewUrl ? "Confirm what we found" : "Enter receipt totals"}
               </button>
               <button type="button" className="secondary-button" onClick={onClose}>
                 Cancel
@@ -994,11 +993,14 @@ export function ReceiptFlowDialog({
         {step === "check" ? (
           <div className="receipt-flow-body check-step">
             <div className="receipt-step-heading">
-              <p className="section-label">Quick receipt check</p>
+              <p className="section-label">Receipt confirmation</p>
               <h2 id="receipt-flow-title" ref={stepHeading} tabIndex={-1}>
-                Check the numbers, not every character
+                Confirm the receipt total
               </h2>
-              <p>Drafted on this device — check before saving. Correct only what affects the receipt record.</p>
+              <p>
+                We use the printed numbers for exact spending. Product lines are optional
+                and only power item-level learning when they are readable.
+              </p>
             </div>
 
             <div className="receipt-total-fields">
@@ -1040,17 +1042,17 @@ export function ReceiptFlowDialog({
 
             <div className="draft-lines-heading">
               <div>
-                <h3>Receipt lines</h3>
-                <p>Abbreviations are okay. Fix only what affects the receipt record.</p>
+                <h3>Product lines</h3>
+                <p>Optional. Keep the lines we found, or save the totals without them.</p>
               </div>
               <div className="draft-lines-actions">
                 <button
                   type="button"
                   className="text-button"
                   onClick={addReceiptSummaryLine}
-                  disabled={Boolean(values.items.length) || !draft.subtotal.trim()}
+                  disabled={!draft.subtotal.trim()}
                 >
-                  Use receipt summary
+                  Save totals only
                 </button>
                 <button
                   type="button"
@@ -1065,7 +1067,8 @@ export function ReceiptFlowDialog({
             </div>
             {!values.items.length ? (
               <p className="receipt-summary-help">
-                Short on time? Enter subtotal and total, then use a receipt summary. It saves the trip total but cannot power product-level insights.
+                No reliable product lines found. You can still save this as an exact
+                totals-only receipt; item-level comparison will wait for a clearer receipt.
               </p>
             ) : null}
 
@@ -1126,11 +1129,15 @@ export function ReceiptFlowDialog({
                   {canFinalize
                     ? "Receipt arithmetic checks out"
                     : !hasRequiredReceiptValues
-                      ? "Add the subtotal, total, and at least one line"
+                      ? "Add the subtotal and total"
+                      : values.captureMode === "totals_only"
+                        ? "Receipt totals check out"
                       : `${money.format(arithmetic.differenceCents / 100)} still needs a look`}
                 </strong>
                 <p>
-                  Lines {money.format(arithmetic.itemNetCents / 100)} · subtotal difference {money.format(Math.abs(arithmetic.subtotalDeltaCents) / 100)} · total difference {money.format(Math.abs(arithmetic.totalDeltaCents) / 100)}
+                  {values.captureMode === "totals_only"
+                    ? `Subtotal ${money.format(values.subtotalCents / 100)} · tax ${money.format(values.taxCents / 100)} · total ${money.format(values.totalCents / 100)}`
+                    : `Lines ${money.format(arithmetic.itemNetCents / 100)} · subtotal difference ${money.format(Math.abs(arithmetic.subtotalDeltaCents) / 100)} · total difference ${money.format(Math.abs(arithmetic.totalDeltaCents) / 100)}`}
                 </p>
               </div>
             </div>
@@ -1184,7 +1191,7 @@ export function ReceiptFlowDialog({
               </button>
             </div>
             {!canFinalize ? (
-              <p className="finalize-help">Trusted comparison unlocks when both differences are within $0.05.</p>
+              <p className="finalize-help">Save unlocks when the printed subtotal, tax, and total agree within $0.05.</p>
             ) : null}
           </div>
         ) : null}
@@ -1249,6 +1256,7 @@ export function ExpectedActualBridge({
   receiptItems?: ClosedLoopReceiptItem[];
 }) {
   const buckets = normalizeBuckets(comparison, receiptItems);
+  const totalsOnly = comparison.isTotalsOnly === true;
   const unresolvedCents = Math.abs(comparison.unresolvedCents ?? 0);
   const provisional = comparison.isProvisional || unresolvedCents > 5;
   const bridgeRows = [
@@ -1280,6 +1288,15 @@ export function ExpectedActualBridge({
         </span>
       </div>
 
+      {totalsOnly ? (
+        <div className="receipt-flow-note warning" role="note">
+          <strong>Exact total saved; products were not read</strong>
+          <p>
+            This trip updates spending exactly. Upload a clearer photo or add product
+            lines later to unlock planned-versus-actual item insights.
+          </p>
+        </div>
+      ) : (
       <dl className="bridge-ledger">
         {bridgeRows.map(([label, value]) =>
           value === null || value === undefined ? null : (
@@ -1293,8 +1310,9 @@ export function ExpectedActualBridge({
           ),
         )}
       </dl>
+      )}
 
-      {buckets.length ? (
+      {!totalsOnly && buckets.length ? (
         <div className="comparison-buckets">
           <h3>Item comparison</h3>
           {buckets.map((bucket) => (
@@ -1325,7 +1343,7 @@ export function ExpectedActualBridge({
         </div>
       ) : null}
 
-      {provisional ? (
+      {provisional && !totalsOnly ? (
         <div className="receipt-flow-note warning" role="note">
           <strong>{money.format(unresolvedCents / 100)} unresolved</strong>
           <p>Insights stay provisional until this amount is matched or corrected.</p>

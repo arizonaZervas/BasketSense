@@ -368,6 +368,12 @@ export function reconcileReceipt(input: {
   taxCents: number | null;
   totalCents: number | null;
   discountCents?: number | null;
+  /**
+   * A totals-only receipt has a verified printed subtotal/tax/total but no
+   * trustworthy product lines. It is valid spending evidence, but not item
+   * evidence. Do not manufacture a synthetic item just to satisfy arithmetic.
+   */
+  totalsOnly?: boolean;
 }): ReceiptReconciliation {
   let representedDiscountCents = 0;
   let rawItemNetCents = 0;
@@ -396,7 +402,9 @@ export function reconcileReceipt(input: {
   );
   const itemNetCents = rawItemNetCents - appliedReceiptLevelDiscountCents;
   const subtotalDeltaCents = Number.isInteger(input.subtotalCents)
-    ? itemNetCents - (input.subtotalCents as number)
+    ? input.totalsOnly
+      ? 0
+      : itemNetCents - (input.subtotalCents as number)
     : null;
   const totalDeltaCents =
     Number.isInteger(input.subtotalCents) &&

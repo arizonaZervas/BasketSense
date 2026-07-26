@@ -3111,9 +3111,12 @@ function requiredDateTime(value: unknown, field: string) {
   return date.toISOString();
 }
 
-function validateDraftItems(value: unknown): ValidatedDraftItem[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new ApiError(400, "items must contain at least one receipt line");
+function validateDraftItems(
+  value: unknown,
+  allowTotalsOnly = false
+): ValidatedDraftItem[] {
+  if (!Array.isArray(value) || (value.length === 0 && !allowTotalsOnly)) {
+    throw new ApiError(400, "items must contain at least one receipt line unless this is a totals-only receipt");
   }
   if (value.length > 200) {
     throw new ApiError(400, "items cannot contain more than 200 lines");
@@ -3203,6 +3206,10 @@ function validateDraftItems(value: unknown): ValidatedDraftItem[] {
       isReturn: lineSubtotalCents < 0 && discountCents === 0,
     };
   });
+}
+
+function isTotalsOnlyReceipt(receipt: Pick<ReceiptTransactionRow, "audit_flag">) {
+  return receipt.audit_flag.startsWith("closed_loop_totals_only");
 }
 
 function aliasKeyFor(
@@ -3474,7 +3481,8 @@ function buildClosedLoopComparison(
 
   return {
     isProvisional:
-      receipt.parse_status !== "reconciled" || unresolved.length > 0,
+      receipt.parse_status !== "reconciled" || unresolved.length > 0 || isTotalsOnlyReceipt(receipt),
+    isTotalsOnly: isTotalsOnlyReceipt(receipt),
     arithmetic: {
       isReconciled: arithmetic.isReconciled,
       itemNetCents: arithmetic.itemNetCents,
@@ -3676,6 +3684,8 @@ async function rebuildReviewQuestions(
     )
     .bind(receipt.id)
     .run();
+
+  if (comparison.isTotalsOnly) return;
 
   const candidates: QuestionCandidateInput[] = [];
   const receiptById = new Map(receiptItems.map((item) => [item.id, item]));
@@ -3972,6 +3982,7 @@ async function readClosedLoopReview(
       !persistedIntentIds.has(match.intentItemId) &&
       !persistedReceiptIds.has(match.receiptItemId)
   );
+  const totalsOnly = isTotalsOnlyReceipt(receipt);
   const arithmetic = reconcileReceipt({
     items: inputs.receiptRows.map((item) => ({
       lineSubtotalCents: item.line_subtotal_cents,
@@ -3982,6 +3993,7 @@ async function readClosedLoopReview(
     taxCents: receipt.tax_cents,
     totalCents: receipt.total_cents,
     discountCents: receipt.discount_cents,
+    totalsOnly,
   });
   const comparison = buildClosedLoopComparison(
     receipt,
@@ -4038,6 +4050,7 @@ async function rebuildReceiptState(
     )
     .bind(receipt.id)
     .all<ReceiptItemRow>();
+  const totalsOnly = isTotalsOnlyReceipt(receipt);
   const arithmetic = reconcileReceipt({
     items: receiptItems.results.map((item) => ({
       lineSubtotalCents: item.line_subtotal_cents,
@@ -4048,12 +4061,15 @@ async function rebuildReceiptState(
     taxCents: receipt.tax_cents,
     totalCents: receipt.total_cents,
     discountCents: receipt.discount_cents,
+    totalsOnly,
   });
   const now = nowIso();
   const parseStatus = arithmetic.isReconciled ? "reconciled" : "needs_review";
   const auditFlag = arithmetic.isReconciled
-    ? "closed_loop_reconciled"
-    : `closed_loop_delta:${arithmetic.subtotalDeltaCents ?? "missing"}:${
+    ? totalsOnly
+      ? "closed_loop_totals_only"
+      : "closed_loop_reconciled"
+    : `${totalsOnly ? "closed_loop_totals_only_delta" : "closed_loop_delta"}:${arithmetic.subtotalDeltaCents ?? "missing"}:${
         arithmetic.totalDeltaCents ?? "missing"
       }`;
   await db
@@ -4287,7 +4303,8 @@ async function ingestReceiptDraft(
     -100_000_000,
     100_000_000
   );
-  const items = validateDraftItems(body.items);
+  const totalsOnly = body.captureMode === "totals_only";
+  const items = validateDraftItems(body.items, totalsOnly);
   const discountCents =
     optionalInteger(
       body.discountCents,
@@ -4312,7 +4329,7 @@ async function ingestReceiptDraft(
         household_funded_cents, external_funding_cents, audit_flag,
         parse_status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'warehouse', 'receipt_photo', ?, ?, ?, ?, ?, ?, ?, ?,
-                0, 'closed_loop_draft', 'needs_review', ?, ?)`
+                0, ?, 'needs_review', ?, ?)`
     )
     .bind(
       receiptId,
@@ -4327,6 +4344,7 @@ async function ingestReceiptDraft(
       discountCents,
       totalCents,
       totalCents,
+      totalsOnly ? "closed_loop_totals_only_draft" : "closed_loop_draft",
       now,
       now
     )
@@ -4393,15 +4411,18 @@ async function updateReceiptDraft(
           0,
           100_000_000
         ) ?? 0);
+  const totalsOnly =
+    body.captureMode === "totals_only" ||
+    (body.captureMode === undefined && isTotalsOnlyReceipt(receipt));
   const items =
-    body.items === undefined ? null : validateDraftItems(body.items);
+    body.items === undefined ? null : validateDraftItems(body.items, totalsOnly);
   const now = nowIso();
   await db
     .prepare(
       `UPDATE receipt_transactions
        SET purchased_at = ?, subtotal_cents = ?, tax_cents = ?,
            discount_cents = ?, total_cents = ?, household_funded_cents = ?,
-           parse_status = 'needs_review', audit_flag = 'closed_loop_corrected',
+           parse_status = 'needs_review', audit_flag = ?,
            updated_at = ?
        WHERE id = ? AND household_id = ?`
     )
@@ -4412,6 +4433,7 @@ async function updateReceiptDraft(
       discountCents,
       totalCents,
       totalCents,
+      totalsOnly ? "closed_loop_totals_only_draft" : "closed_loop_corrected",
       now,
       receipt.id,
       context.household.id
@@ -4460,6 +4482,7 @@ async function finalizeReceipt(
     taxCents: receipt.tax_cents,
     totalCents: receipt.total_cents,
     discountCents: receipt.discount_cents,
+    totalsOnly: isTotalsOnlyReceipt(receipt),
   });
   if (!arithmetic.isReconciled) {
     throw new ApiError(

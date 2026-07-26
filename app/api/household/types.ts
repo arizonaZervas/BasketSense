@@ -115,6 +115,8 @@ export interface ReviewQuestionSummary {
 
 export interface ClosedLoopComparison {
   isProvisional: boolean;
+  /** Exact receipt total, but no product lines were captured. */
+  isTotalsOnly?: boolean;
   arithmetic: {
     isReconciled: boolean;
     itemNetCents: number;

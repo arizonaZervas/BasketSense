@@ -1753,6 +1753,71 @@ function productForListItem(state, listItem) {
   return product;
 }
 
+test("a totals-only receipt preserves exact spending without inventing product evidence", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("totals-only@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const freeze = await handleHouseholdPatch(
+      householdRequest("totals-only@example.test", "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freeze.status, 200);
+
+    const ingestedResponse = await handleHouseholdPost(
+      householdRequest("totals-only@example.test", "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "totals-only-july-25",
+        tripId,
+        purchasedAt: "2026-07-25T10:15:00-07:00",
+        subtotalCents: 21508,
+        taxCents: 337,
+        totalCents: 21845,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+    assert.equal(ingestedResponse.status, 200);
+    const ingested = await responseJson(ingestedResponse);
+    assert.equal(ingested.receipt.parseStatus, "reconciled");
+    assert.equal(ingested.closedLoop.items.length, 0);
+    assert.equal(ingested.comparison.actualTotalCents, 21845);
+    assert.equal(ingested.comparison.isTotalsOnly, true);
+    assert.equal(ingested.comparison.isProvisional, true);
+    assert.equal(ingested.questions.length, 0);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_items WHERE receipt_transaction_id = ?`,
+        )
+        .get(ingested.receiptId).count,
+      0,
+    );
+
+    const finalizedResponse = await handleHouseholdPatch(
+      householdRequest("totals-only@example.test", "PATCH", {
+        action: "finalize_receipt",
+        receiptId: ingested.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedResponse.status, 200);
+    assert.equal(
+      db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId).status,
+      "completed",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("a reconciled receipt closes the frozen intent loop idempotently", async () => {
   const db = new D1DatabaseAdapter();
   try {
