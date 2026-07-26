@@ -413,6 +413,9 @@ export function BasketSenseDashboard({
   const [receiptFlowScope, setReceiptFlowScope] =
     useState<"current" | "latest">("current");
   const [toast, setToast] = useState<string | null>(null);
+  const [recentlyCheckedItemId, setRecentlyCheckedItemId] = useState<string | null>(
+    null,
+  );
   const [themePreference, setThemePreference] =
     useState<ThemePreference>("system");
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>("light");
@@ -420,6 +423,7 @@ export function BasketSenseDashboard({
   const refreshPromise = useRef<Promise<void> | null>(null);
   const listRefreshPromise = useRef<Promise<void> | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const checkedAnimationTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
   const productReturnFocus = useRef<string | null>(null);
@@ -666,6 +670,9 @@ export function BasketSenseDashboard({
   useEffect(
     () => () => {
       if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+      if (checkedAnimationTimer.current !== null) {
+        window.clearTimeout(checkedAnimationTimer.current);
+      }
     },
     [],
   );
@@ -881,6 +888,16 @@ export function BasketSenseDashboard({
 
   function toggleChecked(item: SharedListItem) {
     const key = `item-${item.id}`;
+    if (!item.checked) {
+      if (checkedAnimationTimer.current !== null) {
+        window.clearTimeout(checkedAnimationTimer.current);
+      }
+      setRecentlyCheckedItemId(item.id);
+      checkedAnimationTimer.current = window.setTimeout(() => {
+        setRecentlyCheckedItemId(null);
+        checkedAnimationTimer.current = null;
+      }, 500);
+    }
     setHousehold((current) =>
       current
         ? {
@@ -1234,6 +1251,7 @@ export function BasketSenseDashboard({
             onSetEstimate={setManualEstimate}
             onToggleIncluded={toggleIncluded}
             onToggleChecked={toggleChecked}
+            recentlyCheckedItemId={recentlyCheckedItemId}
             onFreeze={freezeTrip}
             onUnfreeze={unfreezeTrip}
             onCopy={copyList}
@@ -1358,6 +1376,7 @@ function ThisWeekTab({
   onSetEstimate,
   onToggleIncluded,
   onToggleChecked,
+  recentlyCheckedItemId,
   onFreeze,
   onUnfreeze,
   onCopy,
@@ -1381,6 +1400,7 @@ function ThisWeekTab({
   ) => Promise<boolean>;
   onToggleIncluded: (item: SharedListItem) => void;
   onToggleChecked: (item: SharedListItem) => void;
+  recentlyCheckedItemId: string | null;
   onFreeze: () => void;
   onUnfreeze: () => void;
   onCopy: () => void;
@@ -1423,6 +1443,12 @@ function ThisWeekTab({
     household?.members.map((member) => [member.id, member]) ?? [],
   );
   const shoppingStarted = trip?.status === "frozen";
+  const activeIncluded = shoppingStarted
+    ? included.filter((item) => !item.checked)
+    : included;
+  const checkedIncluded = shoppingStarted
+    ? included.filter((item) => item.checked)
+    : [];
   const frozenContextKey = shoppingStarted
     ? `${trip.id}:${trip.frozenAt ?? "pending"}`
     : null;
@@ -1909,7 +1935,11 @@ function ThisWeekTab({
       <section className="week-summary" aria-label="Saturday list summary">
         <div>
           <span>On the shared list</span>
-          <strong>{included.length} items</strong>
+          <strong>
+            {household
+              ? `${included.length} ${included.length === 1 ? "item" : "items"}`
+              : "—"}
+          </strong>
         </div>
         <div className="estimate-summary" aria-live="polite">
           <span>Estimated list total</span>
@@ -1950,25 +1980,16 @@ function ThisWeekTab({
                 <p>Only items your household has chosen to buy.</p>
               </div>
               <span>
-                {included.length} {included.length === 1 ? "item" : "items"}
+                {household
+                  ? `${activeIncluded.length} ${activeIncluded.length === 1 ? "item" : "items"}`
+                  : "—"}
               </span>
             </div>
-            {!household && syncStatus === "offline" ? (
-              <div className="empty-state active-list-empty">
-                <strong>Shared list unavailable</strong>
-                <p>
-                  Your list is safely stored with the household. Reconnect to
-                  load it before making changes.
-                </p>
-                <button type="button" className="secondary-button" onClick={onRetryLoad}>
-                  Retry list
-                </button>
-              </div>
-            ) : !household ? (
+            {!household ? (
               <ListSkeleton />
-            ) : included.length ? (
+            ) : activeIncluded.length ? (
               <div className="list-rows" role="list">
-                {included.map((item) => {
+                {activeIncluded.map((item) => {
                   const key = `item-${item.id}`;
                   const estimateKey = `estimate-${item.id}`;
                   const pending = pendingWrites.has(key);
@@ -2162,13 +2183,74 @@ function ThisWeekTab({
               </div>
             ) : (
               <div className="empty-state active-list-empty">
-                <strong>Your active list is empty</strong>
+                <strong>{shoppingStarted ? "Everything on the active list is checked off" : "Your active list is empty"}</strong>
                 <p>
-                  Search the household catalog above or add an idea below. The
-                  estimate only counts items moved here.
+                  {shoppingStarted
+                    ? "Use the checked-off section below to undo anything marked by mistake."
+                    : "Search the household catalog above or add an idea below. The estimate only counts items moved here."}
                 </p>
               </div>
             )}
+            {checkedIncluded.length ? (
+              <section className="checked-list" aria-labelledby="checked-list-title">
+                <div className="checked-list-heading">
+                  <div>
+                    <p className="section-label">Shopping progress</p>
+                    <h3 id="checked-list-title">Checked off</h3>
+                  </div>
+                  <span>{checkedIncluded.length}</span>
+                </div>
+                <div className="list-rows" role="list">
+                  {checkedIncluded.map((item) => {
+                    const key = `item-${item.id}`;
+                    const pending = pendingWrites.has(key);
+                    return (
+                      <div
+                        className={`list-row-wrap ${
+                          recentlyCheckedItemId === item.id
+                            ? "checked-off-arrival"
+                            : ""
+                        }`}
+                        key={item.id}
+                        role="listitem"
+                        data-list-item-focus={item.id}
+                        data-list-item-location="checked"
+                      >
+                        <div className="list-row included checked">
+                          <button
+                            type="button"
+                            className="check-button"
+                            onClick={() => onToggleChecked(item)}
+                            aria-label={`Undo check for ${item.label}`}
+                            disabled={pending}
+                          >
+                            <span aria-hidden="true">✓</span>
+                          </button>
+                          <div className="list-row-copy">
+                            <strong>{item.label}</strong>
+                            <small>Marked off this trip</small>
+                          </div>
+                          <div className="list-row-actions">
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() => onToggleChecked(item)}
+                              disabled={pending}
+                            >
+                              {pending ? "Saving…" : "Undo"}
+                            </button>
+                          </div>
+                        </div>
+                        <InlineWriteError
+                          failure={failedWrites[key]}
+                          onRetry={() => onRetry(key)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
             {removedAfterStart.length ? (
               <details className="removed-list">
                 <summary>

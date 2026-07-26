@@ -93,6 +93,18 @@ async function ensureUploadSchema(db: D1Database) {
   ]);
 }
 
+async function ensureReadableUploadSchema(db: D1Database) {
+  try {
+    await db.prepare("SELECT 1 FROM receipt_uploads LIMIT 1").first();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such table:\s*receipt_uploads/i.test(message)) {
+      throw error;
+    }
+    await ensureUploadSchema(db);
+  }
+}
+
 async function authorizedReceipt(
   db: D1Database,
   email: string,
@@ -144,7 +156,7 @@ export async function POST(request: Request) {
   try {
     const email = authenticatedEmail(request);
     const { db, bucket } = await runtime();
-    await ensureUploadSchema(db);
+    await ensureReadableUploadSchema(db);
     let form: FormData;
     try {
       form = await request.formData();
@@ -244,7 +256,7 @@ export async function GET(request: Request) {
   try {
     const email = authenticatedEmail(request);
     const { db, bucket } = await runtime();
-    await ensureUploadSchema(db);
+    await ensureReadableUploadSchema(db);
     const receiptId = requiredReceiptId(
       new URL(request.url).searchParams.get("receiptId")
     );

@@ -5037,7 +5037,7 @@ export async function handleHouseholdPost(
   try {
     const user = authenticatedUser(request);
     const body = await requestBody(request);
-    await ensureSchema(db);
+    await ensureReadableSchema(db);
     const context = await bootstrapHousehold(db, user);
     const action = body.action as HouseholdPostRequest["action"] | undefined;
 
@@ -5067,7 +5067,7 @@ export async function handleHouseholdPatch(
   try {
     const user = authenticatedUser(request);
     const body = await requestBody(request);
-    await ensureSchema(db);
+    await ensureReadableSchema(db);
     const context = await bootstrapHousehold(db, user);
     const action = body.action as HouseholdPatchRequest["action"] | undefined;
 

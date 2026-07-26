@@ -191,6 +191,38 @@ test("ready household reads avoid repeating runtime schema DDL", async () => {
   }
 });
 
+test("ready household writes avoid repeating runtime schema DDL", async () => {
+  const initialized = new D1DatabaseAdapter();
+  const reusedConnection = new D1DatabaseAdapter(initialized.database);
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(
+        householdRequest("write-only-owner@example.test"),
+        initialized,
+      ),
+    );
+    reusedConnection.schemaBatchCalls = 0;
+
+    const response = await handleHouseholdPost(
+      householdRequest("write-only-owner@example.test", "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "Schema test item",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      reusedConnection,
+    );
+
+    assert.equal(response.status, 201);
+    assert.equal(reusedConnection.schemaBatchCalls, 0);
+  } finally {
+    reusedConnection.close();
+    initialized.close();
+  }
+});
+
 test("Data Health is owner-only, household-scoped, and exportable without a SQL console", async () => {
   const db = new D1DatabaseAdapter();
   try {

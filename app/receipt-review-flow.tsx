@@ -305,6 +305,27 @@ async function responseJson(response: Response, fallback: string) {
   return body ?? {};
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs = 12_000,
+) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Saving took too long. Your receipt is still on this screen—check your connection and retry.",
+      );
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function normalizeBuckets(
   comparison: ClosedLoopComparison | null | undefined,
   receiptItems: ClosedLoopReceiptItem[] = [],
@@ -717,27 +738,55 @@ export function ReceiptFlowDialog({
     });
   }
 
+  function addReceiptSummaryLine() {
+    const subtotal = draft.subtotal.trim();
+    if (!subtotal) {
+      setSaveError("Enter the subtotal first, then add a receipt summary line.");
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      items: [
+        {
+          ...blankLine(),
+          description: "Receipt summary — product details not entered",
+          amount: current.subtotal,
+        },
+      ],
+    }));
+    setSaveError(null);
+  }
+
   async function uploadPhoto(savedReceiptId: string) {
     if (!photo) return true;
     const form = new FormData();
     form.append("receiptId", savedReceiptId);
     form.append("file", photo);
-    const response = await fetch("/api/receipt-photo", {
-      method: "POST",
-      body: form,
-    });
-    if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null;
+    try {
+      const response = await fetchWithTimeout("/api/receipt-photo", {
+        method: "POST",
+        body: form,
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        setPhotoError(
+          body?.error ??
+            "The structured receipt was saved, but private photo storage needs a retry.",
+        );
+        return false;
+      }
+      setPhotoError(null);
+      return true;
+    } catch (error) {
       setPhotoError(
-        body?.error ??
-          "The structured receipt was saved, but private photo storage needs a retry.",
+        error instanceof Error
+          ? `The structured receipt was saved, but the photo needs a retry: ${error.message}`
+          : "The structured receipt was saved, but private photo storage needs a retry.",
       );
       return false;
     }
-    setPhotoError(null);
-    return true;
   }
 
   async function saveDraft(finalize: boolean) {
@@ -758,7 +807,7 @@ export function ReceiptFlowDialog({
     setSavedMessage(null);
     try {
       const action = receiptId ? "update_receipt_draft" : "ingest_receipt_draft";
-      const response = await fetch("/api/household", {
+      const response = await fetchWithTimeout("/api/household", {
         method: receiptId ? "PATCH" : "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -784,7 +833,7 @@ export function ReceiptFlowDialog({
       await uploadPhoto(savedReceiptId);
 
       if (finalize) {
-        const finalizeResponse = await fetch("/api/household", {
+        const finalizeResponse = await fetchWithTimeout("/api/household", {
           method: "PATCH",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify({ action: "finalize_receipt", receiptId: savedReceiptId }),
@@ -796,12 +845,12 @@ export function ReceiptFlowDialog({
         if (finalizedBody.closedLoop && typeof finalizedBody.closedLoop === "object") {
           setWorkingClosedLoop(finalizedBody.closedLoop as ClosedLoopSnapshot);
         }
-        await onRefresh();
         setSavedMessage("Receipt checked and linked to the saved trip.");
         setStep("bridge");
+        void onRefresh().catch(() => undefined);
       } else {
-        await onRefresh();
         setSavedMessage("Needs-review draft saved. You can safely finish the check later.");
+        void onRefresh().catch(() => undefined);
       }
     } catch (error) {
       setSaveError(
@@ -932,8 +981,8 @@ export function ReceiptFlowDialog({
             </details>
 
             <div className="receipt-flow-actions split">
-              <button type="button" className="text-button" onClick={() => setStep("check")}>
-                Enter manually
+              <button type="button" className="primary-button" onClick={() => setStep("check")}>
+                {previewUrl ? "Check receipt details" : "Enter receipt details"}
               </button>
               <button type="button" className="secondary-button" onClick={onClose}>
                 Cancel
@@ -992,18 +1041,33 @@ export function ReceiptFlowDialog({
             <div className="draft-lines-heading">
               <div>
                 <h3>Receipt lines</h3>
-                <p>Abbreviations are okay. Fix the product number, description, or amount only when needed.</p>
+                <p>Abbreviations are okay. Fix only what affects the receipt record.</p>
               </div>
-              <button
-                type="button"
-                className="add-button"
-                onClick={() =>
-                  setDraft((current) => ({ ...current, items: [...current.items, blankLine()] }))
-                }
-              >
-                + Add line
-              </button>
+              <div className="draft-lines-actions">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={addReceiptSummaryLine}
+                  disabled={Boolean(values.items.length) || !draft.subtotal.trim()}
+                >
+                  Use receipt summary
+                </button>
+                <button
+                  type="button"
+                  className="add-button"
+                  onClick={() =>
+                    setDraft((current) => ({ ...current, items: [...current.items, blankLine()] }))
+                  }
+                >
+                  + Add line
+                </button>
+              </div>
             </div>
+            {!values.items.length ? (
+              <p className="receipt-summary-help">
+                Short on time? Enter subtotal and total, then use a receipt summary. It saves the trip total but cannot power product-level insights.
+              </p>
+            ) : null}
 
             <div className="draft-lines">
               {draft.items.map((item, index) => (
@@ -1101,7 +1165,13 @@ export function ReceiptFlowDialog({
                   disabled={saving || !hasAnyDraftData}
                   onClick={() => void saveDraft(false)}
                 >
-                  {saving ? "Saving…" : receiptStored ? "Update needs-review draft" : "Save needs-review draft"}
+                  {saving
+                    ? "Saving…"
+                    : receiptStored
+                      ? "Update needs-review draft"
+                      : hasRequiredReceiptValues
+                        ? "Save needs-review draft"
+                        : "Save photo for later"}
                 </button>
               ) : null}
               <button
@@ -1140,6 +1210,22 @@ export function ReceiptFlowDialog({
                 <p>The comparison is still being prepared. Close and reopen Review after the shared household refreshes.</p>
               </div>
             )}
+            {photoError ? (
+              <div className="receipt-flow-note warning" role="alert">
+                <strong>Receipt saved; photo still needs storage</strong>
+                <p>{photoError}</p>
+                {receiptId && photo ? (
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={saving}
+                    onClick={() => void uploadPhoto(receiptId)}
+                  >
+                    Retry photo storage
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             <div className="receipt-flow-actions end">
               <button type="button" className="secondary-button" onClick={() => setStep("check")}>
                 Recheck receipt

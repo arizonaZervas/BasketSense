@@ -2541,6 +2541,57 @@ button.price-point:hover {
   padding: 0 10px 12px;
 }
 
+.checked-list {
+  border-top: 1px solid var(--line);
+  background: var(--surface-subtle);
+}
+
+.checked-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px 10px;
+}
+
+.checked-list-heading h3,
+.checked-list-heading p {
+  margin: 0;
+}
+
+.checked-list-heading h3 {
+  margin-top: 3px;
+  font-size: 14px;
+}
+
+.checked-list-heading > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--forest-soft);
+  color: var(--forest);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.checked-off-arrival {
+  animation: checked-off-arrival 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes checked-off-arrival {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .removed-list {
   border-top: 1px solid var(--line);
   background: var(--surface-subtle);
@@ -4482,6 +4533,26 @@ button.price-point:hover {
 
 .receipt-paste-fallback .secondary-button {
   margin-top: 10px;
+}
+
+.draft-lines-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.receipt-summary-help {
+  margin: -13px 0 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .checked-off-arrival {
+    animation: none;
+  }
 }
 
 .receipt-flow-actions {
