@@ -1,6 +1,12 @@
+import {
+  extractReceiptWithGemini,
+  RECEIPT_EXTRACTION_SCHEMA_VERSION,
+} from "../../../workers/receipt-ingestion/src/extraction";
+
 export const dynamic = "force-dynamic";
 
 const MAX_RECEIPT_FILE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
 const ALLOWED_RECEIPT_FILE_TYPES = new Set([
   "application/pdf",
   "image/jpeg",
@@ -13,8 +19,8 @@ const ALLOWED_RECEIPT_FILE_TYPES = new Set([
 interface RuntimeEnv {
   DB?: D1Database;
   RECEIPTS?: R2Bucket;
-  RECEIPT_INGESTION_URL?: string;
-  INGESTION_INTERNAL_TOKEN?: string;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
 }
 
 type Authorization = {
@@ -84,8 +90,8 @@ async function runtime() {
   return {
     db: workersRuntime.env.DB,
     bucket: workersRuntime.env.RECEIPTS,
-    workerUrl: workersRuntime.env.RECEIPT_INGESTION_URL?.trim() || null,
-    internalToken: workersRuntime.env.INGESTION_INTERNAL_TOKEN || null,
+    geminiApiKey: workersRuntime.env.GEMINI_API_KEY?.trim() || null,
+    geminiModel: workersRuntime.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
   };
 }
 
@@ -257,46 +263,86 @@ function parseArtifact(value: unknown) {
   };
 }
 
-async function startWorker(
-  ingestionId: string,
-  workerUrl: string | null,
-  internalToken: string | null,
-) {
-  if (!workerUrl || !internalToken) return { queued: false, configurationMissing: true };
-  let endpoint: URL;
-  try {
-    endpoint = new URL(`/internal/ingestions/${encodeURIComponent(ingestionId)}/run`, workerUrl);
-  } catch {
-    return { queued: false, configurationMissing: true };
-  }
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "x-basketsense-internal-token": internalToken },
-    });
-    if (!response.ok) {
-      throw new Error(`Receipt reader could not be started (${response.status})`);
-    }
-    const body = (await response.json().catch(() => null)) as { workflowInstanceId?: unknown } | null;
-    return {
-      queued: true,
-      workflowInstanceId: typeof body?.workflowInstanceId === "string" ? body.workflowInstanceId : null,
-      configurationMissing: false,
-    };
-  } catch (error) {
-    return {
-      queued: false,
-      configurationMissing: false,
-      error: error instanceof Error ? error.message : "Receipt reader could not be started",
-    };
-  }
-}
-
 async function readArtifact(bucket: R2Bucket, row: IngestionRow) {
   if (row.status !== "awaiting_review" || !row.extraction_artifact_key) return undefined;
   const object = await bucket.get(row.extraction_artifact_key);
   if (!object) throw new IngestionApiError(502, "Receipt draft is no longer available; please retry the upload");
   return parseArtifact(await object.json());
+}
+
+async function nativeExtractReceipt({
+  db,
+  bucket,
+  ingestion,
+  apiKey,
+  model,
+}: {
+  db: D1Database;
+  bucket: R2Bucket;
+  ingestion: IngestionRow;
+  apiKey: string;
+  model: string;
+}) {
+  if (ingestion.status === "awaiting_review") return ingestion;
+  const claimed = await db
+    .prepare(`UPDATE receipt_ingestions
+      SET status = 'extracting', attempt_count = attempt_count + 1,
+          error_code = NULL, updated_at = ?
+      WHERE id = ? AND status IN ('uploaded', 'failed')`)
+    .bind(new Date().toISOString(), ingestion.id)
+    .run();
+  if ((claimed.meta.changes ?? 0) !== 1) {
+    return (await db
+      .prepare(`SELECT * FROM receipt_ingestions WHERE id = ? LIMIT 1`)
+      .bind(ingestion.id)
+      .first<IngestionRow>()) ?? ingestion;
+  }
+
+  try {
+    const source = await bucket.get(ingestion.source_storage_key);
+    if (!source) throw new Error("source_missing");
+    const extracted = await extractReceiptWithGemini({
+      apiKey,
+      model,
+      contentType: ingestion.source_content_type,
+      bytes: await source.arrayBuffer(),
+    });
+    const artifactKey = `households/${ingestion.household_id}/receipt-ingestions/${ingestion.id}/gemini-draft.json`;
+    await bucket.put(
+      artifactKey,
+      JSON.stringify({
+        provider: "gemini",
+        model,
+        schemaVersion: RECEIPT_EXTRACTION_SCHEMA_VERSION,
+        responseId: extracted.responseId,
+        draft: extracted.draft,
+      }),
+      { httpMetadata: { contentType: "application/json" } },
+    );
+    const now = new Date().toISOString();
+    await db
+      .prepare(`UPDATE receipt_ingestions
+        SET status = 'awaiting_review', provider = 'gemini', model = ?,
+            prompt_version = 'costco-receipt-extraction-v1',
+            schema_version = ?, extraction_artifact_key = ?,
+            error_code = NULL, completed_at = ?, updated_at = ?
+        WHERE id = ?`)
+      .bind(model, RECEIPT_EXTRACTION_SCHEMA_VERSION, artifactKey, now, now, ingestion.id)
+      .run();
+  } catch {
+    await db
+      .prepare(`UPDATE receipt_ingestions
+        SET status = 'failed', error_code = 'Receipt reader could not produce a reliable draft',
+            updated_at = ?
+        WHERE id = ?`)
+      .bind(new Date().toISOString(), ingestion.id)
+      .run();
+  }
+
+  return (await db
+    .prepare(`SELECT * FROM receipt_ingestions WHERE id = ? LIMIT 1`)
+    .bind(ingestion.id)
+    .first<IngestionRow>()) ?? ingestion;
 }
 
 function handleError(error: unknown) {
@@ -310,7 +356,7 @@ function handleError(error: unknown) {
 export async function POST(request: Request) {
   try {
     const email = authenticatedEmail(request);
-    const { db, bucket, workerUrl, internalToken } = await runtime();
+    const { db, bucket, geminiApiKey, geminiModel } = await runtime();
     await ensureIngestionSchema(db);
     let form: FormData;
     try {
@@ -341,7 +387,15 @@ export async function POST(request: Request) {
       if (existing.trip_id !== authorization.tripId) {
         throw new IngestionApiError(409, "This receipt upload is already linked to another trip");
       }
-      return responseJson({ ingestion: publicIngestion(existing), reused: true }, 202);
+      const processed = geminiApiKey
+        ? await nativeExtractReceipt({ db, bucket, ingestion: existing, apiKey: geminiApiKey, model: geminiModel })
+        : existing;
+      return responseJson({
+        ingestion: publicIngestion(processed, await readArtifact(bucket, processed)),
+        reused: true,
+        queued: false,
+        configurationMissing: !geminiApiKey,
+      }, 202);
     }
     const ingestionId = crypto.randomUUID();
     const storageKey = `households/${authorization.householdId}/receipt-ingestions/${ingestionId}/source`;
@@ -380,22 +434,15 @@ export async function POST(request: Request) {
       await bucket.delete(storageKey);
       throw error;
     }
-    const start = await startWorker(ingestionId, workerUrl, internalToken);
-    if (start.queued) {
-      await db
-        .prepare(`UPDATE receipt_ingestions
-          SET workflow_instance_id = ?, updated_at = ?
-          WHERE id = ? AND status IN ('queued', 'extracting', 'awaiting_review')`)
-        .bind(start.workflowInstanceId, new Date().toISOString(), ingestionId)
-        .run();
-    }
     const created = await authorizeIngestion(db, email, ingestionId);
+    const processed = geminiApiKey
+      ? await nativeExtractReceipt({ db, bucket, ingestion: created, apiKey: geminiApiKey, model: geminiModel })
+      : created;
     return responseJson(
       {
-        ingestion: publicIngestion(created),
-        queued: start.queued,
-        configurationMissing: start.configurationMissing,
-        startError: "error" in start ? start.error : null,
+        ingestion: publicIngestion(processed, await readArtifact(bucket, processed)),
+        queued: false,
+        configurationMissing: !geminiApiKey,
       },
       202,
     );

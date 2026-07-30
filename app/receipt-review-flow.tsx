@@ -762,7 +762,7 @@ export function ReceiptFlowDialog({
     }
     setOcrError(null);
     setPendingParsedDraft(null);
-    setOcrStatus("Saving your receipt privately");
+    setOcrStatus("Saving and reading your receipt privately");
     setOcrProgress(0.16);
     try {
       const form = new FormData();
@@ -772,25 +772,51 @@ export function ReceiptFlowDialog({
       const response = await fetchWithTimeout(
         "/api/receipt-ingestion",
         { method: "POST", body: form },
-        35_000,
+        105_000,
       );
       const body = await responseJson(
         response,
         "The receipt could not be saved for review.",
       );
-      const ingestion = body.ingestion as { id?: unknown } | undefined;
+      const ingestion = body.ingestion as {
+        id?: unknown;
+        status?: unknown;
+        error?: unknown;
+        draft?: unknown;
+      } | undefined;
       if (!ingestion || typeof ingestion.id !== "string") {
         throw new Error("The receipt saved without a usable review ID.");
       }
       setReceiptIngestionId(ingestion.id);
       setPollReceiptIngestion(body.queued === true);
-      setOcrProgress(0.34);
-      if (body.configurationMissing === true) {
-        setOcrStatus("Receipt saved — enter totals while automatic reading is being connected");
-      } else if (body.queued === true) {
-        setOcrStatus("Receipt saved — reading in the background");
+      const status = typeof ingestion.status === "string" ? ingestion.status : "uploaded";
+      if (status === "awaiting_review" && ingestion.draft && typeof ingestion.draft === "object") {
+        setOcrProgress(1);
+        if (hasMeaningfulDraftData(draft)) {
+          setPendingParsedDraft(ingestion.draft);
+          setOcrStatus("Draft ready — your edits are still in place");
+        } else {
+          setDraft(draftFromParser(ingestion.draft));
+          appliedIngestionDraftId.current = ingestion.id;
+          setOcrStatus("Receipt read — check the totals and items");
+        }
+      } else if (status === "failed") {
+        setOcrProgress(0);
+        setOcrStatus(null);
+        setOcrError(
+          typeof ingestion.error === "string" && ingestion.error
+            ? `The receipt reader needs another try: ${ingestion.error}`
+            : "The receipt reader could not finish. Your private upload is saved; enter totals now and try a clearer photo or PDF later.",
+        );
       } else {
-        setOcrStatus("Receipt saved — enter totals now; the reader will retry when available");
+        setOcrProgress(0.34);
+        if (body.configurationMissing === true) {
+          setOcrStatus("Receipt saved — enter totals while automatic reading is being connected");
+        } else if (body.queued === true) {
+          setOcrStatus("Receipt saved — reading in the background");
+        } else {
+          setOcrStatus("Receipt saved — reading will resume when available");
+        }
       }
       setStep("check");
     } catch (error) {

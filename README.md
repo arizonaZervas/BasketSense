@@ -66,6 +66,18 @@ Cloudflare R2 (private receipt images)
 The app uses vinext, React, TypeScript, Cloudflare Worker bindings, D1/SQLite,
 R2, and Drizzle schema/migration tooling.
 
+### Receipt reader configuration
+
+BasketSense stores uploaded receipt photos and Costco PDFs in its private R2
+bucket first. When the hosted Sites environment has a `GEMINI_API_KEY` secret,
+the same private application reads the saved document with Gemini and stores an
+advisory, reviewable draft. `GEMINI_MODEL` is optional and defaults to
+`gemini-3.5-flash-lite`.
+
+Receipt totals and line items do not become household actuals until a household
+member confirms the draft. Without the Gemini secret, the upload still succeeds
+and the manual totals flow remains available.
+
 ## Run locally
 
 Requirements: Node.js 22.13 or newer.
