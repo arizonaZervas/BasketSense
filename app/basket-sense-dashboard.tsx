@@ -144,6 +144,7 @@ type FailedWrite = {
 type BasketSenseDashboardProps = {
   user: DashboardUser;
   viewData: DashboardViewData;
+  signOutHref: string;
 };
 
 const primaryTabs = [
@@ -377,6 +378,7 @@ function InlineWriteError({
 export function BasketSenseDashboard({
   user,
   viewData,
+  signOutHref,
 }: BasketSenseDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>("week");
   const [household, setHousehold] = useState<HouseholdSnapshot | null>(null);
@@ -1158,6 +1160,9 @@ export function BasketSenseDashboard({
           <button className="text-button" onClick={openDataDialog}>
             Data &amp; privacy
           </button>
+          <a className="text-button sign-out-link" href={signOutHref}>
+            Sign out
+          </a>
         </div>
       </aside>
 
@@ -1232,6 +1237,12 @@ export function BasketSenseDashboard({
             >
               Data
             </button>
+            <a
+              className="text-button sign-out-link topbar-sign-out"
+              href={signOutHref}
+            >
+              Sign out
+            </a>
           </div>
         </header>
 

@@ -404,6 +404,15 @@ summary:focus-visible,
   color: #acbab1;
 }
 
+.sign-out-link {
+  align-items: center;
+  text-decoration: none;
+}
+
+.topbar-sign-out {
+  display: none;
+}
+
 .main-canvas {
   min-height: 100vh;
   margin-left: var(--sidebar);
@@ -3681,6 +3690,13 @@ button.price-point:hover {
 
   .topbar-actions {
     gap: 7px;
+  }
+
+  .topbar-sign-out {
+    display: inline-flex;
+    min-height: 36px;
+    padding-inline: 3px;
+    white-space: nowrap;
   }
 
   .theme-toggle {

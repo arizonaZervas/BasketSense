@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { BasketSenseDashboard } from "./basket-sense-dashboard";
 import { buildDashboardViewData } from "./basketsense-dashboard-data";
-import { requireChatGPTUser } from "./chatgpt-auth";
+import { chatGPTSignOutPath, requireChatGPTUser } from "./chatgpt-auth";
 
 export const metadata: Metadata = {
   title: "BasketSense — Our Costco companion",
@@ -36,6 +36,7 @@ export default async function Home() {
     <BasketSenseDashboard
       user={{ displayName: user.displayName, email: user.email }}
       viewData={viewData}
+      signOutHref={chatGPTSignOutPath("/")}
     />
   );
 }

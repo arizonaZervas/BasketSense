@@ -72,6 +72,7 @@ test("renders the four focused household destinations", async () => {
   }
 
   assert.match(html, /Data status/i);
+  assert.match(html, /href="\/signout-with-chatgpt\?return_to=%2F"[^>]*>Sign out<\/a>/i);
   assert.match(html, /Start shopping/i);
   assert.match(html, /Plan/);
   assert.match(html, /Shop/);
