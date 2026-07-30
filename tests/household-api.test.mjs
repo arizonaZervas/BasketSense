@@ -1880,6 +1880,140 @@ test("receipt-only recap totals use the discounted amount actually paid", async 
   }
 });
 
+test("a confirmed receipt-to-list match teaches the household alias for future trips", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("learn-alias@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const apparelProduct = initial.products.find(
+      (product) => product.costcoItemNumber === "1868328",
+    );
+    const plannedMilk = initial.listItems.find(
+      (item) => item.label === "Kirkland Signature organic 2% milk",
+    );
+    assert.ok(apparelProduct);
+    assert.ok(plannedMilk);
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest("learn-alias@example.test", "PATCH", {
+            action: "freeze_trip",
+            tripId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const ingested = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("learn-alias@example.test", "POST", {
+          action: "ingest_receipt_draft",
+          clientDraftId: "learn-alias",
+          tripId,
+          purchasedAt: "2026-07-25T10:30:00-07:00",
+          subtotalCents: 8000,
+          taxCents: 0,
+          totalCents: 8000,
+          discountCents: 0,
+          items: [
+            receiptDraftLine({
+              sourceLineNumber: 1,
+              costcoItemNumber: apparelProduct.costcoItemNumber,
+              rawDescription: "3 DOT PANT",
+              unitPriceCents: 8000,
+              lineSubtotalCents: 8000,
+              taxStatus: "taxable",
+            }),
+          ],
+        }),
+        db,
+      ),
+    );
+    const intent = db.database
+      .prepare(
+        `SELECT * FROM trip_intent_items WHERE trip_id = ? AND list_item_id = ?`,
+      )
+      .get(tripId, plannedMilk.id);
+    const receiptItem = db.database
+      .prepare(
+        `SELECT * FROM receipt_items WHERE receipt_transaction_id = ? LIMIT 1`,
+      )
+      .get(ingested.receiptId);
+    assert.ok(intent);
+    assert.ok(receiptItem);
+
+    const questionId = "learn-alias-question";
+    const now = new Date().toISOString();
+    db.database
+      .prepare(
+        `INSERT INTO review_questions (
+          id, household_id, trip_id, receipt_transaction_id, question_key,
+          purpose, prompt, options_json, declared_effect, effect_target,
+          list_item_id, intent_item_id, receipt_item_id, priority, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'intent', ?, ?, ?, 'receipt_match', ?, ?, ?, 1, 'open', ?, ?)`,
+      )
+      .run(
+        questionId,
+        "household_basketsense",
+        tripId,
+        ingested.receiptId,
+        "learn-alias-question",
+        "Is this the same household item?",
+        JSON.stringify([
+          {
+            value: "receipt_needs_fix",
+            label: "It is on the receipt",
+            effect: "Remember this household wording.",
+          },
+        ]),
+        "Confirms and remembers a household alias",
+        plannedMilk.id,
+        intent.id,
+        receiptItem.id,
+        now,
+        now,
+      );
+
+    const answer = await handleHouseholdPost(
+      householdRequest("learn-alias@example.test", "POST", {
+        action: "answer_review_question",
+        questionId,
+        value: "receipt_needs_fix",
+        replacementReceiptItemId: receiptItem.id,
+      }),
+      db,
+    );
+    assert.equal(answer.status, 200);
+    const aliases = db.database
+      .prepare(
+        `SELECT normalized_description, product_id FROM product_aliases
+         WHERE household_id = ? ORDER BY normalized_description`,
+      )
+      .all("household_basketsense");
+    assert.ok(
+      aliases.some(
+        (alias) =>
+          alias.normalized_description === "KIRKLAND SIGNATURE ORGANIC 2% MILK" &&
+          alias.product_id === apparelProduct.id,
+      ),
+    );
+    assert.ok(
+      aliases.some(
+        (alias) =>
+          alias.normalized_description === "3 DOT PANT" &&
+          alias.product_id === apparelProduct.id,
+      ),
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("a totals-only receipt preserves exact spending without inventing product evidence", async () => {
   const db = new D1DatabaseAdapter();
   try {

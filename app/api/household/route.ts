@@ -3302,6 +3302,10 @@ function aliasKeyFor(
     : `description:${normalizedDescription}`;
 }
 
+function intentAliasKeyFor(normalizedDescription: string) {
+  return `intent:${normalizedDescription}`;
+}
+
 async function resolveDraftProducts(
   db: D1Database,
   householdId: string,
@@ -3868,7 +3872,7 @@ async function rebuildReviewQuestions(
         {
           value: "yes_substitution",
           label: "Yes",
-          effect: "Confirms the receipt-to-plan match for this trip.",
+          effect: "Confirms this trip and remembers the household wording for future receipts.",
         },
         {
           value: "separate_purchase",
@@ -3881,7 +3885,7 @@ async function rebuildReviewQuestions(
           effect: "Leaves the possible match unresolved without changing future suggestions.",
         },
       ],
-      declaredEffect: "Confirms or rejects a possible receipt-to-plan match",
+      declaredEffect: "Confirms or rejects this match and, when confirmed, remembers a household alias",
       effectTarget: "receipt_match",
       intentItemId: intent.id,
       listItemId: intent.list_item_id,
@@ -3908,7 +3912,7 @@ async function rebuildReviewQuestions(
         {
           value: "receipt_needs_fix",
           label: "It is on the receipt",
-          effect: "Keeps the match unresolved until the receipt line is corrected.",
+          effect: "Lets you choose the receipt line once and remember the household match.",
         },
       ],
       declaredEffect: "Carries the item forward or records why it was not matched",
@@ -4836,6 +4840,87 @@ async function confirmReceiptProduct(
   return productId;
 }
 
+async function rememberConfirmedIntentAlias(
+  db: D1Database,
+  context: HouseholdContext,
+  intentItemId: string,
+  receiptItemId: string,
+  now: string,
+) {
+  const pair = await db
+    .prepare(
+      `SELECT trip_intent_items.label, receipt_items.product_id,
+              receipt_items.raw_description, receipt_items.costco_item_number
+       FROM trip_intent_items
+       INNER JOIN receipt_items ON receipt_items.id = ?
+       WHERE trip_intent_items.id = ?
+       LIMIT 1`,
+    )
+    .bind(receiptItemId, intentItemId)
+    .first<{
+      label: string;
+      product_id: string | null;
+      raw_description: string;
+      costco_item_number: string | null;
+    }>();
+  if (!pair?.product_id) return;
+
+  const normalized = normalizeReceiptDescription(pair.label);
+  if (!normalized) return;
+  await db.batch([
+    db.prepare(
+      `INSERT INTO product_aliases (
+        id, household_id, alias_key, raw_description,
+        normalized_description, costco_item_number, product_id,
+        confirmation_source, confirmed_by_member_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'member', ?, ?, ?)
+      ON CONFLICT(household_id, alias_key) DO UPDATE SET
+        product_id = excluded.product_id,
+        raw_description = excluded.raw_description,
+        normalized_description = excluded.normalized_description,
+        confirmed_by_member_id = excluded.confirmed_by_member_id,
+        updated_at = excluded.updated_at`,
+    ).bind(
+      crypto.randomUUID(),
+      context.household.id,
+      intentAliasKeyFor(normalized),
+      pair.label,
+      normalized,
+      pair.product_id,
+      context.member.id,
+      now,
+      now,
+    ),
+    db.prepare(
+      `INSERT INTO product_aliases (
+        id, household_id, alias_key, raw_description,
+        normalized_description, costco_item_number, product_id,
+        confirmation_source, confirmed_by_member_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'member', ?, ?, ?)
+      ON CONFLICT(household_id, alias_key) DO UPDATE SET
+        product_id = excluded.product_id,
+        raw_description = excluded.raw_description,
+        normalized_description = excluded.normalized_description,
+        confirmed_by_member_id = excluded.confirmed_by_member_id,
+        updated_at = excluded.updated_at`,
+    ).bind(
+      crypto.randomUUID(),
+      context.household.id,
+      aliasKeyFor(
+        pair.costco_item_number,
+        normalizeReceiptDescription(pair.raw_description),
+      ),
+      pair.raw_description,
+      normalizeReceiptDescription(pair.raw_description),
+      pair.costco_item_number,
+      pair.product_id,
+      context.member.id,
+      now,
+      now,
+    ),
+  ]);
+}
+
 async function confirmProductMetadata(
   db: D1Database,
   context: HouseholdContext,
@@ -5055,11 +5140,21 @@ async function answerReviewQuestion(
       );
     }
   if (
-    value === "yes_substitution" &&
+    (value === "yes_substitution" || value === "receipt_needs_fix") &&
     question.intent_item_id &&
     (question.receipt_item_id || replacementReceiptItemId)
   ) {
     const receiptItemId = question.receipt_item_id ?? replacementReceiptItemId!;
+    const receiptItem = await db
+      .prepare(
+        `SELECT id FROM receipt_items
+         WHERE id = ? AND receipt_transaction_id = ? LIMIT 1`
+      )
+      .bind(receiptItemId, question.receipt_transaction_id)
+      .first<{ id: string }>();
+    if (!receiptItem) {
+      throw new ApiError(400, "Choose a receipt line from this trip");
+    }
     await db.batch([
       db
         .prepare(
@@ -5086,6 +5181,13 @@ async function answerReviewQuestion(
           now
         ),
     ]);
+    await rememberConfirmedIntentAlias(
+      db,
+      context,
+      question.intent_item_id,
+      receiptItemId,
+      now,
+    );
   }
   if (value === "still_need_it" && question.intent_item_id) {
     const item = await db

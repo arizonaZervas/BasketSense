@@ -122,6 +122,8 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(reviewSource, /Open receipt items for \$\{driver\.label\}/);
   assert.match(reviewSource, /Each card shows the receipt item that received a Costco discount/);
   assert.match(reviewSource, /Saved \$\{money\.format/);
+  assert.match(reviewSource, /Choose the receipt line that was this saved item/);
+  assert.match(reviewSource, /Confirm match/);
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 

@@ -549,9 +549,23 @@ function tokenSimilarity(left: string, right: string): number {
   return intersection / (leftTokens.size + rightTokens.size - intersection);
 }
 
+function aliasesShareTarget(
+  left: ConfirmedProductAlias,
+  right: ConfirmedProductAlias,
+): boolean {
+  const leftProductId = left.targetProductId ?? left.productId;
+  const rightProductId = right.targetProductId ?? right.productId;
+  if (leftProductId && rightProductId) return leftProductId === rightProductId;
+
+  const leftItemNumber = left.targetCostcoItemNumber ?? left.costcoItemNumber;
+  const rightItemNumber = right.targetCostcoItemNumber ?? right.costcoItemNumber;
+  return Boolean(leftItemNumber && rightItemNumber && leftItemNumber === rightItemNumber);
+}
+
 function aliasTargetsIntent(
   alias: ConfirmedProductAlias,
   intent: ReceiptIntentItem,
+  aliases: ConfirmedProductAlias[],
 ): boolean {
   const targetProductId = alias.targetProductId ?? alias.productId;
   const targetItemNumber = alias.targetCostcoItemNumber ?? alias.costcoItemNumber;
@@ -563,11 +577,21 @@ function aliasTargetsIntent(
   ) {
     return true;
   }
-  return Boolean(
+  const normalizedIntent = normalizeMatchDescription(labelForIntent(intent));
+  if (
     alias.canonicalName &&
       normalizeMatchDescription(alias.canonicalName) ===
-        normalizeMatchDescription(labelForIntent(intent)),
-  );
+        normalizedIntent
+  ) {
+    return true;
+  }
+
+  return aliases.some((candidate) => {
+    if (candidate.confirmed === false || !aliasesShareTarget(alias, candidate)) return false;
+    const candidateLabel =
+      candidate.normalizedDescription ?? candidate.alias ?? candidate.rawDescription ?? "";
+    return normalizeMatchDescription(candidateLabel) === normalizedIntent;
+  });
 }
 
 function isDescriptiveSubset(intent: string, receipt: string): boolean {
@@ -600,7 +624,7 @@ function scorePair(
       alias.normalizedDescription ?? alias.alias ?? alias.rawDescription ?? "";
     return (
       normalizedReceipts.includes(normalizeMatchDescription(aliasLabel)) &&
-      aliasTargetsIntent(alias, intent)
+      aliasTargetsIntent(alias, intent, aliases)
     );
   });
   if (confirmedAlias) {

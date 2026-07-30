@@ -1892,6 +1892,8 @@ export function ClosedLoopReview({
   const [catalogQuestionId, setCatalogQuestionId] = useState<string | null>(null);
   const [catalogName, setCatalogName] = useState("");
   const [catalogCategory, setCatalogCategory] = useState<ProductCategoryKey | "">("");
+  const [receiptMatchQuestionId, setReceiptMatchQuestionId] = useState<string | null>(null);
+  const [replacementReceiptItemId, setReplacementReceiptItemId] = useState("");
   const receipt = closedLoop?.receipt;
   const questions = (closedLoop?.questions ?? []).slice(0, 3);
   const openQuestions = questions.filter(
@@ -1910,6 +1912,7 @@ export function ClosedLoopReview({
     () => new Map((closedLoop?.items ?? []).flatMap((item) => item.id ? [[item.id, item] as const] : [])),
     [closedLoop?.items],
   );
+  const receiptMatchOptions = (closedLoop?.items ?? []).filter((item) => Boolean(item.id));
   const reviewableCategories = PRODUCT_CATEGORY_PRESENTATION.filter(
     (category) => !["fuel", "optical_services", "needs_review"].includes(category.key),
   );
@@ -1925,7 +1928,11 @@ export function ClosedLoopReview({
   async function answer(
     question: ClosedLoopQuestion,
     value: string,
-    details?: { canonicalName?: string; category?: ProductCategoryKey },
+    details?: {
+      canonicalName?: string;
+      category?: ProductCategoryKey;
+      replacementReceiptItemId?: string;
+    },
   ) {
     setAnsweringId(question.id);
     setAnswerError(null);
@@ -2081,6 +2088,45 @@ export function ClosedLoopReview({
                       </button>
                     </div>
                   </form>
+                ) : receiptMatchQuestionId === question.id ? (
+                  <form
+                    className="catalog-confirmation-form receipt-match-confirmation-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!replacementReceiptItemId) {
+                        setAnswerError("Choose the receipt line that matches this saved item.");
+                        return;
+                      }
+                      void answer(question, "receipt_needs_fix", {
+                        replacementReceiptItemId,
+                      });
+                    }}
+                  >
+                    <p>Choose the receipt line that was this saved item. BasketSense will remember this household wording for future receipts.</p>
+                    <label>
+                      <span>Receipt line</span>
+                      <select
+                        value={replacementReceiptItemId}
+                        onChange={(event) => setReplacementReceiptItemId(event.target.value)}
+                        autoFocus
+                      >
+                        <option value="">Choose a receipt line</option>
+                        {receiptMatchOptions.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {(item.rawDescription ?? item.canonicalName ?? "Receipt item").slice(0, 80)}{item.netAmountCents === null || item.netAmountCents === undefined ? "" : ` · ${money.format(item.netAmountCents / 100)}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="catalog-confirmation-actions">
+                      <button type="submit" className="primary-button" disabled={!connected || answeringId === question.id || !replacementReceiptItemId}>
+                        {answeringId === question.id ? "Saving…" : "Confirm match"}
+                      </button>
+                      <button type="button" className="secondary-button" disabled={answeringId === question.id} onClick={() => setReceiptMatchQuestionId(null)}>
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
                 ) : (
                   <div className="question-options">
                   {question.options.map((option) => (
@@ -2088,7 +2134,17 @@ export function ClosedLoopReview({
                       type="button"
                       key={option.value}
                       disabled={!connected || answeringId === question.id}
-                      onClick={() => option.value === "add_to_catalog" ? beginCatalogConfirmation(question) : void answer(question, option.value)}
+                      onClick={() => {
+                        if (option.value === "add_to_catalog") {
+                          beginCatalogConfirmation(question);
+                        } else if (option.value === "receipt_needs_fix") {
+                          setReplacementReceiptItemId("");
+                          setReceiptMatchQuestionId(question.id);
+                          setAnswerError(null);
+                        } else {
+                          void answer(question, option.value);
+                        }
+                      }}
                     >
                       <strong>{option.label}</strong>
                       {option.effect ? <small>This will {option.effect}</small> : null}

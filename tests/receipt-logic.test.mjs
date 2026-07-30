@@ -356,6 +356,36 @@ test("matches household shorthand to receipt wording without a catalog product",
   assert.deepEqual(result.unmatchedReceiptItemIds, []);
 });
 
+test("a confirmed household alias matches future receipt wording without a catalog list item", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "dal-plan", label: "Toor dal", includedAtFreeze: true }],
+    receiptItems: [
+      {
+        id: "dal-receipt",
+        productId: "product-dal",
+        rawDescription: "PIGEON PEAS",
+        netAmountCents: 1099,
+      },
+    ],
+    aliases: [
+      {
+        normalizedDescription: "PIGEON PEAS",
+        productId: "product-dal",
+        confirmed: true,
+      },
+      {
+        normalizedDescription: "TOOR DAL",
+        productId: "product-dal",
+        confirmed: true,
+      },
+    ],
+  });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].reason, "confirmed_alias");
+  assert.equal(result.matches[0].status, "auto_matched");
+});
+
 test("review questions are evidence-triggered, deterministic, and capped at three", () => {
   const intentItems = [
     {
