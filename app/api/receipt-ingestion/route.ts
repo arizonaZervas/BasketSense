@@ -349,7 +349,10 @@ function handleError(error: unknown) {
   if (error instanceof IngestionApiError) {
     return responseJson({ error: error.message }, error.status);
   }
-  console.error("BasketSense receipt ingestion API error");
+  console.error("BasketSense receipt ingestion API error", {
+    name: error instanceof Error ? error.name : "UnknownError",
+    message: error instanceof Error ? error.message : String(error),
+  });
   return responseJson({ error: "Unable to save the receipt for review" }, 500);
 }
 
