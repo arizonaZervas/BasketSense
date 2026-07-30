@@ -150,7 +150,7 @@ const primaryTabs = [
   { id: "week", label: "List", symbol: "✓" },
   { id: "overview", label: "Insights", symbol: "↗" },
   { id: "products", label: "Products", symbol: "▤" },
-  { id: "review", label: "Review", symbol: "?" },
+  { id: "review", label: "Recap", symbol: "?" },
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
 
 const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
@@ -3655,9 +3655,12 @@ function ReviewTab({
   return (
     <div className="page review-page">
       <section className="page-heading">
-        <p className="section-label">One useful closed loop</p>
-        <h1>Review</h1>
-        <p>Check the receipt first. Then add only the household context the receipt cannot know.</p>
+        <p className="section-label">Latest trip recap</p>
+        <h1>Planned → actual</h1>
+        <p>
+          Your saved Costco plan and the checked receipt stay together here. Any
+          follow-up questions appear only when they can improve this trip or a future list.
+        </p>
       </section>
       <ClosedLoopReview
         closedLoop={closedLoop}

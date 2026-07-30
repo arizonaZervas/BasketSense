@@ -67,7 +67,7 @@ test("renders the four focused household destinations", async () => {
   const response = await render();
   const html = await response.text();
 
-  for (const label of ["List", "Insights", "Products", "Review"]) {
+  for (const label of ["List", "Insights", "Products", "Recap"]) {
     assert.match(html, new RegExp(label));
   }
 

@@ -1713,9 +1713,9 @@ export function ClosedLoopReview({
           <div className="review-section-heading">
             <span className="review-section-number" aria-hidden="true">2</span>
             <div>
-              <p className="section-label">Saved plan + receipt</p>
-              <h2 id="comparison-title">Expected → actual</h2>
-              <p>Neutral facts first. No receipt-only item is labeled impulsive.</p>
+              <p className="section-label">Latest trip comparison</p>
+              <h2 id="comparison-title">Planned → actual</h2>
+              <p>The saved intent and receipt facts stay together here. No receipt-only item is labeled impulsive.</p>
             </div>
           </div>
           <article className="card review-bridge-card">
@@ -1731,9 +1731,9 @@ export function ClosedLoopReview({
         <div className="review-section-heading">
           <span className="review-section-number" aria-hidden="true">3</span>
           <div>
-            <p className="section-label">Household meaning</p>
-            <h2 id="trip-review-title">Trip review</h2>
-            <p>Up to three questions, only when an answer changes the record, an insight, or a future list.</p>
+            <p className="section-label">Only useful follow-ups</p>
+            <h2 id="trip-review-title">Questions for this trip</h2>
+            <p>Up to three questions, only when an answer improves this recap, an insight, or a future list.</p>
           </div>
         </div>
 
