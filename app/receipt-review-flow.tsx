@@ -1497,33 +1497,102 @@ export function ExpectedActualBridge({
   const totalsOnly = comparison.isTotalsOnly === true;
   const unresolvedCents = Math.abs(comparison.unresolvedCents ?? 0);
   const provisional = comparison.isProvisional || unresolvedCents > 5;
-  const bridgeRows = [
-    ["Saved-list estimate", comparison.frozenEstimateCents],
-    ["Estimated-item difference", comparison.matchedVarianceCents],
-    ["Saved-list items without estimates", comparison.unpricedPlannedActualCents],
-    ["Added during trip or not on saved list", comparison.additionsCents],
-    ["Saved-list items not found", comparison.skippedEstimateCents === null || comparison.skippedEstimateCents === undefined ? null : -Math.abs(comparison.skippedEstimateCents)],
-    ["Discounts", comparison.discountsCents === null || comparison.discountsCents === undefined ? null : -Math.abs(comparison.discountsCents)],
-    ["Tax", comparison.taxCents],
-  ] as const;
+  const expectedCents = comparison.frozenEstimateCents ?? 0;
+  const actualCents = comparison.actualTotalCents ?? 0;
+  const totalDifferenceCents = actualCents - expectedCents;
+  const hasSavedEstimate = comparison.frozenEstimateCents !== null && comparison.frozenEstimateCents !== undefined;
+  const differenceDirection = totalDifferenceCents > 5 ? "above" : totalDifferenceCents < -5 ? "below" : "in line with";
+  const drivers = [
+    {
+      key: "price-shifts",
+      amountCents: comparison.matchedVarianceCents,
+      label: "Prices or quantities shifted",
+      detail: "The receipt did not match the saved estimates exactly.",
+    },
+    {
+      key: "unpriced-planned",
+      amountCents: comparison.unpricedPlannedActualCents,
+      label: "Planned items without an estimate",
+      detail: "These saved-list items could not be included in the original estimate.",
+    },
+    {
+      key: "added",
+      amountCents: comparison.additionsCents,
+      label: "Picked up beyond the saved list",
+      detail: "These receipt lines were not matched to a saved-list item.",
+    },
+    {
+      key: "skipped",
+      amountCents:
+        comparison.skippedEstimateCents === null || comparison.skippedEstimateCents === undefined
+          ? null
+          : -Math.abs(comparison.skippedEstimateCents),
+      label: "Left for another trip",
+      detail: "These saved-list items do not appear on this receipt.",
+    },
+    {
+      key: "discounts",
+      amountCents:
+        comparison.discountsCents === null || comparison.discountsCents === undefined
+          ? null
+          : -Math.abs(comparison.discountsCents),
+      label: "Costco discounts",
+      detail: "Savings shown on the receipt reduced the checkout total.",
+    },
+    {
+      key: "tax",
+      amountCents: comparison.taxCents,
+      label: "Sales tax",
+      detail: "Tax is part of checkout but not the saved-list estimate.",
+    },
+  ].filter(
+    (driver): driver is { key: string; amountCents: number; label: string; detail: string } =>
+      driver.amountCents !== null && driver.amountCents !== undefined && driver.amountCents !== 0,
+  );
+  const visibleBuckets = buckets.filter(
+    (bucket) => bucket.itemCount > 0 || bucket.items.length > 0 || bucket.amountCents !== 0,
+  );
+
+  function signedMoney(value: number) {
+    return `${value > 0 ? "+" : value < 0 ? "−" : ""}${money.format(Math.abs(value) / 100)}`;
+  }
 
   return (
-    <div className="expected-actual">
-      <div className="bridge-totals">
+    <div className="expected-actual trip-story">
+      <header className="trip-story-intro">
         <div>
-          <span>Expected</span>
-          <strong>{money.format((comparison.frozenEstimateCents ?? 0) / 100)}</strong>
-          <small>Saved-list estimate</small>
-        </div>
-        <span aria-hidden="true">→</span>
-        <div>
-          <span>Actual</span>
-          <strong>{money.format((comparison.actualTotalCents ?? 0) / 100)}</strong>
-          <small>Receipt total</small>
+          <p className="section-label">Cart replay</p>
+          <h3>
+            {hasSavedEstimate
+              ? `Checkout landed ${differenceDirection} your plan.`
+              : "Your checkout story starts here."}
+          </h3>
+          <p>
+            {hasSavedEstimate
+              ? `${signedMoney(totalDifferenceCents)} from the saved estimate. The steps below show where that difference came from.`
+              : "The receipt total is recorded. Add saved-list estimates to see how the plan and checkout compare."}
+          </p>
         </div>
         <span className={`comparison-status ${provisional ? "provisional" : "trusted"}`}>
-          {provisional ? "Provisional" : "Reconciled"}
+          {provisional ? "Needs one check" : "Receipt matched"}
         </span>
+      </header>
+
+      <div className="trip-story-totals" aria-label="Saved list compared with receipt total">
+        <div className="trip-story-total planned">
+          <span>Saved list</span>
+          <strong>{money.format(expectedCents / 100)}</strong>
+          <small>Before checkout changes</small>
+        </div>
+        <div className="trip-story-path" aria-hidden="true">
+          <span className="trip-story-path-line" />
+          <span className="trip-story-path-arrow">→</span>
+        </div>
+        <div className="trip-story-total actual">
+          <span>Receipt total</span>
+          <strong>{money.format(actualCents / 100)}</strong>
+          <small>What Costco charged</small>
+        </div>
       </div>
 
       {totalsOnly ? (
@@ -1535,25 +1604,46 @@ export function ExpectedActualBridge({
           </p>
         </div>
       ) : (
-      <dl className="bridge-ledger">
-        {bridgeRows.map(([label, value]) =>
-          value === null || value === undefined ? null : (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd className={value < 0 ? "negative" : value > 0 ? "positive" : ""}>
-                {value > 0 && label !== "Saved-list estimate" ? "+" : ""}
-                {money.format(value / 100)}
-              </dd>
+        <section className="trip-story-drivers" aria-labelledby="story-drivers-title">
+          <div className="trip-story-section-heading">
+            <div>
+              <p className="section-label">The why</p>
+              <h4 id="story-drivers-title">What moved the total</h4>
             </div>
-          ),
-        )}
-      </dl>
+            <p>Each movement is tied to the saved list or a line on the receipt.</p>
+          </div>
+          {drivers.length ? (
+            <ol>
+              {drivers.map((driver) => (
+                <li key={driver.key} className={driver.amountCents < 0 ? "saving" : "added"}>
+                  <span className="trip-story-driver-mark" aria-hidden="true">
+                    {driver.amountCents < 0 ? "↓" : "↑"}
+                  </span>
+                  <div>
+                    <strong>{driver.label}</strong>
+                    <small>{driver.detail}</small>
+                  </div>
+                  <span className="trip-story-driver-amount">{signedMoney(driver.amountCents)}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="trip-story-quiet">Nothing materially moved the recorded total away from the saved estimate.</p>
+          )}
+        </section>
       )}
 
-      {!totalsOnly && buckets.length ? (
-        <div className="comparison-buckets">
-          <h3>Item comparison</h3>
-          {buckets.map((bucket) => (
+      {!totalsOnly && visibleBuckets.length ? (
+        <section className="comparison-buckets trip-story-buckets" aria-labelledby="item-comparison-title">
+          <div className="trip-story-section-heading">
+            <div>
+              <p className="section-label">The evidence</p>
+              <h4 id="item-comparison-title">See the cart take shape</h4>
+            </div>
+            <p>Open any chapter to see the receipt lines behind it.</p>
+          </div>
+          <div className="trip-story-bucket-list">
+          {visibleBuckets.map((bucket) => (
             <details key={bucket.key} className="comparison-bucket">
               <summary>
                 <span>
@@ -1578,13 +1668,17 @@ export function ExpectedActualBridge({
               )}
             </details>
           ))}
-        </div>
+          </div>
+        </section>
       ) : null}
 
       {provisional && !totalsOnly ? (
-        <div className="receipt-flow-note warning" role="note">
-          <strong>{money.format(unresolvedCents / 100)} unresolved</strong>
-          <p>Insights stay provisional until this amount is matched or corrected.</p>
+        <div className="trip-story-caveat" role="note">
+          <span aria-hidden="true">!</span>
+          <p>
+            <strong>{money.format(unresolvedCents / 100)} still needs a receipt check.</strong>
+            The replay is useful now, and will become final once that amount is matched or corrected.
+          </p>
         </div>
       ) : null}
     </div>
@@ -1710,15 +1804,14 @@ export function ClosedLoopReview({
 
       {closedLoop?.comparison ? (
         <section className="review-section" aria-labelledby="comparison-title">
-          <div className="review-section-heading">
-            <span className="review-section-number" aria-hidden="true">2</span>
+          <div className="review-section-heading story-section-heading">
             <div>
-              <p className="section-label">Latest trip comparison</p>
-              <h2 id="comparison-title">Planned → actual</h2>
-              <p>The saved intent and receipt facts stay together here. No receipt-only item is labeled impulsive.</p>
+              <p className="section-label">Latest trip story</p>
+              <h2 id="comparison-title">From plan to checkout</h2>
+              <p>Your saved intent and receipt facts, turned into a short replay—not a score for the trip.</p>
             </div>
           </div>
-          <article className="card review-bridge-card">
+          <article className="card review-bridge-card trip-story-card">
             <ExpectedActualBridge
               comparison={closedLoop.comparison}
               receiptItems={closedLoop.items ?? []}

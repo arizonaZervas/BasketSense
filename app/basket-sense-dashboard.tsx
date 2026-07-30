@@ -3656,10 +3656,10 @@ function ReviewTab({
     <div className="page review-page">
       <section className="page-heading">
         <p className="section-label">Latest trip recap</p>
-        <h1>Planned → actual</h1>
+        <h1>Your Costco story</h1>
         <p>
-          Your saved Costco plan and the checked receipt stay together here. Any
-          follow-up questions appear only when they can improve this trip or a future list.
+          See how the saved list became the checkout receipt, what changed along the way,
+          and the evidence behind each difference.
         </p>
       </section>
       <ClosedLoopReview

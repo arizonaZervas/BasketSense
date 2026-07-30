@@ -4871,6 +4871,277 @@ button.price-point:hover {
   gap: 18px;
 }
 
+.trip-story {
+  gap: 24px;
+}
+
+.trip-story-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.trip-story-intro h3,
+.trip-story-intro p {
+  margin: 0;
+}
+
+.trip-story-intro h3 {
+  max-width: 620px;
+  margin-top: 4px;
+  font-size: 23px;
+  letter-spacing: -0.035em;
+}
+
+.trip-story-intro > div > p:last-child {
+  max-width: 620px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.trip-story-intro .comparison-status {
+  position: static;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.trip-story-totals {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+}
+
+.trip-story-total {
+  display: grid;
+  align-content: center;
+  min-height: 132px;
+  padding: 18px 20px;
+}
+
+.trip-story-total.planned {
+  border: 1px solid var(--line);
+  border-radius: 14px 0 0 14px;
+  background: var(--surface-subtle);
+}
+
+.trip-story-total.actual {
+  border: 1px solid var(--forest);
+  border-radius: 0 14px 14px 0;
+  background: var(--forest);
+  color: #f1faed;
+}
+
+.trip-story-total > span,
+.trip-story-total small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.trip-story-total.actual > span,
+.trip-story-total.actual small {
+  color: color-mix(in srgb, #f1faed 72%, transparent);
+}
+
+.trip-story-total strong {
+  margin: 6px 0 4px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 29px;
+  letter-spacing: -0.06em;
+}
+
+.trip-story-path {
+  display: grid;
+  position: relative;
+  place-items: center;
+  background: var(--surface-subtle);
+}
+
+.trip-story-path-line {
+  width: 100%;
+  border-top: 1px dashed var(--sage);
+}
+
+.trip-story-path-arrow {
+  position: absolute;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--sage);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--forest);
+  font-size: 18px;
+}
+
+.trip-story-drivers,
+.trip-story-buckets {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.trip-story-section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 10px;
+}
+
+.trip-story-section-heading h4,
+.trip-story-section-heading p {
+  margin: 0;
+}
+
+.trip-story-section-heading h4 {
+  margin-top: 3px;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+
+.trip-story-section-heading > p {
+  max-width: 290px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.trip-story-drivers ol {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trip-story-drivers li {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+
+.trip-story-driver-mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--apricot-soft);
+  color: var(--warm-ink);
+  font-weight: 800;
+}
+
+.trip-story-drivers li.saving .trip-story-driver-mark {
+  background: var(--forest-soft);
+  color: var(--forest);
+}
+
+.trip-story-drivers strong,
+.trip-story-drivers small {
+  display: block;
+}
+
+.trip-story-drivers strong {
+  font-size: 13px;
+}
+
+.trip-story-drivers small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.trip-story-driver-amount {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.trip-story-drivers li.saving .trip-story-driver-amount {
+  color: var(--forest);
+}
+
+.trip-story-quiet {
+  margin: 0;
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trip-story-bucket-list {
+  display: grid;
+  gap: 6px;
+}
+
+.trip-story-buckets .comparison-bucket {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface-subtle);
+}
+
+.trip-story-buckets .comparison-bucket summary {
+  min-height: 62px;
+  padding: 10px 14px;
+}
+
+.trip-story-buckets .comparison-bucket[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.trip-story-buckets .comparison-bucket ul,
+.trip-story-buckets .comparison-bucket > p {
+  margin: 0 12px 12px;
+}
+
+.trip-story-caveat {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: 11px;
+  background: var(--apricot-soft);
+  padding: 12px;
+}
+
+.trip-story-caveat > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--warm-ink);
+  font-weight: 800;
+}
+
+.trip-story-caveat p,
+.trip-story-caveat strong {
+  margin: 0;
+}
+
+.trip-story-caveat p {
+  color: var(--warm-ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.trip-story-caveat strong {
+  margin-right: 4px;
+}
+
 .bridge-totals {
   position: relative;
   display: grid;
@@ -5073,6 +5344,15 @@ button.price-point:hover {
   letter-spacing: -0.025em;
 }
 
+.review-section-heading.story-section-heading {
+  display: block;
+}
+
+.story-section-heading h2 {
+  font-size: 23px;
+  letter-spacing: -0.035em;
+}
+
 .review-section-heading p:last-child {
   margin-top: 4px;
   color: var(--muted);
@@ -5133,6 +5413,14 @@ button.price-point:hover {
 .review-bridge-card {
   margin-left: 56px;
   padding: 20px;
+}
+
+.review-bridge-card.trip-story-card {
+  margin-left: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 0 0;
 }
 
 .evidence-questions,
@@ -5500,6 +5788,48 @@ button.price-point:hover {
 
   .bridge-totals strong {
     font-size: 20px;
+  }
+
+  .trip-story-intro {
+    display: grid;
+    gap: 10px;
+  }
+
+  .trip-story-intro .comparison-status {
+    justify-self: start;
+  }
+
+  .trip-story-totals {
+    grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr);
+  }
+
+  .trip-story-total {
+    min-height: 118px;
+    padding: 14px 12px;
+  }
+
+  .trip-story-total strong {
+    font-size: 21px;
+  }
+
+  .trip-story-section-heading {
+    display: grid;
+    align-items: start;
+    gap: 5px;
+  }
+
+  .trip-story-section-heading > p {
+    max-width: none;
+    text-align: left;
+  }
+
+  .trip-story-drivers li {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 9px;
+  }
+
+  .trip-story-driver-amount {
+    font-size: 11px;
   }
 
   .review-section-heading {

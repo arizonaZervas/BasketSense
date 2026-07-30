@@ -114,7 +114,7 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
     new URL("../app/receipt-review-flow.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(reviewSource, /Estimated-item difference/);
+  assert.match(reviewSource, /Prices or quantities shifted/);
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 
