@@ -135,6 +135,12 @@ const money = new Intl.NumberFormat("en-US", {
   currency: "USD",
 });
 
+// The shared-site request gateway rejects multipart bodies just over 3 MB before
+// the receipt route can apply its own 8 MB validation. Keep camera photos below
+// that gateway limit while preserving a comfortably readable receipt image.
+const LIVE_UPLOAD_SAFE_BYTES = 2 * 1024 * 1024;
+const UPLOAD_IMAGE_MAX_EDGE = 2_000;
+
 const bucketLabels: Record<string, string> = {
   matched: "Saved list + purchased",
   planned_and_purchased: "Saved list + purchased",
@@ -175,6 +181,56 @@ function inputToCents(value: string) {
 
 function clientId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+}
+
+function compressedReceiptFilename(filename: string) {
+  const stem = filename.replace(/\.[^.]+$/, "").trim() || "costco-receipt";
+  return `${stem}.jpg`;
+}
+
+function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", quality);
+  });
+}
+
+async function prepareReceiptUpload(file: File) {
+  const contentType = file.type.toLowerCase();
+  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(contentType)) {
+    return file;
+  }
+
+  try {
+    const source = await createImageBitmap(file, { imageOrientation: "from-image" });
+    try {
+      const longestEdge = Math.max(source.width, source.height);
+      if (file.size <= LIVE_UPLOAD_SAFE_BYTES && longestEdge <= UPLOAD_IMAGE_MAX_EDGE) {
+        return file;
+      }
+      const scale = Math.min(1, UPLOAD_IMAGE_MAX_EDGE / longestEdge);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(source.width * scale));
+      canvas.height = Math.max(1, Math.round(source.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return file;
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      const initial = await canvasToJpeg(canvas, 0.82);
+      const compressed =
+        initial && initial.size > LIVE_UPLOAD_SAFE_BYTES
+          ? await canvasToJpeg(canvas, 0.68)
+          : initial;
+      if (!compressed || compressed.size >= file.size) return file;
+      return new File([compressed], compressedReceiptFilename(file.name), {
+        type: "image/jpeg",
+        lastModified: file.lastModified,
+      });
+    } finally {
+      source.close();
+    }
+  } catch {
+    // Browsers that cannot decode a selected image keep the original upload path.
+    return file;
+  }
 }
 
 function blankLine(): ReceiptDraftLine {
@@ -765,8 +821,9 @@ export function ReceiptFlowDialog({
     setOcrStatus("Saving and reading your receipt privately");
     setOcrProgress(0.16);
     try {
+      const uploadFile = await prepareReceiptUpload(file);
       const form = new FormData();
-      form.append("file", file);
+      form.append("file", uploadFile);
       form.append("tripId", tripId);
       form.append("clientRequestId", clientId());
       const response = await fetchWithTimeout(
@@ -776,7 +833,9 @@ export function ReceiptFlowDialog({
       );
       const body = await responseJson(
         response,
-        "The receipt could not be saved for review.",
+        response.status === 413
+          ? "This live site needs a smaller receipt upload. For a photo, try a clearer close-up or a file under 2 MB."
+          : "The receipt could not be saved for review.",
       );
       const ingestion = body.ingestion as {
         id?: unknown;
