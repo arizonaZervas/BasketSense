@@ -474,8 +474,14 @@ function normalizeBuckets(
           0,
         ),
         items: matchedReceiptItems.map((item) => ({
-          label: item.rawDescription ?? item.description ?? "Receipt item",
+          label: item.rawDescription ?? item.canonicalName ?? item.description ?? "Receipt item",
           amountCents: item.netAmountCents ?? item.lineSubtotalCents ?? null,
+          note:
+            item.netAmountCents === null || item.netAmountCents === undefined
+              ? undefined
+              : item.discountCents
+                ? `Paid ${money.format(item.netAmountCents / 100)} after Costco savings`
+                : `Paid ${money.format(item.netAmountCents / 100)} on this receipt`,
         })),
       };
     } else {
@@ -1835,7 +1841,7 @@ export function ExpectedActualBridge({
                     ? "Amount still needs review"
                     : spotlightBucket.key === "discounts"
                       ? `Saved ${money.format(Math.abs(spotlightItem.amountCents) / 100)}`
-                      : money.format(spotlightItem.amountCents / 100)}
+                      : `Paid ${money.format(spotlightItem.amountCents / 100)}`}
                 </span>
                 {spotlightItem.note ? <small>{spotlightItem.note}</small> : null}
               </section>

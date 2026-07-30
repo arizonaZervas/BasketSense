@@ -1820,6 +1820,66 @@ function productForListItem(state, listItem) {
   return product;
 }
 
+test("receipt-only recap totals use the discounted amount actually paid", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("discounted-recap@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const apparelProduct = initial.products.find(
+      (product) => product.costcoItemNumber === "1868328",
+    );
+    assert.ok(apparelProduct, "Expected audited apparel SKU 1868328");
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest("discounted-recap@example.test", "PATCH", {
+            action: "freeze_trip",
+            tripId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+
+    const response = await handleHouseholdPost(
+      householdRequest("discounted-recap@example.test", "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "discounted-recap",
+        tripId,
+        purchasedAt: "2026-07-25T10:30:00-07:00",
+        subtotalCents: 6800,
+        taxCents: 0,
+        totalCents: 6800,
+        discountCents: 1200,
+        items: [
+          {
+            ...receiptDraftLine({
+              sourceLineNumber: 1,
+              costcoItemNumber: apparelProduct.costcoItemNumber,
+              rawDescription: "3 DOT PANT",
+              unitPriceCents: 8000,
+              lineSubtotalCents: 8000,
+            }),
+            discountCents: 1200,
+            netAmountCents: 6800,
+          },
+        ],
+      }),
+      db,
+    );
+    assert.equal(response.status, 200);
+    const ingested = await responseJson(response);
+    assert.equal(ingested.comparison.additionsCents, 6800);
+    assert.equal(ingested.closedLoop.comparison.buckets.receiptOnly.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
 test("a totals-only receipt preserves exact spending without inventing product evidence", async () => {
   const db = new D1DatabaseAdapter();
   try {

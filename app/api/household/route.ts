@@ -3491,6 +3491,10 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
   };
 }
 
+function receiptPaidCents(item: ReceiptItemRow): number {
+  return item.net_amount_cents;
+}
+
 function buildClosedLoopComparison(
   receipt: ReceiptTransactionRow,
   snapshot: IntentSnapshotRow,
@@ -3518,12 +3522,13 @@ function buildClosedLoopComparison(
     const intent = intentById.get(match.intent_item_id);
     const item = receiptById.get(match.receipt_item_id);
     if (!intent || !item) continue;
+    const paidCents = receiptPaidCents(item);
     if (!Boolean(intent.included)) {
-      additionsCents += item.line_subtotal_cents;
+      additionsCents += paidCents;
       continue;
     }
     if (intent.estimated_price_cents === null) {
-      unpricedPlannedActualCents += item.line_subtotal_cents;
+      unpricedPlannedActualCents += paidCents;
       unpricedPlanned.push({
         intentItemId: intent.id,
         receiptItemId: item.id,
@@ -3533,7 +3538,7 @@ function buildClosedLoopComparison(
     const estimate = Math.round(
       (intent.estimated_price_cents * intent.quantity_milli) / 1000
     );
-    matchedVarianceCents += item.line_subtotal_cents - estimate;
+    matchedVarianceCents += paidCents - estimate;
     matched.push({ intentItemId: intent.id, receiptItemId: item.id });
   }
 
@@ -3551,11 +3556,12 @@ function buildClosedLoopComparison(
   const unresolved: Array<{ receiptItemId: string }> = [];
   for (const item of receiptItems) {
     if (matchedReceiptIds.has(item.id)) continue;
+    const paidCents = receiptPaidCents(item);
     if (!item.product_id || item.match_confidence_bps === 0) {
-      unresolvedCents += item.line_subtotal_cents;
+      unresolvedCents += paidCents;
       unresolved.push({ receiptItemId: item.id });
     } else {
-      additionsCents += item.line_subtotal_cents;
+      additionsCents += paidCents;
       receiptOnly.push({ receiptItemId: item.id });
     }
   }
@@ -3691,7 +3697,7 @@ async function rebuildTripItemMatches(
   const now = nowIso();
   const statements = automatic.map((match) => {
     const matchType =
-      match.reason === "normalized_exact"
+      match.reason === "normalized_exact" || match.reason === "descriptive_subset"
         ? "exact_name"
         : match.reason === "fuzzy_candidate"
           ? "exact_name"

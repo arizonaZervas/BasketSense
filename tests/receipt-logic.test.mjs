@@ -328,6 +328,34 @@ test("a productless planned estimate stays planned and reports its estimated-ite
   assert.equal(comparison.bridge.priceAndQuantityVarianceCents, 300);
 });
 
+test("matches household shorthand to receipt wording without a catalog product", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [
+      { id: "atta-plan", label: "Atta", includedAtFreeze: true },
+      { id: "rice-plan", label: "Rice", includedAtFreeze: true },
+    ],
+    receiptItems: [
+      { id: "flour-receipt", rawDescription: "WHEAT FLOUR", netAmountCents: 1379 },
+      {
+        id: "rice-receipt",
+        rawDescription: "BASMATI RICE",
+        canonicalName: "Royal basmati rice, 20 lb",
+        netAmountCents: 1999,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [match.intentItemId, match.receiptItemId, match.reason]),
+    [
+      ["atta-plan", "flour-receipt", "normalized_exact"],
+      ["rice-plan", "rice-receipt", "descriptive_subset"],
+    ],
+  );
+  assert.deepEqual(result.unmatchedIntentItemIds, []);
+  assert.deepEqual(result.unmatchedReceiptItemIds, []);
+});
+
 test("review questions are evidence-triggered, deterministic, and capped at three", () => {
   const intentItems = [
     {

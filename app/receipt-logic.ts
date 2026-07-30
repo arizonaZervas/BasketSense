@@ -504,6 +504,7 @@ export interface ReceiptIntentMatch {
     | "confirmed_alias"
     | "exact_product"
     | "normalized_exact"
+    | "descriptive_subset"
     | "fuzzy_candidate";
   expectedQuantityMilli: number;
   actualQuantityMilli: number;
@@ -522,6 +523,19 @@ function labelForIntent(item: ReceiptIntentItem): string {
 
 function labelForReceipt(item: MatchableReceiptItem): string {
   return item.canonicalName ?? item.rawDescription ?? "";
+}
+
+function normalizeMatchDescription(value: string): string {
+  return normalizeReceiptDescription(value).replace(
+    /\bATTA\b(?:\s+FLOUR)?/g,
+    "WHEAT FLOUR",
+  );
+}
+
+function receiptMatchDescriptions(item: MatchableReceiptItem): string[] {
+  return [...new Set([item.rawDescription, item.canonicalName]
+    .map((value) => normalizeMatchDescription(value ?? ""))
+    .filter(Boolean))];
 }
 
 function tokenSimilarity(left: string, right: string): number {
@@ -551,8 +565,18 @@ function aliasTargetsIntent(
   }
   return Boolean(
     alias.canonicalName &&
-      normalizeReceiptDescription(alias.canonicalName) ===
-        normalizeReceiptDescription(labelForIntent(intent)),
+      normalizeMatchDescription(alias.canonicalName) ===
+        normalizeMatchDescription(labelForIntent(intent)),
+  );
+}
+
+function isDescriptiveSubset(intent: string, receipt: string): boolean {
+  const intentTokens = new Set(intent.split(" ").filter(Boolean));
+  const receiptTokens = new Set(receipt.split(" ").filter(Boolean));
+  return (
+    intentTokens.size > 0 &&
+    intentTokens.size < receiptTokens.size &&
+    [...intentTokens].every((token) => receiptTokens.has(token))
   );
 }
 
@@ -569,13 +593,13 @@ function scorePair(
     return { confidenceBps: 10_000, reason: "exact_item_number" };
   }
 
-  const normalizedReceipt = normalizeReceiptDescription(labelForReceipt(receipt));
+  const normalizedReceipts = receiptMatchDescriptions(receipt);
   const confirmedAlias = aliases.find((alias) => {
     if (alias.confirmed === false) return false;
     const aliasLabel =
       alias.normalizedDescription ?? alias.alias ?? alias.rawDescription ?? "";
     return (
-      normalizeReceiptDescription(aliasLabel) === normalizedReceipt &&
+      normalizedReceipts.includes(normalizeMatchDescription(aliasLabel)) &&
       aliasTargetsIntent(alias, intent)
     );
   });
@@ -587,12 +611,27 @@ function scorePair(
     return { confidenceBps: 9_800, reason: "exact_product" };
   }
 
-  const normalizedIntent = normalizeReceiptDescription(labelForIntent(intent));
-  if (normalizedIntent && normalizedIntent === normalizedReceipt) {
+  const normalizedIntent = normalizeMatchDescription(labelForIntent(intent));
+  if (normalizedIntent && normalizedReceipts.includes(normalizedIntent)) {
     return { confidenceBps: 9_400, reason: "normalized_exact" };
   }
 
-  const similarity = tokenSimilarity(normalizedIntent, normalizedReceipt);
+  if (
+    !intent.productId &&
+    !intent.costcoItemNumber &&
+    normalizedReceipts.some((receiptDescription) =>
+      isDescriptiveSubset(normalizedIntent, receiptDescription),
+    )
+  ) {
+    return { confidenceBps: 9_300, reason: "descriptive_subset" };
+  }
+
+  const similarity = Math.max(
+    0,
+    ...normalizedReceipts.map((receiptDescription) =>
+      tokenSimilarity(normalizedIntent, receiptDescription),
+    ),
+  );
   if (similarity < 0.4) return null;
   return {
     confidenceBps: Math.min(9_200, Math.round(6_500 + similarity * 2_500)),
