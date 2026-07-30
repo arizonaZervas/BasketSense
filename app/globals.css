@@ -5251,7 +5251,8 @@ button.price-point:hover {
 
 .receipt-flash-card p,
 .receipt-flash-card strong,
-.receipt-flash-card span {
+.receipt-flash-card span,
+.receipt-flash-card small {
   margin: 0;
 }
 
@@ -5278,6 +5279,12 @@ button.price-point:hover {
   font-family: var(--font-geist-mono), monospace;
   font-size: 19px;
   font-weight: 800;
+}
+
+.receipt-flash-card small {
+  color: color-mix(in srgb, var(--on-forest) 76%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .receipt-flash-card.quiet span {

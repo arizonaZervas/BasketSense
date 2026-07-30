@@ -90,7 +90,21 @@ export type ClosedLoopComparison = {
             itemCount?: number | null;
             items?: Array<{ label?: string; amountCents?: number | null }>;
           }
-      >;
+  >;
+};
+
+type SpotlightItem = {
+  label?: string;
+  amountCents?: number | null;
+  note?: string;
+};
+
+type SpotlightBucket = {
+  key: string;
+  label: string;
+  amountCents: number;
+  itemCount: number;
+  items: SpotlightItem[];
 };
 
 export type ClosedLoopSnapshot = {
@@ -180,6 +194,8 @@ function bucketSpotlightCopy(key: string) {
       return "These lines may be a substitution and are kept separate until confirmed.";
     case "unresolved":
       return "These receipt lines still need a quick check before the recap becomes final.";
+    case "discounts":
+      return "Each card shows the receipt item that received a Costco discount.";
     default:
       return "These are the receipt lines behind this part of the trip.";
   }
@@ -1574,10 +1590,39 @@ export function ExpectedActualBridge({
     (driver): driver is { key: string; amountCents: number; label: string; detail: string } =>
       driver.amountCents !== null && driver.amountCents !== undefined && driver.amountCents !== 0,
   );
-  const visibleBuckets = buckets.filter(
+  const visibleBuckets: SpotlightBucket[] = buckets.filter(
     (bucket) => bucket.itemCount > 0 || bucket.items.length > 0 || bucket.amountCents !== 0,
   );
-  const [spotlightBucket, setSpotlightBucket] = useState<(typeof visibleBuckets)[number] | null>(null);
+  const discountedItems = receiptItems
+    .filter((item) => (item.discountCents ?? 0) > 0)
+    .map((item) => {
+      const discountCents = Math.abs(item.discountCents ?? 0);
+      const netAmountCents = item.netAmountCents ?? item.lineSubtotalCents ?? null;
+      return {
+        label: item.canonicalName ?? item.rawDescription ?? item.description ?? "Receipt item",
+        amountCents: -discountCents,
+        note:
+          netAmountCents === null
+            ? undefined
+            : `Paid ${money.format(netAmountCents / 100)} after savings`,
+      } satisfies SpotlightItem;
+    });
+  const discountSpotlight: SpotlightBucket | null = discountedItems.length
+    ? {
+        key: "discounts",
+        label: "Costco discounts",
+        amountCents: -discountedItems.reduce(
+          (sum, item) => sum + Math.abs(item.amountCents ?? 0),
+          0,
+        ),
+        itemCount: discountedItems.length,
+        items: discountedItems,
+      }
+    : null;
+  const spotlightBuckets = discountSpotlight
+    ? [...visibleBuckets, discountSpotlight]
+    : visibleBuckets;
+  const [spotlightBucket, setSpotlightBucket] = useState<SpotlightBucket | null>(null);
   const [spotlightIndex, setSpotlightIndex] = useState(0);
   const spotlightRef = useRef<HTMLDialogElement>(null);
   const spotlightItem = spotlightBucket?.items[spotlightIndex] ?? null;
@@ -1587,7 +1632,7 @@ export function ExpectedActualBridge({
     return `${value > 0 ? "+" : value < 0 ? "−" : ""}${money.format(Math.abs(value) / 100)}`;
   }
 
-  function openSpotlight(bucket: (typeof visibleBuckets)[number]) {
+  function openSpotlight(bucket: SpotlightBucket) {
     setSpotlightBucket(bucket);
     setSpotlightIndex(0);
     window.requestAnimationFrame(() => {
@@ -1606,6 +1651,7 @@ export function ExpectedActualBridge({
   }
 
   function spotlightForDriver(key: string) {
+    if (key === "discounts") return discountSpotlight;
     const bucketKeys: Record<string, string[]> = {
       "price-shifts": ["matched", "planned_and_purchased"],
       "unpriced-planned": ["unpricedplanned"],
@@ -1613,7 +1659,7 @@ export function ExpectedActualBridge({
       skipped: ["missing", "planned_not_purchased", "skippedplanned"],
     };
     const keys = bucketKeys[key] ?? [];
-    return visibleBuckets.find((bucket) => keys.includes(bucket.key.toLowerCase())) ?? null;
+    return spotlightBuckets.find((bucket) => keys.includes(bucket.key.toLowerCase())) ?? null;
   }
 
   return (
@@ -1710,7 +1756,7 @@ export function ExpectedActualBridge({
         </section>
       )}
 
-      {!totalsOnly && visibleBuckets.length ? (
+      {!totalsOnly && spotlightBuckets.length ? (
         <section className="comparison-buckets trip-story-buckets" aria-labelledby="item-comparison-title">
           <div className="trip-story-section-heading">
             <div>
@@ -1720,7 +1766,7 @@ export function ExpectedActualBridge({
             <p>Open any chapter to see the receipt lines behind it.</p>
           </div>
           <div className="trip-story-bucket-list">
-          {visibleBuckets.map((bucket) => (
+          {spotlightBuckets.map((bucket) => (
             <div key={bucket.key} className="comparison-bucket">
               <button
                 type="button"
@@ -1780,13 +1826,18 @@ export function ExpectedActualBridge({
 
             {spotlightItem ? (
               <section className="receipt-flash-card" aria-live="polite">
-                <p>Receipt item {spotlightIndex + 1} of {spotlightItemCount}</p>
+                <p>
+                  {spotlightBucket.key === "discounts" ? "Discount" : "Receipt item"} {spotlightIndex + 1} of {spotlightItemCount}
+                </p>
                 <strong>{spotlightItem.label ?? "Receipt item"}</strong>
                 <span>
                   {spotlightItem.amountCents === null || spotlightItem.amountCents === undefined
                     ? "Amount still needs review"
-                    : money.format(spotlightItem.amountCents / 100)}
+                    : spotlightBucket.key === "discounts"
+                      ? `Saved ${money.format(Math.abs(spotlightItem.amountCents) / 100)}`
+                      : money.format(spotlightItem.amountCents / 100)}
                 </span>
+                {spotlightItem.note ? <small>{spotlightItem.note}</small> : null}
               </section>
             ) : (
               <section className="receipt-flash-card quiet" aria-live="polite">
