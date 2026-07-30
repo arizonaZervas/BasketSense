@@ -5092,18 +5092,229 @@ button.price-point:hover {
   background: var(--surface-subtle);
 }
 
-.trip-story-buckets .comparison-bucket summary {
+.comparison-bucket-trigger {
+  display: grid;
+  width: 100%;
   min-height: 62px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
   padding: 10px 14px;
+  text-align: left;
 }
 
-.trip-story-buckets .comparison-bucket[open] summary {
-  border-bottom: 1px solid var(--line);
+.comparison-bucket-trigger:hover {
+  background: var(--surface-hover);
 }
 
-.trip-story-buckets .comparison-bucket ul,
-.trip-story-buckets .comparison-bucket > p {
-  margin: 0 12px 12px;
+.comparison-bucket-trigger > span {
+  display: grid;
+  gap: 2px;
+}
+
+.comparison-bucket-trigger > span:last-child {
+  justify-items: end;
+}
+
+.comparison-bucket-trigger strong {
+  font-size: 13px;
+}
+
+.comparison-bucket-trigger > span:last-child > strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+
+.comparison-bucket-trigger small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.receipt-spotlight {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(660px, calc(100dvh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 0;
+}
+
+.receipt-spotlight::backdrop {
+  background: rgba(17, 29, 22, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.receipt-spotlight[open] {
+  animation: receipt-spotlight-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.receipt-spotlight-content {
+  display: grid;
+  gap: 18px;
+  padding: 22px;
+}
+
+.receipt-spotlight-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.receipt-spotlight-heading h3,
+.receipt-spotlight-heading p {
+  margin: 0;
+}
+
+.receipt-spotlight-heading h3 {
+  margin-top: 3px;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.receipt-spotlight-heading > div > p:last-child {
+  max-width: 430px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.receipt-spotlight-close {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border: 1px solid var(--control-border);
+  border-radius: 50%;
+  background: var(--paper-strong);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 25px;
+  line-height: 1;
+}
+
+.receipt-spotlight-close:hover {
+  border-color: var(--forest);
+  background: var(--surface-selected);
+}
+
+.receipt-flash-card {
+  display: grid;
+  min-height: 220px;
+  align-content: center;
+  justify-items: start;
+  gap: 9px;
+  border-radius: 14px;
+  background: var(--forest);
+  color: var(--on-forest);
+  padding: 24px;
+}
+
+.receipt-flash-card.quiet {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+
+.receipt-flash-card p,
+.receipt-flash-card strong,
+.receipt-flash-card span {
+  margin: 0;
+}
+
+.receipt-flash-card p {
+  color: color-mix(in srgb, var(--on-forest) 72%, transparent);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.receipt-flash-card.quiet p {
+  color: var(--muted);
+}
+
+.receipt-flash-card strong {
+  max-width: 20ch;
+  font-size: 26px;
+  letter-spacing: -0.035em;
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.receipt-flash-card span {
+  margin-top: 4px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.receipt-flash-card.quiet span {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.receipt-spotlight-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.receipt-spotlight-controls > span {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  text-align: center;
+}
+
+.receipt-spotlight-controls .secondary-button,
+.receipt-spotlight-controls .primary-button {
+  min-height: 44px;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.receipt-spotlight-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.receipt-spotlight-total span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.receipt-spotlight-total strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 14px;
+}
+
+@keyframes receipt-spotlight-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .trip-story-caveat {
@@ -5830,6 +6041,37 @@ button.price-point:hover {
 
   .trip-story-driver-amount {
     font-size: 11px;
+  }
+
+  .receipt-spotlight {
+    width: 100%;
+    max-height: min(82dvh, 680px);
+    margin: auto 0 0;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .receipt-spotlight-content {
+    gap: 16px;
+    padding: 18px;
+  }
+
+  .receipt-flash-card {
+    min-height: 190px;
+    padding: 20px;
+  }
+
+  .receipt-flash-card strong {
+    font-size: 23px;
+  }
+
+  .receipt-spotlight-controls {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .receipt-spotlight-controls .secondary-button,
+  .receipt-spotlight-controls .primary-button {
+    min-width: 0;
+    font-size: 12px;
   }
 
   .review-section-heading {

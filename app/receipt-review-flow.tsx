@@ -160,6 +160,31 @@ const bucketLabels: Record<string, string> = {
   unresolved: "Needs review",
 };
 
+function bucketSpotlightCopy(key: string) {
+  switch (key.toLowerCase()) {
+    case "matched":
+    case "planned_and_purchased":
+      return "These receipt lines connect back to the saved list.";
+    case "missing":
+    case "planned_not_purchased":
+    case "skippedplanned":
+      return "These saved-list items do not appear on this receipt.";
+    case "in_store":
+    case "added_during_trip":
+    case "receipt_only":
+    case "receiptonly":
+    case "unplanned":
+      return "These receipt lines were not matched to a saved-list item.";
+    case "substitution":
+    case "possiblesubstitutions":
+      return "These lines may be a substitution and are kept separate until confirmed.";
+    case "unresolved":
+      return "These receipt lines still need a quick check before the recap becomes final.";
+    default:
+      return "These are the receipt lines behind this part of the trip.";
+  }
+}
+
 function todayInputValue() {
   const now = new Date();
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -1552,9 +1577,32 @@ export function ExpectedActualBridge({
   const visibleBuckets = buckets.filter(
     (bucket) => bucket.itemCount > 0 || bucket.items.length > 0 || bucket.amountCents !== 0,
   );
+  const [spotlightBucket, setSpotlightBucket] = useState<(typeof visibleBuckets)[number] | null>(null);
+  const [spotlightIndex, setSpotlightIndex] = useState(0);
+  const spotlightRef = useRef<HTMLDialogElement>(null);
+  const spotlightItem = spotlightBucket?.items[spotlightIndex] ?? null;
+  const spotlightItemCount = spotlightBucket?.items.length ?? 0;
 
   function signedMoney(value: number) {
     return `${value > 0 ? "+" : value < 0 ? "−" : ""}${money.format(Math.abs(value) / 100)}`;
+  }
+
+  function openSpotlight(bucket: (typeof visibleBuckets)[number]) {
+    setSpotlightBucket(bucket);
+    setSpotlightIndex(0);
+    window.requestAnimationFrame(() => {
+      if (!spotlightRef.current?.open) spotlightRef.current?.showModal();
+    });
+  }
+
+  function closeSpotlight() {
+    if (spotlightRef.current?.open) spotlightRef.current.close();
+    setSpotlightBucket(null);
+  }
+
+  function moveSpotlight(direction: -1 | 1) {
+    if (!spotlightItemCount) return;
+    setSpotlightIndex((current) => (current + direction + spotlightItemCount) % spotlightItemCount);
   }
 
   return (
@@ -1644,29 +1692,24 @@ export function ExpectedActualBridge({
           </div>
           <div className="trip-story-bucket-list">
           {visibleBuckets.map((bucket) => (
-            <details key={bucket.key} className="comparison-bucket">
-              <summary>
+            <div key={bucket.key} className="comparison-bucket">
+              <button
+                type="button"
+                className="comparison-bucket-trigger"
+                onClick={() => openSpotlight(bucket)}
+                aria-haspopup="dialog"
+                aria-label={`Open ${bucket.label}: ${bucket.itemCount} ${bucket.itemCount === 1 ? "item" : "items"}`}
+              >
                 <span>
                   <strong>{bucket.label}</strong>
-                  <small>{bucket.itemCount} {bucket.itemCount === 1 ? "item" : "items"}</small>
+                  <small>Tap to explore · {bucket.itemCount} {bucket.itemCount === 1 ? "item" : "items"}</small>
                 </span>
-                <span>{money.format(bucket.amountCents / 100)}</span>
-              </summary>
-              {bucket.items.length ? (
-                <ul>
-                  {bucket.items.map((item, index) => (
-                    <li key={`${item.label ?? "item"}-${index}`}>
-                      <span>{item.label ?? "Receipt item"}</span>
-                      {item.amountCents === null || item.amountCents === undefined ? null : (
-                        <strong>{money.format(item.amountCents / 100)}</strong>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p>No line-level detail is available for this bucket yet.</p>
-              )}
-            </details>
+                <span>
+                  <strong>{money.format(bucket.amountCents / 100)}</strong>
+                  <small aria-hidden="true">View →</small>
+                </span>
+              </button>
+            </div>
           ))}
           </div>
         </section>
@@ -1681,6 +1724,68 @@ export function ExpectedActualBridge({
           </p>
         </div>
       ) : null}
+
+      <dialog
+        ref={spotlightRef}
+        className="receipt-spotlight"
+        aria-labelledby="receipt-spotlight-title"
+        onClose={() => setSpotlightBucket(null)}
+      >
+        {spotlightBucket ? (
+          <div className="receipt-spotlight-content">
+            <header className="receipt-spotlight-heading">
+              <div>
+                <p className="section-label">Receipt spotlight</p>
+                <h3 id="receipt-spotlight-title">{spotlightBucket.label}</h3>
+                <p>{bucketSpotlightCopy(spotlightBucket.key)}</p>
+              </div>
+              <button
+                type="button"
+                className="receipt-spotlight-close"
+                onClick={closeSpotlight}
+                aria-label="Close receipt spotlight"
+              >
+                ×
+              </button>
+            </header>
+
+            {spotlightItem ? (
+              <section className="receipt-flash-card" aria-live="polite">
+                <p>Receipt item {spotlightIndex + 1} of {spotlightItemCount}</p>
+                <strong>{spotlightItem.label ?? "Receipt item"}</strong>
+                <span>
+                  {spotlightItem.amountCents === null || spotlightItem.amountCents === undefined
+                    ? "Amount still needs review"
+                    : money.format(spotlightItem.amountCents / 100)}
+                </span>
+              </section>
+            ) : (
+              <section className="receipt-flash-card quiet" aria-live="polite">
+                <p>Summary only</p>
+                <strong>No individual receipt lines are available in this chapter yet.</strong>
+                <span>The total remains visible in the recap while the evidence is reviewed.</span>
+              </section>
+            )}
+
+            {spotlightItemCount > 1 ? (
+              <div className="receipt-spotlight-controls" aria-label="Browse receipt items">
+                <button type="button" className="secondary-button" onClick={() => moveSpotlight(-1)}>
+                  ← Previous
+                </button>
+                <span>{spotlightIndex + 1} / {spotlightItemCount}</span>
+                <button type="button" className="primary-button" onClick={() => moveSpotlight(1)}>
+                  Next →
+                </button>
+              </div>
+            ) : null}
+
+            <div className="receipt-spotlight-total">
+              <span>Chapter total</span>
+              <strong>{money.format(spotlightBucket.amountCents / 100)}</strong>
+            </div>
+          </div>
+        ) : null}
+      </dialog>
     </div>
   );
 }

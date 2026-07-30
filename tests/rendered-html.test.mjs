@@ -115,6 +115,9 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
     "utf8",
   );
   assert.match(reviewSource, /Prices or quantities shifted/);
+  assert.match(reviewSource, /receipt-spotlight/);
+  assert.match(reviewSource, /showModal\(\)/);
+  assert.match(reviewSource, /Tap to explore/);
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 
