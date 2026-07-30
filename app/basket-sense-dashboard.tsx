@@ -1158,15 +1158,6 @@ export function BasketSenseDashboard({
           <button className="text-button" onClick={openDataDialog}>
             Data &amp; privacy
           </button>
-          {household?.currentUser.role === "owner" ? (
-            <button
-              className="text-button"
-              type="button"
-              onClick={() => window.location.assign("/july25-cleanup")}
-            >
-              July 25 cleanup
-            </button>
-          ) : null}
         </div>
       </aside>
 
