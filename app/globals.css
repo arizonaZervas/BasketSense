@@ -5023,12 +5023,36 @@ button.price-point:hover {
 
 .trip-story-drivers li {
   display: grid;
+  min-height: 62px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trip-story-driver-trigger,
+.trip-story-driver-static {
+  display: grid;
+  width: 100%;
+  min-height: 62px;
   grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  min-height: 62px;
-  border-bottom: 1px solid var(--line);
-  padding: 10px 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: inherit;
+  padding: 10px 4px;
+  text-align: left;
+}
+
+.trip-story-driver-trigger {
+  cursor: pointer;
+}
+
+.trip-story-driver-trigger:hover {
+  background: var(--surface-hover);
+}
+
+.trip-story-driver-copy {
+  min-width: 0;
 }
 
 .trip-story-driver-mark {
@@ -6035,6 +6059,11 @@ button.price-point:hover {
   }
 
   .trip-story-drivers li {
+    min-height: 62px;
+  }
+
+  .trip-story-driver-trigger,
+  .trip-story-driver-static {
     grid-template-columns: 28px minmax(0, 1fr) auto;
     gap: 9px;
   }

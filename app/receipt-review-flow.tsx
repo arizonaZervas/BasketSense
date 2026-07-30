@@ -1605,6 +1605,17 @@ export function ExpectedActualBridge({
     setSpotlightIndex((current) => (current + direction + spotlightItemCount) % spotlightItemCount);
   }
 
+  function spotlightForDriver(key: string) {
+    const bucketKeys: Record<string, string[]> = {
+      "price-shifts": ["matched", "planned_and_purchased"],
+      "unpriced-planned": ["unpricedplanned"],
+      added: ["in_store", "added_during_trip", "receipt_only", "receiptonly", "unplanned"],
+      skipped: ["missing", "planned_not_purchased", "skippedplanned"],
+    };
+    const keys = bucketKeys[key] ?? [];
+    return visibleBuckets.find((bucket) => keys.includes(bucket.key.toLowerCase())) ?? null;
+  }
+
   return (
     <div className="expected-actual trip-story">
       <header className="trip-story-intro">
@@ -1662,18 +1673,36 @@ export function ExpectedActualBridge({
           </div>
           {drivers.length ? (
             <ol>
-              {drivers.map((driver) => (
-                <li key={driver.key} className={driver.amountCents < 0 ? "saving" : "added"}>
+              {drivers.map((driver) => {
+                const bucket = spotlightForDriver(driver.key);
+                const contents = <>
                   <span className="trip-story-driver-mark" aria-hidden="true">
                     {driver.amountCents < 0 ? "↓" : "↑"}
                   </span>
-                  <div>
+                  <span className="trip-story-driver-copy">
                     <strong>{driver.label}</strong>
-                    <small>{driver.detail}</small>
-                  </div>
+                    <small>{bucket ? "Tap to see the receipt items" : driver.detail}</small>
+                  </span>
                   <span className="trip-story-driver-amount">{signedMoney(driver.amountCents)}</span>
-                </li>
-              ))}
+                </>;
+                return (
+                  <li key={driver.key} className={driver.amountCents < 0 ? "saving" : "added"}>
+                    {bucket ? (
+                      <button
+                        type="button"
+                        className="trip-story-driver-trigger"
+                        onClick={() => openSpotlight(bucket)}
+                        aria-haspopup="dialog"
+                        aria-label={`Open receipt items for ${driver.label}`}
+                      >
+                        {contents}
+                      </button>
+                    ) : (
+                      <div className="trip-story-driver-static">{contents}</div>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           ) : (
             <p className="trip-story-quiet">Nothing materially moved the recorded total away from the saved estimate.</p>
