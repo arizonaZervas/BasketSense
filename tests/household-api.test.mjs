@@ -346,6 +346,73 @@ test("product metadata migration upgrades an existing catalog safely", () => {
   }
 });
 
+test("receipt-integrity migration adds the asynchronous-ingestion boundary and review claims", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE trips (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE household_members (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE receipt_transactions (id TEXT PRIMARY KEY NOT NULL, household_id TEXT NOT NULL, trip_id TEXT, source_type TEXT NOT NULL);
+      CREATE TABLE review_questions (id TEXT PRIMARY KEY NOT NULL);
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0004_magical_patriot.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    const ingestionColumns = db.database
+      .prepare(`PRAGMA table_info(receipt_ingestions)`)
+      .all()
+      .map((column) => column.name);
+    assert.ok(ingestionColumns.includes("workflow_instance_id"));
+    assert.ok(ingestionColumns.includes("receipt_transaction_id"));
+    assert.ok(ingestionColumns.includes("completed_at"));
+    const reviewColumns = db.database
+      .prepare(`PRAGMA table_info(review_questions)`)
+      .all()
+      .map((column) => column.name);
+    assert.ok(reviewColumns.includes("answer_claim_token"));
+    assert.ok(reviewColumns.includes("answer_claimed_at"));
+  } finally {
+    db.close();
+  }
+});
+
+test("trip report outbox migration creates an idempotent delivery ledger", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE trips (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE household_members (id TEXT PRIMARY KEY NOT NULL);
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0005_cheerful_the_professor.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    const indexes = db.database
+      .prepare(`PRAGMA index_list(email_outbox)`)
+      .all()
+      .map((index) => index.name);
+    assert.ok(indexes.includes("email_outbox_dedupe_key_unique"));
+    const columns = db.database
+      .prepare(`PRAGMA table_info(email_outbox)`)
+      .all()
+      .map((column) => column.name);
+    for (const expected of ["attempt_count", "provider_message_id", "locked_at", "sent_at"]) {
+      assert.ok(columns.includes(expected), `Expected ${expected} in the email outbox`);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test("receipt cadence produces a conservative, explainable July 25 list", () => {
   const recommendations = buildSaturdayRecommendations(
     RECURRING_PRODUCT_HISTORIES_2026,
@@ -1818,6 +1885,100 @@ test("a totals-only receipt preserves exact spending without inventing product e
   }
 });
 
+test("only a finalized trip receipt can change official totals, and one trip cannot double-count", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "receipt-finality@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", { action: "freeze_trip", tripId }),
+          db,
+        )
+      ).status,
+      200,
+    );
+
+    const before = initial.dashboard;
+    const draftResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "finality-first-draft",
+        tripId,
+        purchasedAt: "2026-07-25T10:30:00-07:00",
+        subtotalCents: 1000,
+        taxCents: 0,
+        totalCents: 1000,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+    assert.equal(draftResponse.status, 200);
+    const draft = await responseJson(draftResponse);
+
+    const whileDraft = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.deepEqual(
+      whileDraft.dashboard,
+      before,
+      "A reconciled draft stays in Review until the trip is completed",
+    );
+
+    const duplicate = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "finality-second-draft",
+        tripId,
+        purchasedAt: "2026-07-25T10:30:00-07:00",
+        subtotalCents: 1000,
+        taxCents: 0,
+        totalCents: 1000,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+    assert.equal(duplicate.status, 409);
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "finalize_receipt",
+            receiptId: draft.receiptId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const afterFinalization = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.notDeepEqual(afterFinalization.dashboard, before);
+
+    const completedEdit = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "update_receipt_draft",
+        receiptId: draft.receiptId,
+        totalCents: 9999,
+      }),
+      db,
+    );
+    assert.equal(completedEdit.status, 409);
+  } finally {
+    db.close();
+  }
+});
+
 test("a reconciled receipt closes the frozen intent loop idempotently", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -2210,6 +2371,35 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
     assert.ok(catalogQuestion);
     assert.ok(catalogQuestion.receiptItemId);
 
+    db.database
+      .prepare(
+        `UPDATE review_questions
+         SET answer_claim_token = ?, answer_claimed_at = ? WHERE id = ?`,
+      )
+      .run("another-member", new Date().toISOString(), catalogQuestion.id);
+    const claimedByPartner = await handleHouseholdPost(
+      householdRequest("confirm-once@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: catalogQuestion.id,
+        value: "add_to_catalog",
+        canonicalName: "Should not be saved",
+        category: "groceries_beverages",
+      }),
+      db,
+    );
+    assert.equal(claimedByPartner.status, 409);
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM feedback`).get().count,
+      0,
+      "A claimed question must not run catalog or feedback side effects",
+    );
+    db.database
+      .prepare(
+        `UPDATE review_questions
+         SET answer_claim_token = NULL, answer_claimed_at = NULL WHERE id = ?`,
+      )
+      .run(catalogQuestion.id);
+
     const missingMetadata = await handleHouseholdPost(
       householdRequest("confirm-once@example.test", "POST", {
         action: "answer_review_question",
@@ -2270,9 +2460,13 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
     );
     const searchable = refreshed.products.find((entry) => entry.id === product.id);
     assert.ok(searchable);
-    assert.equal(searchable.purchaseCount, 1);
-    assert.equal(searchable.latestRegularUnitPriceCents, 2400);
-    assert.equal(searchable.latestPaidUnitPriceCents, 2400);
+    assert.equal(
+      searchable.purchaseCount,
+      0,
+      "A draft is searchable after confirmation but does not train future prices until finalization",
+    );
+    assert.equal(searchable.latestRegularUnitPriceCents, null);
+    assert.equal(searchable.latestPaidUnitPriceCents, null);
     assert.equal(
       refreshed.listItems.some((item) => item.productId === product.id),
       false,

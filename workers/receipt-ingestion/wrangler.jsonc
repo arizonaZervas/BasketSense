@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "basketsense-receipt-ingestion",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "env": {
+    "staging": {
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "GEMINI_MODEL": "gemini-3.5-flash-lite",
+        "EMAIL_FROM": "receipts@goodcartday.com"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "basketsense-receipt-ingestion-staging",
+          "database_id": "42605fd5-ccbb-4827-8ff7-c0c0eedc7b85",
+          "migrations_dir": "../../drizzle"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "RECEIPTS",
+          "bucket_name": "basketsense-receipt-ingestion-staging"
+        }
+      ],
+      "workflows": [
+        {
+          "name": "basketsense-receipt-ingestion-staging",
+          "binding": "RECEIPT_INGESTION",
+          "class_name": "ReceiptIngestionWorkflow"
+        },
+        {
+          "name": "basketsense-trip-report-staging",
+          "binding": "TRIP_REPORT",
+          "class_name": "TripReportWorkflow"
+        }
+      ],
+      "send_email": [
+        {
+          "name": "EMAIL",
+          "allowed_sender_addresses": ["receipts@goodcartday.com"]
+        }
+      ]
+    }
+  }
+}

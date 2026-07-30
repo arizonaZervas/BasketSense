@@ -227,6 +227,9 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON receipt_transactions (household_id, purchased_at)`,
   `CREATE INDEX IF NOT EXISTS receipt_transactions_trip_idx
     ON receipt_transactions (trip_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_transactions_household_trip_photo_unique
+    ON receipt_transactions (household_id, trip_id)
+    WHERE source_type = 'receipt_photo'`,
   `CREATE TABLE IF NOT EXISTS receipt_items (
     id TEXT PRIMARY KEY NOT NULL,
     receipt_transaction_id TEXT NOT NULL,
@@ -347,6 +350,72 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON receipt_uploads (storage_key)`,
   `CREATE INDEX IF NOT EXISTS receipt_uploads_household_idx
     ON receipt_uploads (household_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_ingestions (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    requested_by_member_id TEXT,
+    client_request_id TEXT NOT NULL,
+    source_storage_key TEXT NOT NULL,
+    source_sha256 TEXT,
+    source_content_type TEXT NOT NULL,
+    source_byte_size INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'uploaded',
+    revision INTEGER NOT NULL DEFAULT 1,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    workflow_instance_id TEXT,
+    provider TEXT,
+    model TEXT,
+    prompt_version TEXT,
+    schema_version TEXT,
+    extraction_artifact_key TEXT,
+    receipt_transaction_id TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    completed_at TEXT,
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (requested_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_ingestions_household_request_unique
+    ON receipt_ingestions (household_id, client_request_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_ingestions_source_key_unique
+    ON receipt_ingestions (source_storage_key)`,
+  `CREATE INDEX IF NOT EXISTS receipt_ingestions_household_status_idx
+    ON receipt_ingestions (household_id, status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS receipt_ingestions_trip_idx
+    ON receipt_ingestions (trip_id)`,
+  `CREATE INDEX IF NOT EXISTS receipt_ingestions_receipt_idx
+    ON receipt_ingestions (receipt_transaction_id)`,
+  `CREATE TABLE IF NOT EXISTS email_outbox (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    recipient_member_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'trip_summary',
+    dedupe_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    provider_message_id TEXT,
+    last_error_code TEXT,
+    locked_at TEXT,
+    sent_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (recipient_member_id) REFERENCES household_members(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS email_outbox_dedupe_key_unique
+    ON email_outbox (dedupe_key)`,
+  `CREATE INDEX IF NOT EXISTS email_outbox_household_status_idx
+    ON email_outbox (household_id, status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS email_outbox_trip_idx
+    ON email_outbox (trip_id)`,
+  `CREATE INDEX IF NOT EXISTS email_outbox_recipient_idx
+    ON email_outbox (recipient_member_id)`,
   `CREATE TABLE IF NOT EXISTS product_aliases (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -413,6 +482,8 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     answer_note TEXT,
     answered_by_member_id TEXT,
     answered_at TEXT,
+    answer_claim_token TEXT,
+    answer_claimed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
@@ -1492,6 +1563,16 @@ async function readHouseholdState(
                AND receipt_items.quantity_milli > 0
                AND receipt_transactions.transaction_type = 'warehouse'
                AND receipt_transactions.parse_status = 'reconciled'
+               AND (
+                 receipt_transactions.source_type <> 'receipt_photo'
+                 OR receipt_transactions.trip_id IS NULL
+                 OR EXISTS (
+                   SELECT 1 FROM trips
+                   WHERE trips.id = receipt_transactions.trip_id
+                     AND trips.household_id = receipt_transactions.household_id
+                     AND trips.status = 'completed'
+                 )
+               )
            ) AS ranked
            WHERE ranked.price_rank = 1
          ) AS latest ON latest.product_id = products.id
@@ -3680,7 +3761,9 @@ async function rebuildReviewQuestions(
   await db
     .prepare(
       `DELETE FROM review_questions
-       WHERE receipt_transaction_id = ? AND status = 'open'`
+       WHERE receipt_transaction_id = ?
+         AND status = 'open'
+         AND answer_claim_token IS NULL`
     )
     .bind(receipt.id)
     .run();
@@ -4320,35 +4403,48 @@ async function ingestReceiptDraft(
   }
   const receiptId = crypto.randomUUID();
   const now = nowIso();
-  await db
-    .prepare(
-      `INSERT INTO receipt_transactions (
-        id, household_id, trip_id, source_transaction_key,
-        transaction_type, source_type, purchased_at, item_gross_cents,
-        item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
-        household_funded_cents, external_funding_cents, audit_flag,
-        parse_status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'warehouse', 'receipt_photo', ?, ?, ?, ?, ?, ?, ?, ?,
-                0, ?, 'needs_review', ?, ?)`
-    )
-    .bind(
-      receiptId,
-      context.household.id,
-      trip.id,
-      sourceTransactionKey,
-      purchasedAt,
-      items.reduce((sum, item) => sum + item.lineSubtotalCents, 0),
-      items.length,
-      subtotalCents,
-      taxCents,
-      discountCents,
-      totalCents,
-      totalCents,
-      totalsOnly ? "closed_loop_totals_only_draft" : "closed_loop_draft",
-      now,
-      now
-    )
-    .run();
+  try {
+    await db
+      .prepare(
+        `INSERT INTO receipt_transactions (
+          id, household_id, trip_id, source_transaction_key,
+          transaction_type, source_type, purchased_at, item_gross_cents,
+          item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
+          household_funded_cents, external_funding_cents, audit_flag,
+          parse_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'warehouse', 'receipt_photo', ?, ?, ?, ?, ?, ?, ?, ?,
+                  0, ?, 'needs_review', ?, ?)`
+      )
+      .bind(
+        receiptId,
+        context.household.id,
+        trip.id,
+        sourceTransactionKey,
+        purchasedAt,
+        items.reduce((sum, item) => sum + item.lineSubtotalCents, 0),
+        items.length,
+        subtotalCents,
+        taxCents,
+        discountCents,
+        totalCents,
+        totalCents,
+        totalsOnly ? "closed_loop_totals_only_draft" : "closed_loop_draft",
+        now,
+        now
+      )
+      .run();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      /unique constraint failed/i.test(error.message)
+    ) {
+      throw new ApiError(
+        409,
+        "This trip already has a receipt draft. Refresh to continue reviewing it."
+      );
+    }
+    throw error;
+  }
   await insertReceiptItems(db, context.household.id, receiptId, items);
   const closedLoop = await rebuildReceiptState(db, context, receiptId);
   if (!closedLoop) {
@@ -4370,6 +4466,19 @@ async function updateReceiptDraft(
   );
   if (receipt.source_type !== "receipt_photo") {
     throw new ApiError(409, "Audited historical receipts cannot be edited here");
+  }
+  if (receipt.trip_id) {
+    const trip = await authorizedTrip(
+      db,
+      context.household.id,
+      receipt.trip_id
+    );
+    if (trip.status === "completed") {
+      throw new ApiError(
+        409,
+        "Completed receipts are immutable so historical totals stay trustworthy."
+      );
+    }
   }
   const purchasedAt =
     body.purchasedAt === undefined
@@ -4823,7 +4932,7 @@ async function answerReviewQuestion(
     }
     if (question.status !== "dismissed") {
       const now = nowIso();
-      await db
+      const dismissed = await db
         .prepare(
           `UPDATE review_questions
            SET status = 'dismissed', answer_value = 'skip',
@@ -4832,6 +4941,19 @@ async function answerReviewQuestion(
         )
         .bind(context.member.id, now, now, question.id)
         .run();
+      if ((dismissed.meta.changes ?? 0) !== 1) {
+        const latest = await db
+          .prepare(`SELECT * FROM review_questions WHERE id = ?`)
+          .bind(question.id)
+          .first<ReviewQuestionRow>();
+        if (latest?.status === "dismissed") {
+          return json({ question: questionSummary(latest) });
+        }
+        if (latest?.status === "answered") {
+          throw new ApiError(409, "This question already has an answer");
+        }
+        throw new ApiError(409, "Another household member is updating this question");
+      }
     }
     const updated = await db
       .prepare(`SELECT * FROM review_questions WHERE id = ?`)
@@ -4871,8 +4993,46 @@ async function answerReviewQuestion(
     "replacementReceiptItemId"
   );
   const now = nowIso();
+  const claimToken = crypto.randomUUID();
+  const staleClaimCutoff = new Date(Date.now() - 120_000).toISOString();
+  const claim = await db
+    .prepare(
+      `UPDATE review_questions
+       SET answer_claim_token = ?, answer_claimed_at = ?, updated_at = ?
+       WHERE id = ? AND household_id = ? AND status = 'open'
+         AND (answer_claim_token IS NULL OR answer_claimed_at < ?)`
+    )
+    .bind(
+      claimToken,
+      now,
+      now,
+      question.id,
+      context.household.id,
+      staleClaimCutoff
+    )
+    .run();
+  if ((claim.meta.changes ?? 0) !== 1) {
+    const latest = await db
+      .prepare(`SELECT * FROM review_questions WHERE id = ?`)
+      .bind(question.id)
+      .first<ReviewQuestionRow>();
+    if (latest?.status === "answered" && latest.answer_value === value) {
+      return json({ question: questionSummary(latest) });
+    }
+    if (latest?.status === "answered") {
+      throw new ApiError(409, "This question already has a different answer");
+    }
+    if (latest?.status === "dismissed") {
+      throw new ApiError(409, "This question was skipped");
+    }
+    throw new ApiError(
+      409,
+      "Another household member is saving this answer. Try again in a moment."
+    );
+  }
 
-  if (question.receipt_item_id && value === "add_to_catalog") {
+  try {
+    if (question.receipt_item_id && value === "add_to_catalog") {
     await confirmReceiptProduct(
       db,
       context,
@@ -4880,9 +5040,14 @@ async function answerReviewQuestion(
       productId,
       { canonicalName, category }
     );
-  } else if (question.receipt_item_id && productId) {
-    await confirmReceiptProduct(db, context, question.receipt_item_id, productId);
-  }
+    } else if (question.receipt_item_id && productId) {
+      await confirmReceiptProduct(
+        db,
+        context,
+        question.receipt_item_id,
+        productId
+      );
+    }
   if (
     value === "yes_substitution" &&
     question.intent_item_id &&
@@ -4990,10 +5155,11 @@ async function answerReviewQuestion(
     .prepare(
       `UPDATE review_questions
        SET status = 'answered', answer_value = ?, answer_note = ?,
-           answered_by_member_id = ?, answered_at = ?, updated_at = ?
-       WHERE id = ? AND status = 'open'`
+           answered_by_member_id = ?, answered_at = ?, updated_at = ?,
+           answer_claim_token = NULL, answer_claimed_at = NULL
+       WHERE id = ? AND status = 'open' AND answer_claim_token = ?`
     )
-    .bind(value, note, context.member.id, now, now, question.id)
+    .bind(value, note, context.member.id, now, now, question.id, claimToken)
     .run();
 
   const closedLoop = await rebuildReceiptState(
@@ -5005,6 +5171,18 @@ async function answerReviewQuestion(
     (entry) => entry.id === question.id
   );
   return json({ question: updatedQuestion ?? null, closedLoop });
+  } catch (error) {
+    await db
+      .prepare(
+        `UPDATE review_questions
+         SET answer_claim_token = NULL, answer_claimed_at = NULL
+         WHERE id = ? AND status = 'open' AND answer_claim_token = ?`
+      )
+      .bind(question.id, claimToken)
+      .run()
+      .catch(() => undefined);
+    throw error;
+  }
 }
 
 function handleError(error: unknown) {

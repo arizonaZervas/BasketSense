@@ -122,6 +122,16 @@ export async function buildDashboardViewDataFromD1(
          WHERE household_id = ?
            AND parse_status = 'reconciled'
            AND transaction_type IN ('warehouse', 'fuel', 'optical')
+           AND (
+             source_type <> 'receipt_photo'
+             OR receipt_transactions.trip_id IS NULL
+             OR EXISTS (
+               SELECT 1 FROM trips
+               WHERE trips.id = receipt_transactions.trip_id
+                 AND trips.household_id = receipt_transactions.household_id
+                 AND trips.status = 'completed'
+             )
+           )
          ORDER BY purchased_at DESC, id DESC`,
       )
       .bind(householdId),
@@ -143,6 +153,16 @@ export async function buildDashboardViewDataFromD1(
          WHERE receipt_transactions.household_id = ?
            AND receipt_transactions.parse_status = 'reconciled'
            AND receipt_transactions.transaction_type IN ('warehouse', 'fuel', 'optical')
+           AND (
+             receipt_transactions.source_type <> 'receipt_photo'
+             OR receipt_transactions.trip_id IS NULL
+             OR EXISTS (
+               SELECT 1 FROM trips
+               WHERE trips.id = receipt_transactions.trip_id
+                 AND trips.household_id = receipt_transactions.household_id
+                 AND trips.status = 'completed'
+             )
+           )
          ORDER BY receipt_transactions.purchased_at ASC,
                   receipt_transactions.id ASC,
                   receipt_items.source_line_number ASC,

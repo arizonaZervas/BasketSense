@@ -29,6 +29,20 @@
       "when": 1784442472341,
       "tag": "0003_ambiguous_dark_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785064659105,
+      "tag": "0004_magical_patriot",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785065581188,
+      "tag": "0005_cheerful_the_professor",
+      "breakpoints": true
     }
   ]
 }

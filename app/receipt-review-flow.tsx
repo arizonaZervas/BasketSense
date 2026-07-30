@@ -284,6 +284,16 @@ function draftFromParser(value: unknown): ReceiptDraft {
   };
 }
 
+function hasMeaningfulDraftData(draft: ReceiptDraft) {
+  return Boolean(
+    draft.subtotal.trim() ||
+      draft.tax.trim() ||
+      draft.total.trim() ||
+      draft.discount.trim() ||
+      draft.items.some((item) => item.itemNumber.trim() || item.description.trim() || item.amount.trim()),
+  );
+}
+
 async function responseJson(response: Response, fallback: string) {
   const body = (await response.json().catch(() => null)) as
     | Record<string, unknown>
@@ -301,6 +311,8 @@ async function fetchWithTimeout(
   timeoutMs = 12_000,
 ) {
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  init.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
@@ -313,6 +325,7 @@ async function fetchWithTimeout(
     throw error;
   } finally {
     window.clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abortFromCaller);
   }
 }
 
@@ -483,6 +496,9 @@ export function ReceiptFlowDialog({
   const [ocrStatus, setOcrStatus] = useState<string | null>(null);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrError, setOcrError] = useState<string | null>(null);
+  const [receiptIngestionId, setReceiptIngestionId] = useState<string | null>(null);
+  const [pollReceiptIngestion, setPollReceiptIngestion] = useState(false);
+  const [pendingParsedDraft, setPendingParsedDraft] = useState<unknown>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
@@ -490,8 +506,9 @@ export function ReceiptFlowDialog({
   const [receiptId, setReceiptId] = useState<string | null>(
     closedLoop?.receipt?.id ?? null,
   );
-  const [draftRequestId] = useState(clientId);
+  const [draftRequestId, setDraftRequestId] = useState(clientId);
   const wasOpen = useRef(false);
+  const appliedIngestionDraftId = useRef<string | null>(null);
   const dialog = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement | null>(null);
   const stepHeading = useRef<HTMLHeadingElement | null>(null);
@@ -500,10 +517,23 @@ export function ReceiptFlowDialog({
 
   useEffect(() => {
     if (open && !wasOpen.current) {
+      setReceiptFile(null);
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+      setOcrStatus(null);
+      setOcrProgress(0);
+      setOcrError(null);
+      setReceiptIngestionId(null);
+      setPollReceiptIngestion(false);
+      setPendingParsedDraft(null);
+      appliedIngestionDraftId.current = null;
       setStep(initialStep);
       setWorkingClosedLoop(closedLoop ?? null);
       setDraft(draftFromClosedLoop(closedLoop));
       setReceiptId(closedLoop?.receipt?.id ?? null);
+      setDraftRequestId(clientId());
       setSaveError(null);
       setPhotoError(null);
       setSavedMessage(null);
@@ -523,6 +553,74 @@ export function ReceiptFlowDialog({
     },
     [previewUrl],
   );
+
+  useEffect(() => {
+    if (!open || !receiptIngestionId || !pollReceiptIngestion) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const readStatus = async () => {
+      try {
+        const response = await fetchWithTimeout(
+          `/api/receipt-ingestion?id=${encodeURIComponent(receiptIngestionId)}`,
+          { method: "GET" },
+          12_000,
+        );
+        const body = await responseJson(response, "Could not check the receipt reader.");
+        if (cancelled || !body.ingestion || typeof body.ingestion !== "object") return;
+        const ingestion = body.ingestion as {
+          status?: unknown;
+          error?: unknown;
+          draft?: unknown;
+        };
+        const status = typeof ingestion.status === "string" ? ingestion.status : "uploaded";
+        if (status === "awaiting_review" && ingestion.draft && typeof ingestion.draft === "object") {
+          if (appliedIngestionDraftId.current === receiptIngestionId) return;
+          setOcrProgress(1);
+          setOcrError(null);
+          if (hasMeaningfulDraftData(draft)) {
+            setPendingParsedDraft(ingestion.draft);
+            setOcrStatus("Draft ready — your edits are still in place");
+          } else {
+            setDraft(draftFromParser(ingestion.draft));
+            appliedIngestionDraftId.current = receiptIngestionId;
+            setPendingParsedDraft(null);
+            setOcrStatus("Draft ready to check");
+            setStep("check");
+          }
+          return;
+        }
+        if (status === "failed") {
+          setOcrProgress(0);
+          setOcrStatus(null);
+          setOcrError(
+            typeof ingestion.error === "string" && ingestion.error
+              ? `The receipt reader needs another try: ${ingestion.error}`
+              : "The receipt reader could not finish. Your private upload is saved; enter totals now and try a clearer photo or PDF later.",
+          );
+          return;
+        }
+        setOcrProgress(status === "extracting" ? 0.72 : 0.42);
+        setOcrStatus(status === "extracting" ? "Reading your receipt in the background" : "Receipt saved — starting the reader");
+        timer = window.setTimeout(readStatus, 2_500);
+      } catch (error) {
+        if (cancelled) return;
+        setOcrProgress(0);
+        setOcrStatus(null);
+        setOcrError(
+          error instanceof Error
+            ? `${error.message} Your private upload is safe; enter totals now and try again later if needed.`
+            : "We could not check the receipt reader. Your private upload is safe; enter totals now and try again later if needed.",
+        );
+      }
+    };
+
+    void readStatus();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [draft, open, pollReceiptIngestion, receiptIngestionId]);
 
   useEffect(() => {
     if (!open) return;
@@ -653,44 +751,54 @@ export function ReceiptFlowDialog({
 
   if (!open) return null;
 
-  function applyParsedDraft(parsed: unknown) {
-    setDraft(draftFromParser(parsed));
-    setOcrError(null);
-    setStep("check");
+  function cancelReceiptOcr() {
+    if (!receiptIngestionId) setOcrStatus(null);
   }
 
-  async function runOcr(file: File) {
+  async function startReceiptIngestion(file: File) {
+    if (!tripId) {
+      setOcrError("The shared trip is not ready yet. Refresh the list, then try the receipt again.");
+      return;
+    }
     setOcrError(null);
-    setOcrStatus("Reading receipt securely");
-    setOcrProgress(0.2);
+    setPendingParsedDraft(null);
+    setOcrStatus("Saving your receipt privately");
+    setOcrProgress(0.16);
     try {
       const form = new FormData();
       form.append("file", file);
+      form.append("tripId", tripId);
+      form.append("clientRequestId", clientId());
       const response = await fetchWithTimeout(
-        "/api/receipt-ocr",
+        "/api/receipt-ingestion",
         { method: "POST", body: form },
-        30_000,
+        35_000,
       );
       const body = await responseJson(
         response,
-        "The receipt reader could not process that receipt.",
+        "The receipt could not be saved for review.",
       );
-      if (!body.draft || typeof body.draft !== "object") {
-        throw new Error("The receipt reader returned an incomplete draft.");
+      const ingestion = body.ingestion as { id?: unknown } | undefined;
+      if (!ingestion || typeof ingestion.id !== "string") {
+        throw new Error("The receipt saved without a usable review ID.");
       }
-      const parsed = (body.draft as { parsed?: unknown }).parsed;
-      if (!parsed || typeof parsed !== "object") {
-        throw new Error("The receipt reader returned an incomplete draft.");
+      setReceiptIngestionId(ingestion.id);
+      setPollReceiptIngestion(body.queued === true);
+      setOcrProgress(0.34);
+      if (body.configurationMissing === true) {
+        setOcrStatus("Receipt saved — enter totals while automatic reading is being connected");
+      } else if (body.queued === true) {
+        setOcrStatus("Receipt saved — reading in the background");
+      } else {
+        setOcrStatus("Receipt saved — enter totals now; the reader will retry when available");
       }
-      setOcrProgress(1);
-      setOcrStatus("Draft ready to check");
-      applyParsedDraft(parsed);
+      setStep("check");
     } catch (error) {
       setOcrStatus(null);
       setOcrError(
         error instanceof Error
-          ? `${error.message} Your receipt file is still here—enter the totals manually if needed.`
-          : "The receipt reader could not process that receipt. Your receipt file is still here—enter the totals manually if needed.",
+          ? `${error.message} Your receipt is still on this screen—enter the printed totals if you want to continue now.`
+          : "The receipt could not be saved for review. Your receipt is still on this screen—enter the printed totals if you want to continue now.",
       );
     }
   }
@@ -700,6 +808,7 @@ export function ReceiptFlowDialog({
     if (!file) return;
     // Clearing the native picker lets someone reselect the same saved receipt.
     event.target.value = "";
+    cancelReceiptOcr();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     const nextPreview = file.type.toLowerCase().startsWith("image/")
       ? URL.createObjectURL(file)
@@ -707,10 +816,14 @@ export function ReceiptFlowDialog({
     setReceiptFile(file);
     setPreviewUrl(nextPreview);
     setPhotoError(null);
-    void runOcr(file);
+    setReceiptIngestionId(null);
+    setPollReceiptIngestion(false);
+    appliedIngestionDraftId.current = null;
+    void startReceiptIngestion(file);
   }
 
   function updateLine(id: string, field: "itemNumber" | "description" | "amount", value: string) {
+    cancelReceiptOcr();
     setDraft((current) => ({
       ...current,
       items: current.items.map((item) =>
@@ -720,23 +833,11 @@ export function ReceiptFlowDialog({
   }
 
   function deleteLine(id: string) {
+    cancelReceiptOcr();
     setDraft((current) => {
       const items = current.items.filter((item) => item.clientId !== id);
       return { ...current, items: items.length ? items : [blankLine()] };
     });
-  }
-
-  function addReceiptSummaryLine() {
-    const subtotal = draft.subtotal.trim();
-    if (!subtotal) {
-      setSaveError("Enter the subtotal first, then save this as a totals-only receipt.");
-      return;
-    }
-    setDraft((current) => ({
-      ...current,
-      items: [blankLine()],
-    }));
-    setSaveError(null);
   }
 
   async function uploadReceiptFile(savedReceiptId: string) {
@@ -766,6 +867,31 @@ export function ReceiptFlowDialog({
         error instanceof Error
           ? `The structured receipt was saved, but the receipt file needs a retry: ${error.message}`
           : "The structured receipt was saved, but private receipt storage needs a retry.",
+      );
+      return false;
+    }
+  }
+
+  async function linkIngestedReceiptFile(savedReceiptId: string) {
+    if (!receiptIngestionId) return false;
+    try {
+      const response = await fetchWithTimeout("/api/receipt-ingestion", {
+        method: "PATCH",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "link_receipt",
+          ingestionId: receiptIngestionId,
+          receiptId: savedReceiptId,
+        }),
+      });
+      await responseJson(response, "The receipt record was saved, but its private file needs a retry.");
+      setPhotoError(null);
+      return true;
+    } catch (error) {
+      setPhotoError(
+        error instanceof Error
+          ? `The receipt record was saved, but private file linking needs a retry: ${error.message}`
+          : "The receipt record was saved, but private file linking needs a retry.",
       );
       return false;
     }
@@ -812,7 +938,15 @@ export function ReceiptFlowDialog({
         receiptId;
       if (!savedReceiptId) throw new Error("The receipt saved without a usable receipt ID.");
       setReceiptId(savedReceiptId);
-      await uploadReceiptFile(savedReceiptId);
+      const linked = await linkIngestedReceiptFile(savedReceiptId);
+      const stored = linked || (await uploadReceiptFile(savedReceiptId));
+      if (stored) {
+        setReceiptFile(null);
+        setPreviewUrl((current) => {
+          if (current) URL.revokeObjectURL(current);
+          return null;
+        });
+      }
 
       if (finalize) {
         const finalizeResponse = await fetchWithTimeout("/api/household", {
@@ -897,8 +1031,8 @@ export function ReceiptFlowDialog({
                 Add a photo or Costco PDF
               </h2>
               <p>
-                BasketSense drafts the receipt securely on the server. The original
-                file is uploaded privately only after you confirm the structured receipt.
+                BasketSense saves the original privately, then reads it in the background.
+                You can confirm the printed totals while it works.
               </p>
             </div>
 
@@ -976,7 +1110,7 @@ export function ReceiptFlowDialog({
 
             <div className="receipt-flow-actions split">
               <button type="button" className="primary-button" onClick={() => setStep("check")}>
-                {receiptFile ? "Confirm what we found" : "Enter receipt totals"}
+                {receiptFile ? "Continue while it reads" : "Enter receipt totals"}
               </button>
               <button type="button" className="secondary-button" onClick={onClose}>
                 Cancel
@@ -998,15 +1132,48 @@ export function ReceiptFlowDialog({
               </p>
             </div>
 
+            {ocrStatus ? (
+              <div className="ocr-progress" role="status" aria-live="polite">
+                <div>
+                  <strong>{ocrStatus}</strong>
+                  <span>{Math.round(ocrProgress * 100)}%</span>
+                </div>
+                <progress value={ocrProgress} max={1} aria-label="Receipt drafting progress" />
+                <small>Nothing has affected your spending history yet. Confirm the printed total to save it.</small>
+              </div>
+            ) : null}
+
+            {ocrError ? <div className="receipt-flow-error" role="alert">{ocrError}</div> : null}
+
+            {pendingParsedDraft ? (
+              <div className="receipt-flow-note" role="status">
+                <strong>We found the product lines.</strong>
+                <p>Your totals and edits are unchanged. Use the draft only if you want to replace this screen with the receipt reader’s version.</p>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    setDraft(draftFromParser(pendingParsedDraft));
+                    appliedIngestionDraftId.current = receiptIngestionId;
+                    setPendingParsedDraft(null);
+                    setOcrStatus("Draft ready to check");
+                  }}
+                >
+                  Use receipt draft
+                </button>
+              </div>
+            ) : null}
+
             <div className="receipt-total-fields">
               <label>
                 <span>Purchased</span>
                 <input
                   type="date"
                   value={draft.purchasedOn}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, purchasedOn: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    cancelReceiptOcr();
+                    setDraft((current) => ({ ...current, purchasedOn: event.target.value }));
+                  }}
                 />
               </label>
               {(
@@ -1025,9 +1192,10 @@ export function ReceiptFlowDialog({
                       inputMode="decimal"
                       aria-label={`${label} in dollars`}
                       value={draft[field]}
-                      onChange={(event) =>
-                        setDraft((current) => ({ ...current, [field]: event.target.value }))
-                      }
+                      onChange={(event) => {
+                        cancelReceiptOcr();
+                        setDraft((current) => ({ ...current, [field]: event.target.value }));
+                      }}
                       placeholder="0.00"
                     />
                   </span>
@@ -1035,40 +1203,29 @@ export function ReceiptFlowDialog({
               ))}
             </div>
 
-            <div className="draft-lines-heading">
-              <div>
-                <h3>Product lines</h3>
-                <p>Optional. Keep the lines we found, or save the totals without them.</p>
-              </div>
-              <div className="draft-lines-actions">
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={addReceiptSummaryLine}
-                  disabled={!draft.subtotal.trim()}
-                >
-                  Save totals only
-                </button>
+            <details className="receipt-lines-disclosure">
+              <summary>
+                {values.items.length
+                  ? `Review ${values.items.length} product lines (optional)`
+                  : "Add product lines (optional)"}
+              </summary>
+              <p>
+                Totals are enough to save an accurate trip. Product lines improve the item-level comparison and catalog only after you confirm them.
+              </p>
+              <div className="draft-lines-heading">
                 <button
                   type="button"
                   className="add-button"
-                  onClick={() =>
-                    setDraft((current) => ({ ...current, items: [...current.items, blankLine()] }))
-                  }
+                  onClick={() => {
+                    cancelReceiptOcr();
+                    setDraft((current) => ({ ...current, items: [...current.items, blankLine()] }));
+                  }}
                 >
                   + Add line
                 </button>
               </div>
-            </div>
-            {!values.items.length ? (
-              <p className="receipt-summary-help">
-                No reliable product lines found. You can still save this as an exact
-                totals-only receipt; item-level comparison will wait for a clearer receipt.
-              </p>
-            ) : null}
-
-            <div className="draft-lines">
-              {draft.items.map((item, index) => (
+              <div className="draft-lines">
+                {draft.items.map((item, index) => (
                 <div className="draft-line" key={item.clientId}>
                   <span className="draft-line-number" aria-hidden="true">{index + 1}</span>
                   <label className="draft-item-number">
@@ -1109,8 +1266,9 @@ export function ReceiptFlowDialog({
                     ×
                   </button>
                 </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </details>
 
             <div
               className={`reconciliation-card ${canFinalize ? "trusted" : "needs-review"}`}

@@ -226,6 +226,9 @@ export const receiptTransactions = sqliteTable(
       table.purchasedAt
     ),
     index("receipt_transactions_trip_idx").on(table.tripId),
+    uniqueIndex("receipt_transactions_household_trip_photo_unique")
+      .on(table.householdId, table.tripId)
+      .where(sql`source_type = 'receipt_photo'`),
   ]
 );
 
@@ -425,6 +428,128 @@ export const receiptUploads = sqliteTable(
   ]
 );
 
+/**
+ * The durable record for an uploaded receipt before it becomes a confirmed
+ * receipt transaction. The current household flow does not enqueue jobs yet;
+ * this table is the migration-safe boundary required before asynchronous
+ * extraction, semantic parsing, or notifications are introduced.
+ */
+export const receiptIngestions = sqliteTable(
+  "receipt_ingestions",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    requestedByMemberId: text("requested_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    clientRequestId: text("client_request_id").notNull(),
+    sourceStorageKey: text("source_storage_key").notNull(),
+    sourceSha256: text("source_sha256"),
+    sourceContentType: text("source_content_type").notNull(),
+    sourceByteSize: integer("source_byte_size").notNull(),
+    status: text("status", {
+      enum: [
+        "uploaded",
+        "queued",
+        "extracting",
+        "classifying",
+        "reconciling",
+        "awaiting_review",
+        "complete",
+        "failed",
+        "cancelled",
+      ],
+    })
+      .notNull()
+      .default("uploaded"),
+    revision: integer("revision").notNull().default(1),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    workflowInstanceId: text("workflow_instance_id"),
+    provider: text("provider"),
+    model: text("model"),
+    promptVersion: text("prompt_version"),
+    schemaVersion: text("schema_version"),
+    extractionArtifactKey: text("extraction_artifact_key"),
+    receiptTransactionId: text("receipt_transaction_id").references(
+      () => receiptTransactions.id,
+      { onDelete: "set null" }
+    ),
+    errorCode: text("error_code"),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    uniqueIndex("receipt_ingestions_household_client_request_unique").on(
+      table.householdId,
+      table.clientRequestId
+    ),
+    uniqueIndex("receipt_ingestions_source_storage_key_unique").on(
+      table.sourceStorageKey
+    ),
+    index("receipt_ingestions_household_status_idx").on(
+      table.householdId,
+      table.status,
+      table.updatedAt
+    ),
+    index("receipt_ingestions_trip_idx").on(table.tripId),
+    index("receipt_ingestions_receipt_idx").on(table.receiptTransactionId),
+  ]
+);
+
+/**
+ * An idempotent, recipient-specific delivery record. A trip report is only
+ * sent after confirmed receipt evidence; retries must never resend it merely
+ * because a Worker execution was resumed.
+ */
+export const emailOutbox = sqliteTable(
+  "email_outbox",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    recipientMemberId: text("recipient_member_id")
+      .notNull()
+      .references(() => householdMembers.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["trip_summary"] })
+      .notNull()
+      .default("trip_summary"),
+    dedupeKey: text("dedupe_key").notNull(),
+    status: text("status", {
+      enum: ["queued", "sending", "sent", "failed", "unknown", "cancelled"],
+    })
+      .notNull()
+      .default("queued"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    providerMessageId: text("provider_message_id"),
+    lastErrorCode: text("last_error_code"),
+    lockedAt: text("locked_at"),
+    sentAt: text("sent_at"),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("email_outbox_dedupe_key_unique").on(table.dedupeKey),
+    index("email_outbox_household_status_idx").on(
+      table.householdId,
+      table.status,
+      table.updatedAt
+    ),
+    index("email_outbox_trip_idx").on(table.tripId),
+    index("email_outbox_recipient_idx").on(table.recipientMemberId),
+  ]
+);
+
 export const productAliases = sqliteTable(
   "product_aliases",
   {
@@ -544,6 +669,8 @@ export const reviewQuestions = sqliteTable(
       { onDelete: "set null" }
     ),
     answeredAt: text("answered_at"),
+    answerClaimToken: text("answer_claim_token"),
+    answerClaimedAt: text("answer_claimed_at"),
     createdAt: text("created_at").notNull().default(timestampDefault),
     updatedAt: text("updated_at").notNull().default(timestampDefault),
   },
@@ -572,6 +699,8 @@ export type Feedback = typeof feedback.$inferSelect;
 export type TripIntentSnapshot = typeof tripIntentSnapshots.$inferSelect;
 export type TripIntentItem = typeof tripIntentItems.$inferSelect;
 export type ReceiptUpload = typeof receiptUploads.$inferSelect;
+export type ReceiptIngestion = typeof receiptIngestions.$inferSelect;
+export type EmailOutbox = typeof emailOutbox.$inferSelect;
 export type ProductAlias = typeof productAliases.$inferSelect;
 export type TripItemMatch = typeof tripItemMatches.$inferSelect;
 export type ReviewQuestion = typeof reviewQuestions.$inferSelect;

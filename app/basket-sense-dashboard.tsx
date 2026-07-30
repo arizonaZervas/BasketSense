@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CSSProperties,
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
   useCallback,
@@ -1416,6 +1417,7 @@ function ThisWeekTab({
   >(null);
   const [estimateDraft, setEstimateDraft] = useState("");
   const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [showListComplete, setShowListComplete] = useState(false);
   const estimateReturnFocus = useRef<HTMLButtonElement | null>(null);
   const estimateReturnItemId = useRef<string | null>(null);
   const quickItemRef = useRef<HTMLInputElement>(null);
@@ -1425,6 +1427,7 @@ function ThisWeekTab({
     id: string;
     status: TripStatus;
   } | null>(null);
+  const previousRemainingItemCount = useRef<number | null>(null);
   const trip = household?.currentTrip;
   const tripId = trip?.id ?? null;
   const tripStatus = trip?.status ?? null;
@@ -1589,6 +1592,19 @@ function ThisWeekTab({
   }, [tripId, tripStatus]);
 
   useEffect(() => {
+    if (!shoppingStarted) {
+      previousRemainingItemCount.current = null;
+      setShowListComplete(false);
+      return;
+    }
+    const previous = previousRemainingItemCount.current;
+    if (previous !== null && previous > 0 && activeIncluded.length === 0 && checkedIncluded.length) {
+      setShowListComplete(true);
+    }
+    previousRemainingItemCount.current = activeIncluded.length;
+  }, [activeIncluded.length, checkedIncluded.length, shoppingStarted]);
+
+  useEffect(() => {
     if (!showCatalogResults || !activeCatalogProduct) return;
     document
       .getElementById(`catalog-option-${activeCatalogProduct.id}`)
@@ -1660,8 +1676,8 @@ function ThisWeekTab({
   ) {
     event.preventDefault();
     const parsed = parseManualEstimateDollars(estimateDraft);
-    if (parsed.error) {
-      setEstimateError(parsed.error);
+    if (parsed.error || parsed.cents === null) {
+      setEstimateError(parsed.error ?? "Enter a valid estimated package price.");
       return;
     }
     const saved = await onSetEstimate(item, parsed.cents);
@@ -1972,6 +1988,27 @@ function ThisWeekTab({
 
       <div className="week-layout">
         <div className="weekly-list-stack">
+          {showListComplete ? (
+            <section className="shopping-complete" role="status" aria-live="polite">
+              <div className="shopping-complete-confetti" aria-hidden="true">
+                {Array.from({ length: 14 }, (_, index) => (
+                  <span key={index} style={{ "--confetti-index": index } as CSSProperties} />
+                ))}
+              </div>
+              <span className="shopping-complete-mark" aria-hidden="true">✓</span>
+              <div>
+                <strong>List complete — nice work.</strong>
+                <p>Everything on the active list is checked off. Enjoy the samples.</p>
+              </div>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setShowListComplete(false)}
+              >
+                Dismiss
+              </button>
+            </section>
+          ) : null}
           <section className="list-card card" aria-labelledby="active-list-title">
             <div className="list-section-heading active-list-heading">
               <div>
@@ -2019,7 +2056,7 @@ function ThisWeekTab({
                       data-list-item-location="active"
                     >
                       <div
-                        className={`list-row included ${item.checked ? "checked" : ""}`}
+                        className={`list-row included ${item.checked ? "checked" : ""} ${shoppingStarted ? "" : "planning-row"}`}
                       >
                         {shoppingStarted ? (
                           <button
@@ -2031,9 +2068,7 @@ function ThisWeekTab({
                           >
                             <span aria-hidden="true">{item.checked ? "✓" : ""}</span>
                           </button>
-                        ) : (
-                          <span className="active-list-mark" aria-hidden="true">✓</span>
-                        )}
+                        ) : null}
                         <div className="list-row-copy">
                           <strong>{item.label}</strong>
                           {!shoppingStarted ? (

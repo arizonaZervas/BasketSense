@@ -344,7 +344,7 @@ export function DataHealthExplorer() {
   );
 }
 
-function Queue({ title, count, empty, children }: { title: string; count: number; empty: ReactNode }) {
+function Queue({ title, count, empty, children }: { title: string; count: number; empty: ReactNode; children: ReactNode }) {
   return (
     <section className="review-queue">
       <div><h3>{title}</h3><strong>{count}</strong></div>
