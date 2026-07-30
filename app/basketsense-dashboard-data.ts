@@ -418,6 +418,34 @@ function buildProductCategories(
     ),
   } as const;
 
+  const warehouseTransactions = transactions.filter(
+    (transaction) => transaction.channel === "warehouse",
+  );
+  const warehouseMerchandiseCents = warehouseTransactions.reduce(
+    (sum, transaction) => sum + transaction.merchandiseSubtotalCents,
+    0,
+  );
+  const warehouseTaxCents = warehouseTransactions.reduce(
+    (sum, transaction) => sum + transaction.taxCents,
+    0,
+  );
+  const representedWarehouseMerchandiseCents = [...warehouseCategoryAmounts.values()]
+    .reduce((sum, amount) => sum + amount, 0);
+  const unrepresentedWarehouseMerchandiseCents =
+    warehouseMerchandiseCents - representedWarehouseMerchandiseCents;
+
+  // A reconciled receipt total remains trustworthy even when one of its item
+  // lines is unavailable to the product catalog. Keep that remainder visible
+  // as needs-review evidence instead of making the entire household dashboard
+  // unreadable.
+  if (unrepresentedWarehouseMerchandiseCents !== 0) {
+    warehouseCategoryAmounts.set(
+      "needs_review",
+      (warehouseCategoryAmounts.get("needs_review") ?? 0) +
+        unrepresentedWarehouseMerchandiseCents,
+    );
+  }
+
   const productCategories = PRODUCT_CATEGORY_PRESENTATION.map(
     (presentation): DashboardProductCategory => {
       if (
@@ -452,17 +480,6 @@ function buildProductCategories(
     },
   );
 
-  const warehouseTransactions = transactions.filter(
-    (transaction) => transaction.channel === "warehouse",
-  );
-  const warehouseMerchandiseCents = warehouseTransactions.reduce(
-    (sum, transaction) => sum + transaction.merchandiseSubtotalCents,
-    0,
-  );
-  const warehouseTaxCents = warehouseTransactions.reduce(
-    (sum, transaction) => sum + transaction.taxCents,
-    0,
-  );
   const needsReviewWarehouseCents =
     warehouseCategoryAmounts.get("needs_review") ?? 0;
   const classifiedWarehouseCents = [...warehouseCategoryAmounts.entries()]
@@ -480,9 +497,10 @@ function buildProductCategories(
         (line) =>
           transactionById.get(line.transactionId)?.channel === "warehouse",
       )
-      .reduce((sum, line) => sum + line.netAmountCents, 0),
+      .reduce((sum, line) => sum + line.netAmountCents, 0) +
+      unrepresentedWarehouseMerchandiseCents,
     warehouseMerchandiseCents,
-    "warehouse receipt lines to merchandise subtotal",
+    "warehouse receipt lines plus needs-review remainder to merchandise subtotal",
   );
   assertEqual(
     productCategories.reduce(

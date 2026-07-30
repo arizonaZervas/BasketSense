@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildDashboardViewData } from "../app/basketsense-dashboard-data.ts";
+import {
+  buildDashboardViewData,
+  buildDashboardViewDataFromHistory,
+} from "../app/basketsense-dashboard-data.ts";
 import { mergeHouseholdProductMetadata } from "../app/dashboard-product-metadata.ts";
 
 test("product history keeps friendly names and gross, discount, and paid amounts", () => {
@@ -84,5 +87,30 @@ test("household metadata changes labels and categories without rewriting old rec
   assert.equal(
     merged.classifiedWarehouseCents + merged.needsReviewWarehouseCents,
     viewData.classifiedWarehouseCents + viewData.needsReviewWarehouseCents,
+  );
+});
+
+test("a missing catalog line stays visible as needs-review evidence", () => {
+  const source = buildDashboardViewData();
+  const omittedLine = source.receiptLines.find(
+    (line) => line.transactionId === source.latestWarehouseTransaction.id,
+  );
+  assert.ok(omittedLine);
+
+  const viewData = buildDashboardViewDataFromHistory({
+    through: source.audit.through,
+    reconciliationIssueCount: 1,
+    transactions: source.transactions,
+    receiptLines: source.receiptLines.filter((line) => line.id !== omittedLine.id),
+  });
+
+  assert.equal(
+    viewData.classifiedWarehouseCents + viewData.needsReviewWarehouseCents,
+    source.transactions
+      .filter((transaction) => transaction.channel === "warehouse")
+      .reduce((sum, transaction) => sum + transaction.merchandiseSubtotalCents, 0),
+  );
+  assert.ok(
+    viewData.needsReviewWarehouseCents >= source.needsReviewWarehouseCents + omittedLine.netAmountCents,
   );
 });
