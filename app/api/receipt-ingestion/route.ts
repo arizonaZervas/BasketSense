@@ -155,8 +155,8 @@ async function ensureIngestionSchema(db: D1Database) {
 async function authorizeTrip(db: D1Database, email: string, tripId: string) {
   const row = await db
     .prepare(
-      `SELECT trips.household_id AS household_id, household_members.id AS member_id,
-              trips.id AS trip_id
+      `SELECT trips.household_id AS householdId, household_members.id AS memberId,
+              trips.id AS tripId
        FROM trips
        INNER JOIN household_members
          ON household_members.household_id = trips.household_id
