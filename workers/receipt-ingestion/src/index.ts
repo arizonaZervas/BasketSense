@@ -37,6 +37,10 @@ type TripReportRow = {
   subtotal_cents: number | null;
   tax_cents: number | null;
   discount_cents: number | null;
+  planned_item_count: number;
+  matched_item_count: number;
+  extra_item_count: number;
+  discounted_item_count: number;
   recipient_email: string;
   recipient_name: string;
 };
@@ -224,7 +228,7 @@ async function queueTripReports(db: D1Database, tripId: string) {
         trip.household_id,
         trip.id,
         member.id,
-        `trip-summary:${trip.id}:${member.id}:v1`,
+        `trip-summary:${trip.id}:${member.id}:v2`,
         now,
         now,
       )
@@ -233,7 +237,8 @@ async function queueTripReports(db: D1Database, tripId: string) {
   return db
     .prepare(
       `SELECT id FROM email_outbox
-       WHERE trip_id = ? AND kind = 'trip_summary' AND status = 'queued'`
+       WHERE trip_id = ? AND kind = 'trip_summary' AND status = 'queued'
+         AND dedupe_key LIKE 'trip-summary:%:v2'`
     )
     .bind(trip.id)
     .all<{ id: string }>();
@@ -263,6 +268,21 @@ async function loadTripReport(db: D1Database, outbox: OutboxRow) {
               trip_intent_snapshots.estimated_total_cents,
               receipt_transactions.total_cents, receipt_transactions.subtotal_cents,
               receipt_transactions.tax_cents, receipt_transactions.discount_cents,
+              (SELECT COUNT(*) FROM trip_intent_items
+               WHERE trip_intent_items.trip_id = trips.id
+                 AND trip_intent_items.included = 1) AS planned_item_count,
+              (SELECT COUNT(*) FROM trip_item_matches
+               WHERE trip_item_matches.trip_id = trips.id
+                 AND trip_item_matches.receipt_transaction_id = receipt_transactions.id) AS matched_item_count,
+              (SELECT COUNT(*) FROM receipt_items
+               LEFT JOIN trip_item_matches
+                 ON trip_item_matches.receipt_item_id = receipt_items.id
+               WHERE receipt_items.receipt_transaction_id = receipt_transactions.id
+                 AND receipt_items.is_return = 0
+                 AND trip_item_matches.id IS NULL) AS extra_item_count,
+              (SELECT COUNT(*) FROM receipt_items
+               WHERE receipt_items.receipt_transaction_id = receipt_transactions.id
+                 AND receipt_items.discount_cents > 0) AS discounted_item_count,
               household_members.user_email AS recipient_email,
               household_members.display_name AS recipient_name
        FROM trips
@@ -282,37 +302,70 @@ async function loadTripReport(db: D1Database, outbox: OutboxRow) {
     .first<TripReportRow>();
 }
 
-function reportMessage(report: TripReportRow) {
+function reportMessage(report: TripReportRow, appUrl: string) {
   const variance =
     report.estimated_total_cents === null || report.total_cents === null
       ? null
       : report.total_cents - report.estimated_total_cents;
-  const subject = `Good Cart Day: your ${report.scheduled_for} Costco trip`;
+  const subject = "BasketSense: your Costco replay is ready";
   const varianceLine =
     variance === null
       ? "There was no frozen estimate to compare this trip."
-      : `${variance >= 0 ? "Difference" : "Under estimate"}: ${cents(Math.abs(variance))}.`;
+      : variance === 0
+        ? "Checkout landed exactly on the saved estimate."
+        : `${variance > 0 ? "Checkout ran over" : "Checkout came in under"} the saved estimate by ${cents(Math.abs(variance))}.`;
+  const recapUrl = `${appUrl.replace(/\/$/, "")}/recap`;
   const text = [
     `Hi ${report.recipient_name},`,
     "",
-    `Your Costco receipt is confirmed for ${report.scheduled_for}.`,
-    `Actual total: ${cents(report.total_cents)}.`,
-    `Frozen list estimate: ${cents(report.estimated_total_cents)}.`,
+    `Your ${report.scheduled_for} Costco replay is ready.`,
+    `Checkout: ${cents(report.total_cents)} · saved plan: ${cents(report.estimated_total_cents)}.`,
     varianceLine,
-    `Merchandise subtotal: ${cents(report.subtotal_cents)} · tax: ${cents(report.tax_cents)} · discounts: ${cents(report.discount_cents)}.`,
+    `${report.matched_item_count} of ${report.planned_item_count} planned items matched the receipt. ${report.extra_item_count} pickup${report.extra_item_count === 1 ? "" : "s"} went beyond the saved list.`,
+    report.discounted_item_count
+      ? `${report.discounted_item_count} item${report.discounted_item_count === 1 ? "" : "s"} had a receipt discount, saving ${cents(report.discount_cents)}.`
+      : `Receipt discounts: ${cents(report.discount_cents)}.`,
     "",
-    "Open Good Cart Day to review the item-level bridge and any questions still worth answering.",
+    `Open your private BasketSense recap: ${recapUrl}`,
   ].join("\n");
-  const html = `<p>Hi ${escapeHtml(report.recipient_name)},</p>
-<p>Your Costco receipt is confirmed for <strong>${escapeHtml(report.scheduled_for)}</strong>.</p>
-<ul>
-  <li>Actual total: <strong>${cents(report.total_cents)}</strong></li>
-  <li>Frozen list estimate: <strong>${cents(report.estimated_total_cents)}</strong></li>
-  <li>${escapeHtml(varianceLine)}</li>
-  <li>Merchandise subtotal: ${cents(report.subtotal_cents)} · tax: ${cents(report.tax_cents)} · discounts: ${cents(report.discount_cents)}</li>
-</ul>
-<p>Open Good Cart Day to review the item-level bridge and any questions still worth answering.</p>`;
+  const html = `<div style="background:#f5f8f4;padding:28px 16px;font-family:Arial,sans-serif;color:#173326">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:20px;padding:28px;border:1px solid #d8e5d9">
+    <p style="margin:0 0 8px;color:#4b7d59;font-weight:700">BasketSense · latest trip recap</p>
+    <h1 style="margin:0 0 16px;font-size:30px;line-height:1.1">Plan → checkout</h1>
+    <p>Hi ${escapeHtml(report.recipient_name)}, your <strong>${escapeHtml(report.scheduled_for)}</strong> Costco replay is ready.</p>
+    <table role="presentation" width="100%" style="border-collapse:separate;border-spacing:8px 0;margin:20px -8px"><tr>
+      <td style="width:50%;padding:16px;background:#eff7ef;border-radius:12px"><span style="color:#567060;font-size:12px">SAVED PLAN</span><br><strong style="font-size:24px">${cents(report.estimated_total_cents)}</strong></td>
+      <td style="width:50%;padding:16px;background:#173326;color:#ffffff;border-radius:12px"><span style="color:#c7dfcc;font-size:12px">CHECKOUT</span><br><strong style="font-size:24px">${cents(report.total_cents)}</strong></td>
+    </tr></table>
+    <p style="margin:20px 0 8px;font-weight:700">${escapeHtml(varianceLine)}</p>
+    <ul style="padding-left:20px;line-height:1.6">
+      <li>${report.matched_item_count} of ${report.planned_item_count} planned items matched.</li>
+      <li>${report.extra_item_count} pickup${report.extra_item_count === 1 ? "" : "s"} beyond the saved list.</li>
+      <li>${report.discounted_item_count} discounted item${report.discounted_item_count === 1 ? "" : "s"} · ${cents(report.discount_cents)} saved.</li>
+    </ul>
+    <p style="margin:24px 0 0"><a href="${escapeHtml(recapUrl)}" style="display:inline-block;background:#8bc9a1;color:#102117;text-decoration:none;padding:14px 18px;border-radius:10px;font-weight:700">Open private recap</a></p>
+    <p style="margin:18px 0 0;color:#607365;font-size:13px">The detailed item cards and any useful follow-ups stay inside your private BasketSense household.</p>
+  </div>
+</div>`;
   return { subject, text, html };
+}
+
+async function startQueuedTripReports(env: Env) {
+  const queued = await env.DB
+    .prepare(
+      `SELECT id FROM email_outbox
+       WHERE kind = 'trip_summary' AND status = 'queued'
+         AND dedupe_key LIKE 'trip-summary:%:v2'
+       ORDER BY created_at ASC
+       LIMIT 50`,
+    )
+    .all<{ id: string }>();
+  await Promise.all(
+    queued.results.map((entry) =>
+      env.TRIP_REPORT.create({ params: { outboxId: entry.id } }),
+    ),
+  );
+  return queued.results.length;
 }
 
 async function markOutboxSent(db: D1Database, outboxId: string, messageId: string | null) {
@@ -406,12 +459,12 @@ export class TripReportWorkflow extends WorkflowEntrypoint<Env> {
       const message = await step.do("build trip summary", async () => {
         const report = await loadTripReport(this.env.DB, outbox);
         if (!report) throw new Error("Trip report no longer has confirmed household evidence");
-        return { report, message: reportMessage(report) };
+        return { report, message: reportMessage(report, this.env.APP_URL) };
       });
       const delivery = await step.do("send trip summary", () =>
         this.env.EMAIL.send({
           to: message.report.recipient_email,
-          from: { email: this.env.EMAIL_FROM, name: "Good Cart Day" },
+          from: { email: this.env.EMAIL_FROM, name: "BasketSense" },
           subject: message.message.subject,
           text: message.message.text,
           html: message.message.html,
@@ -477,5 +530,9 @@ export default {
       }
     }
     return response({ error: "Not found" }, 404);
+  },
+
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(startQueuedTripReports(env));
   },
 } satisfies ExportedHandler<Env>;

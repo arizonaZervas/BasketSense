@@ -4613,7 +4613,64 @@ async function finalizeReceipt(
   if (!closedLoop) {
     throw new ApiError(500, "Unable to finalize the receipt");
   }
+  await queueCompletedTripRecaps(db, context, receipt.trip_id);
   return receiptMutationResponse(closedLoop);
+}
+
+// Receipt finalization is the single trusted completion event. Queue one
+// delivery per current household member here; the receipt worker claims and
+// sends the rows asynchronously, so closing a trip never waits on email.
+async function queueCompletedTripRecaps(
+  db: D1Database,
+  context: HouseholdContext,
+  tripId: string | null,
+) {
+  if (!tripId) return;
+  const trip = await db
+    .prepare(
+      `SELECT trips.id, trips.household_id
+       FROM trips
+       INNER JOIN receipt_transactions
+         ON receipt_transactions.trip_id = trips.id
+       WHERE trips.id = ?
+         AND trips.household_id = ?
+         AND trips.status = 'completed'
+         AND receipt_transactions.source_type = 'receipt_photo'
+         AND receipt_transactions.parse_status = 'reconciled'
+       LIMIT 1`,
+    )
+    .bind(tripId, context.household.id)
+    .first<{ id: string; household_id: string }>();
+  if (!trip) return;
+
+  const members = await db
+    .prepare(
+      `SELECT id FROM household_members
+       WHERE household_id = ? AND TRIM(user_email) <> ''`,
+    )
+    .bind(trip.household_id)
+    .all<{ id: string }>();
+  const now = nowIso();
+  const inserts = members.results.map((member) =>
+    db
+      .prepare(
+        `INSERT INTO email_outbox (
+          id, household_id, trip_id, recipient_member_id, kind, dedupe_key,
+          status, attempt_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'trip_summary', ?, 'queued', 0, ?, ?)
+        ON CONFLICT(dedupe_key) DO NOTHING`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        trip.household_id,
+        trip.id,
+        member.id,
+        `trip-summary:${trip.id}:${member.id}:v2`,
+        now,
+        now,
+      ),
+  );
+  if (inserts.length) await db.batch(inserts);
 }
 
 async function followingPlanningTrip(

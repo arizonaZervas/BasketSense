@@ -2158,6 +2158,17 @@ test("only a finalized trip receipt can change official totals, and one trip can
       await handleHouseholdGet(householdRequest(email), db),
     );
     assert.notDeepEqual(afterFinalization.dashboard, before);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM email_outbox
+           WHERE trip_id = ? AND kind = 'trip_summary'
+             AND dedupe_key LIKE 'trip-summary:%:v2'`,
+        )
+        .get(tripId).count,
+      1,
+      "Completing a trusted receipt queues one automatic recap for the household member",
+    );
 
     const completedEdit = await handleHouseholdPatch(
       householdRequest(email, "PATCH", {

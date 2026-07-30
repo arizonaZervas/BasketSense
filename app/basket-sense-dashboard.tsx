@@ -145,6 +145,7 @@ type BasketSenseDashboardProps = {
   user: DashboardUser;
   viewData: DashboardViewData;
   signOutHref: string;
+  initialTab?: Tab;
 };
 
 const primaryTabs = [
@@ -379,8 +380,9 @@ export function BasketSenseDashboard({
   user,
   viewData,
   signOutHref,
+  initialTab = "week",
 }: BasketSenseDashboardProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("week");
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [household, setHousehold] = useState<HouseholdSnapshot | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [syncError, setSyncError] = useState<string | null>(null);

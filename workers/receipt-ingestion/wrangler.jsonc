@@ -13,7 +13,8 @@
       "vars": {
         "ENVIRONMENT": "staging",
         "GEMINI_MODEL": "gemini-3.5-flash-lite",
-        "EMAIL_FROM": "receipts@goodcartday.com"
+        "EMAIL_FROM": "receipts@goodcartday.com",
+        "APP_URL": "https://basket-sense-household.nysha-enterp-3913.chatgpt.site"
       },
       "d1_databases": [
         {
@@ -46,7 +47,10 @@
           "name": "EMAIL",
           "allowed_sender_addresses": ["receipts@goodcartday.com"]
         }
-      ]
+      ],
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      }
     }
   }
 }
