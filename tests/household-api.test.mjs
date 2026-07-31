@@ -2166,8 +2166,8 @@ test("only a finalized trip receipt can change official totals, and one trip can
              AND dedupe_key LIKE 'trip-summary:%:v2'`,
         )
         .get(tripId).count,
-      1,
-      "Completing a trusted receipt queues one automatic recap for the household member",
+      0,
+      "Completing a trusted receipt leaves the recap available in the private app without queueing email",
     );
 
     const completedEdit = await handleHouseholdPatch(
