@@ -8,19 +8,37 @@ a guilt-heavy budgeting exercise.
 
 ## What it does today
 
-- Maintains one shared mobile-friendly Saturday list for two household members.
-- Suggests recurring essentials and “check first” items using explainable
-  purchase-cadence rules.
-- Lets either spouse add, remove, check off, freeze, and undo a shopping plan.
-- Captures a frozen pre-trip snapshot so planned-versus-actual claims have
-  evidence behind them.
-- Uploads private receipt photos, supports OCR/manual correction, reconciles
-  arithmetic, and preserves raw Costco receipt descriptions.
-- Matches purchased receipt lines against frozen intent with deterministic,
-  reviewable rules.
-- Creates at most three evidence-triggered review questions after a trip.
-- Supports interactive product, transaction, category, and receipt drill-downs.
-- Offers accessible light, dark, and system theme modes.
+- Maintains one private, mobile-friendly Saturday list for the household. Both
+  members can plan together; the list refreshes while visible so warehouse
+  changes reach the other phone quickly.
+- Suggests recurring essentials and “check first” items using conservative,
+  explainable purchase-cadence rules. Suggestions are optional—not purchases
+  BasketSense assumes the household needs.
+- Lets either member add, estimate, remove, check off, freeze for shopping, and
+  return to planning before receipt evidence is attached.
+- Captures a frozen pre-trip intent snapshot so planned-versus-actual language
+  has evidence behind it, then finalizes the trip only after the receipt is
+  reviewed.
+- Uploads private receipt photos and Costco PDFs, supports Gemini-assisted OCR
+  when configured, accepts manual correction, checks receipt arithmetic, and
+  preserves raw Costco receipt wording.
+- Matches receipt lines to the frozen list with strong text rules, conservative
+  suggestions, and household-confirmed aliases. A confirmation teaches the
+  household’s own wording for future receipts rather than guessing silently.
+- Records item totals using the amount actually paid after Costco discounts;
+  receipt, recap, and flash-card UI labels that amount as “Paid”.
+- Creates at most three evidence-triggered review questions after a trip and
+  turns confirmed answers into reusable household context.
+- Offers interactive product, transaction, category, receipt, and Data Health
+  drill-downs. The Data Health view is owner-only.
+- Provides an in-app recap at `/recap` plus the Recap destination in the
+  private dashboard. Automatic outgoing recap e-mail is intentionally disabled.
+- Provides an owner-only disposable test sandbox at `/?sandbox=1`. Sandbox
+  receipts, lists, recaps, and review answers stay separate from shared
+  household history. Finalized sandbox tests can be reopened for retesting;
+  shared-history receipts remain immutable.
+- Offers accessible light, dark, and system theme modes, including an optional
+  reduced-motion completion state and a full-page completion confetti burst.
 
 ## The product loop
 
@@ -47,9 +65,14 @@ Important conventions:
 - Quantity is stored in thousandths, so fractional fuel quantities remain exact.
 - A `trip` is the planning event; a `receipt_transaction` is a financial event.
 - The live list is mutable; a frozen intent snapshot is immutable evidence.
+- Completed shared trips and their receipts are immutable. That protects
+  historical totals and recap facts. The owner-only sandbox is the deliberate
+  exception for repeatable testing.
 - Receipt images live in private R2 object storage. Searchable metadata and
   normalized line items live in D1.
 - Draft or rejected receipts never silently alter “actual” spending metrics.
+- The private app is separate from Good Cart Day. Never reuse or expose this
+  household’s D1, R2, credentials, or access policy there.
 
 ## Architecture
 
@@ -78,6 +101,17 @@ Receipt totals and line items do not become household actuals until a household
 member confirms the draft. Without the Gemini secret, the upload still succeeds
 and the manual totals flow remains available.
 
+### Recaps and asynchronous ingestion
+
+The private app serves recaps directly at `/recap`; this is the currently
+supported recap delivery path. Do not enable automatic e-mail recaps unless a
+BasketSense-specific, approved Cloudflare Email Sending sender exists and the
+owner explicitly authorizes the Worker configuration.
+
+`workers/receipt-ingestion/` contains the separate asynchronous receipt
+extraction Worker and its workflow definition. Keep its configuration scoped to
+BasketSense; it must never use Good Cart Day resources or sender identities.
+
 ## Run locally
 
 Requirements: Node.js 22.13 or newer.
@@ -90,7 +124,8 @@ npm run dev
 Useful checks:
 
 ```bash
-npm test
+npm run build
+node --import tsx --test tests/household-api.test.mjs tests/receipt-logic.test.mjs tests/dashboard-data.test.mjs tests/rendered-html.test.mjs
 npm run lint
 npm run db:generate
 ```
@@ -108,6 +143,9 @@ The local development runtime persists D1 and R2 emulator state under
 - [Product backlog](docs/product-backlog.md) — the D1 dashboard migration,
   recommendation-engine direction, and data-ownership work.
 - [Product principles](PRODUCT.md) — the household-first product contract.
+- [Assistant handoff](docs/assistant-handoff.md) — current deployment and
+  scope context for the next Codex chat. Update it when a material deployment,
+  integration, or product decision changes.
 
 ## Privacy
 
@@ -119,6 +157,7 @@ sign-in.
 ## Project status
 
 This is a working private household product, not a generic public shopping app.
-The next major product direction is a recommendation engine that scores the
-whole eligible product catalog conservatively, with explicit household controls
-and offline backtesting before it changes the live list.
+The current focus is keeping the shared list and receipt learning loop reliable
+and reviewable. Future recommendation work must score the eligible catalog
+conservatively, preserve explicit household controls, and be offline-tested
+before it changes the live list.
