@@ -146,6 +146,7 @@ type BasketSenseDashboardProps = {
   viewData: DashboardViewData;
   signOutHref: string;
   initialTab?: Tab;
+  sandboxMode?: boolean;
 };
 
 const primaryTabs = [
@@ -381,6 +382,7 @@ export function BasketSenseDashboard({
   viewData,
   signOutHref,
   initialTab = "week",
+  sandboxMode = false,
 }: BasketSenseDashboardProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [household, setHousehold] = useState<HouseholdSnapshot | null>(null);
@@ -538,10 +540,13 @@ export function BasketSenseDashboard({
         setSyncStatus((status) => (status === "shared" ? "refreshing" : "connecting"));
       }
       try {
-        const response = await fetchHousehold("/api/household", {
+        const response = await fetchHousehold(
+          sandboxMode ? "/api/household?sandbox=1" : "/api/household",
+          {
           headers: { Accept: "application/json" },
           cache: "no-store",
-        });
+          },
+        );
         const body = (await response.json().catch(() => null)) as unknown;
         if (!response.ok) {
           throw new Error(
@@ -566,7 +571,7 @@ export function BasketSenseDashboard({
 
     refreshPromise.current = refresh;
     return refresh;
-  }, [fetchHousehold]);
+  }, [fetchHousehold, sandboxMode]);
 
   const refreshHouseholdList = useCallback(
     async (tripId: string) => {
@@ -577,7 +582,7 @@ export function BasketSenseDashboard({
       const refresh = (async () => {
         try {
           const response = await fetchHousehold(
-            `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}`,
+            `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}${sandboxMode ? "&sandbox=1" : ""}`,
             {
               headers: { Accept: "application/json" },
               cache: "no-store",
@@ -630,7 +635,7 @@ export function BasketSenseDashboard({
       listRefreshPromise.current = refresh;
       return refresh;
     },
-    [fetchHousehold, refreshHousehold],
+    [fetchHousehold, refreshHousehold, sandboxMode],
   );
 
   useEffect(() => {
@@ -815,7 +820,9 @@ export function BasketSenseDashboard({
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(request.body),
+        body: JSON.stringify(
+          sandboxMode ? { ...request.body, sandbox: true } : request.body,
+        ),
       });
       const body = (await response.json().catch(() => null)) as unknown;
       if (!response.ok) {
@@ -1094,7 +1101,7 @@ export function BasketSenseDashboard({
     effectiveViewData.audit.through,
   );
   const visibleTabs =
-    household?.currentUser.role === "owner"
+    household?.currentUser.role === "owner" && !sandboxMode
       ? [...primaryTabs, dataHealthTab]
       : primaryTabs;
 
@@ -1155,13 +1162,18 @@ export function BasketSenseDashboard({
               </>
             )}
             <span>
-              <strong>Our household</strong>
+              <strong>{sandboxMode ? "Owner test sandbox" : "Our household"}</strong>
               <small>Connected as {visibleUser.displayName}</small>
             </span>
           </div>
           <button className="text-button" onClick={openDataDialog}>
             Data &amp; privacy
           </button>
+          {household?.currentUser.role === "owner" ? (
+            <a className="text-button" href={sandboxMode ? "/" : "/?sandbox=1"}>
+              {sandboxMode ? "Leave test sandbox" : "Receipt test sandbox"}
+            </a>
+          ) : null}
           <a className="text-button sign-out-link" href={signOutHref}>
             Sign out
           </a>
@@ -1169,6 +1181,12 @@ export function BasketSenseDashboard({
       </aside>
 
       <main className="main-canvas">
+        {sandboxMode ? (
+          <div className="test-mode-banner" role="status">
+            <strong>Owner-only receipt test sandbox</strong>
+            <span>Test receipts and finalized trips stay separate from shared household history and totals.</span>
+          </div>
+        ) : null}
         <header className="topbar">
           <div className="topbar-context">
             <span className="mobile-kicker">BasketSense</span>
@@ -1320,7 +1338,7 @@ export function BasketSenseDashboard({
           />
         ) : null}
 
-        {activeTab === "data" && household?.currentUser.role === "owner" ? (
+        {activeTab === "data" && household?.currentUser.role === "owner" && !sandboxMode ? (
           <DataHealthExplorer />
         ) : null}
       </main>
@@ -1365,6 +1383,7 @@ export function BasketSenseDashboard({
           await refreshHousehold(true, true);
         }}
         onOpenReview={openTripReview}
+        sandboxMode={sandboxMode}
       />
 
       <div className="live-region" aria-live="polite" aria-atomic="true">

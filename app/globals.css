@@ -418,6 +418,22 @@ summary:focus-visible,
   margin-left: var(--sidebar);
 }
 
+.test-mode-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--warning-border);
+  background: var(--surface-warning);
+  color: var(--ink);
+  padding: 10px clamp(22px, 4vw, 56px);
+  font-size: 13px;
+}
+
+.test-mode-banner strong {
+  white-space: nowrap;
+}
+
 .topbar {
   position: sticky;
   top: 0;
@@ -3681,6 +3697,13 @@ button.price-point:hover {
 
   .main-canvas {
     margin-left: 0;
+  }
+
+  .test-mode-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+    padding: 9px 16px;
   }
 
   .topbar {

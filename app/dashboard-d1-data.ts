@@ -48,6 +48,57 @@ type DashboardReceiptLineRow = {
   tax_status: string;
 };
 
+function emptyDashboardViewData(): DashboardViewData {
+  // A fresh owner test sandbox deliberately starts without audited receipts.
+  // Keep that absence visible instead of borrowing the real household's
+  // historical view merely to satisfy dashboard presentation requirements.
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    audit: {
+      through: today,
+      householdFundedCents: 0,
+      grossReceiptTotalCents: 0,
+      externalFundingCents: 0,
+      transactionCount: 0,
+      warehouseTransactionCount: 0,
+      gasTransactionCount: 0,
+      opticalTransactionCount: 0,
+      averageWarehouseCents: 0,
+      reconciliationIssueCount: 0,
+    },
+    months: [],
+    channels: [
+      { key: "warehouse", label: "Warehouse", color: "var(--sage)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
+      { key: "gas", label: "Gas", color: "var(--apricot)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
+      { key: "optical", label: "Optical out-of-pocket", color: "var(--lilac)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
+    ],
+    productCategories: [],
+    warehouseTaxCents: 0,
+    classifiedWarehouseCents: 0,
+    needsReviewWarehouseCents: 0,
+    transactions: [],
+    receiptLines: [],
+    recentTransactions: [],
+    products: [],
+    suggestions: [],
+    suggestionPlanDate: today,
+    latestWarehouseTransaction: {
+      id: "empty-dashboard",
+      purchasedOn: today,
+      channel: "warehouse",
+      itemCount: 0,
+      receiptTotalCents: 0,
+      householdFundedCents: 0,
+      discountCents: 0,
+      merchandiseSubtotalCents: 0,
+      taxCents: 0,
+      externalFundingCents: 0,
+      sourceType: "receipt_photo",
+      auditFlag: "none",
+    },
+  };
+}
+
 function dashboardChannel(
   transactionType: DashboardTransactionRow["transaction_type"],
 ): DashboardTransaction["channel"] {
@@ -222,7 +273,7 @@ export async function buildDashboardViewDataFromD1(
 
   const through = transactions.at(0)?.purchasedOn;
   if (!through) {
-    throw new Error("Dashboard cannot render without a reconciled transaction");
+    return emptyDashboardViewData();
   }
 
   return buildDashboardViewDataFromHistory({

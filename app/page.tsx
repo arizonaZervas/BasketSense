@@ -28,15 +28,22 @@ export const metadata: Metadata = {
   },
 };
 
-export default async function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ sandbox?: string | string[] }>;
+}) {
   const user = await requireChatGPTUser("/");
   const viewData = buildDashboardViewData();
+  const params = await searchParams;
+  const sandboxMode = params.sandbox === "1";
 
   return (
     <BasketSenseDashboard
       user={{ displayName: user.displayName, email: user.email }}
       viewData={viewData}
       signOutHref={chatGPTSignOutPath("/")}
+      sandboxMode={sandboxMode}
     />
   );
 }

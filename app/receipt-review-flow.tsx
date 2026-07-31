@@ -578,6 +578,7 @@ export function ReceiptFlowDialog({
   onClose,
   onRefresh,
   onOpenReview,
+  sandboxMode = false,
 }: {
   open: boolean;
   initialStep?: ReceiptStep;
@@ -587,6 +588,7 @@ export function ReceiptFlowDialog({
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onOpenReview: () => void;
+  sandboxMode?: boolean;
 }) {
   const [step, setStep] = useState<ReceiptStep>(initialStep);
   const [workingClosedLoop, setWorkingClosedLoop] =
@@ -665,7 +667,7 @@ export function ReceiptFlowDialog({
     const readStatus = async () => {
       try {
         const response = await fetchWithTimeout(
-          `/api/receipt-ingestion?id=${encodeURIComponent(receiptIngestionId)}`,
+          `/api/receipt-ingestion?id=${encodeURIComponent(receiptIngestionId)}${sandboxMode ? "&sandbox=1" : ""}`,
           { method: "GET" },
           12_000,
         );
@@ -873,6 +875,7 @@ export function ReceiptFlowDialog({
       form.append("file", uploadFile);
       form.append("tripId", tripId);
       form.append("clientRequestId", clientId());
+      if (sandboxMode) form.append("sandbox", "1");
       const response = await fetchWithTimeout(
         "/api/receipt-ingestion",
         { method: "POST", body: form },
@@ -977,6 +980,7 @@ export function ReceiptFlowDialog({
     const form = new FormData();
     form.append("receiptId", savedReceiptId);
     form.append("file", receiptFile);
+    if (sandboxMode) form.append("sandbox", "1");
     try {
       const response = await fetchWithTimeout("/api/receipt-photo", {
         method: "POST",
@@ -1014,6 +1018,7 @@ export function ReceiptFlowDialog({
           action: "link_receipt",
           ingestionId: receiptIngestionId,
           receiptId: savedReceiptId,
+          sandbox: sandboxMode,
         }),
       });
       await responseJson(response, "The receipt record was saved, but its private file needs a retry.");
@@ -1056,6 +1061,7 @@ export function ReceiptFlowDialog({
           receiptId,
           tripId,
           purchasedAt: draft.purchasedOn,
+          sandbox: sandboxMode,
           ...values,
         }),
       });
@@ -1084,7 +1090,11 @@ export function ReceiptFlowDialog({
         const finalizeResponse = await fetchWithTimeout("/api/household", {
           method: "PATCH",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "finalize_receipt", receiptId: savedReceiptId }),
+          body: JSON.stringify({
+            action: "finalize_receipt",
+            receiptId: savedReceiptId,
+            sandbox: sandboxMode,
+          }),
         });
         const finalizedBody = await responseJson(
           finalizeResponse,

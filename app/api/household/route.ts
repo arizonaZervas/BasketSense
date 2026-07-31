@@ -59,6 +59,12 @@ export const dynamic = "force-dynamic";
 const HOUSEHOLD_ID = "household_basketsense";
 const HOUSEHOLD_SLUG = "basket-sense-household";
 const HOUSEHOLD_NAME = "BasketSense household";
+// This is deliberately a second household record in the existing private D1
+// database, not a new Cloudflare resource. It is never seeded with the shared
+// household's audited history and has exactly one member: the current owner.
+const SANDBOX_HOUSEHOLD_ID = "household_basketsense_owner_sandbox";
+const SANDBOX_HOUSEHOLD_SLUG = "basket-sense-owner-sandbox";
+const SANDBOX_HOUSEHOLD_NAME = "BasketSense owner-only test sandbox";
 const HOUSEHOLD_TIME_ZONE = "America/Los_Angeles";
 const PRODUCT_CATALOG_REVISION = "audited-2026-07-18-v2";
 
@@ -1370,6 +1376,131 @@ async function bootstrapHousehold(
   await seedSaturdayList(db, currentTrip, now);
 
   return { household, member, currentTrip };
+}
+
+async function bootstrapOwnerSandbox(
+  db: D1Database,
+  user: AuthenticatedUser
+): Promise<HouseholdContext> {
+  // Establish authority from the real shared household first. The sandbox does
+  // not grant access merely because someone knows its URL or identifier.
+  const primaryContext = await bootstrapHousehold(db, user);
+  requireHouseholdOwner(primaryContext);
+
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO households (
+        id, slug, name, time_zone, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(slug) DO NOTHING`
+    )
+    .bind(
+      SANDBOX_HOUSEHOLD_ID,
+      SANDBOX_HOUSEHOLD_SLUG,
+      SANDBOX_HOUSEHOLD_NAME,
+      HOUSEHOLD_TIME_ZONE,
+      now,
+      now
+    )
+    .run();
+
+  const household = await db
+    .prepare(`SELECT * FROM households WHERE slug = ? LIMIT 1`)
+    .bind(SANDBOX_HOUSEHOLD_SLUG)
+    .first<HouseholdRow>();
+  if (!household) throw new ApiError(500, "Unable to initialize the test sandbox");
+
+  await db
+    .prepare(
+      `INSERT INTO household_members (
+        id, household_id, user_email, display_name, role, created_at, last_seen_at
+      ) VALUES (?, ?, ?, ?, 'owner', ?, ?)
+      ON CONFLICT(household_id, user_email) DO UPDATE SET
+        display_name = excluded.display_name,
+        last_seen_at = excluded.last_seen_at`
+    )
+    .bind(
+      crypto.randomUUID(),
+      household.id,
+      user.email,
+      user.displayName,
+      now,
+      now
+    )
+    .run();
+
+  const member = await db
+    .prepare(
+      `SELECT * FROM household_members
+       WHERE household_id = ? AND user_email = ?
+       LIMIT 1`
+    )
+    .bind(household.id, user.email)
+    .first<MemberRow>();
+  if (!member) throw new ApiError(500, "Unable to initialize the test sandbox owner");
+
+  let currentTrip = await db
+    .prepare(
+      `SELECT * FROM trips
+       WHERE household_id = ? AND status IN ('planning', 'frozen')
+       ORDER BY scheduled_for ASC, created_at ASC
+       LIMIT 1`
+    )
+    .bind(household.id)
+    .first<TripRow>();
+
+  if (!currentTrip) {
+    let scheduledFor = nextSaturday(household.time_zone);
+    const latestCompleted = await db
+      .prepare(
+        `SELECT scheduled_for FROM trips
+         WHERE household_id = ? AND status = 'completed'
+         ORDER BY scheduled_for DESC
+         LIMIT 1`
+      )
+      .bind(household.id)
+      .first<{ scheduled_for: string }>();
+    if (latestCompleted?.scheduled_for && latestCompleted.scheduled_for >= scheduledFor) {
+      scheduledFor = saturdayAfter(latestCompleted.scheduled_for);
+    }
+
+    await db
+      .prepare(
+        `INSERT INTO trips (
+          id, household_id, scheduled_for, status, created_by_member_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, 'planning', ?, ?, ?)
+        ON CONFLICT(household_id, scheduled_for) DO NOTHING`
+      )
+      .bind(crypto.randomUUID(), household.id, scheduledFor, member.id, now, now)
+      .run();
+
+    currentTrip = await db
+      .prepare(
+        `SELECT * FROM trips
+         WHERE household_id = ? AND scheduled_for = ?
+           AND status IN ('planning', 'frozen')
+         LIMIT 1`
+      )
+      .bind(household.id, scheduledFor)
+      .first<TripRow>();
+  }
+
+  if (!currentTrip) throw new ApiError(500, "Unable to initialize the test sandbox trip");
+  return { household, member, currentTrip };
+}
+
+function sandboxRequested(value: unknown) {
+  return value === true || value === "1";
+}
+
+async function requestHouseholdContext(
+  db: D1Database,
+  user: AuthenticatedUser,
+  sandbox: boolean
+) {
+  return sandbox ? bootstrapOwnerSandbox(db, user) : bootstrapHousehold(db, user);
 }
 
 function memberSummary(row: MemberRow): HouseholdMemberSummary {
@@ -5313,12 +5444,21 @@ export async function handleHouseholdGet(
     // full DDL batch here can contend with those refreshes on cold isolates.
     await ensureReadableSchema(db);
     const url = new URL(request.url);
+    const sandbox = sandboxRequested(url.searchParams.get("sandbox"));
     if (url.searchParams.get("scope") === "list") {
       const tripId = optionalId(url.searchParams.get("tripId"), "tripId");
-      const context = await readExistingHouseholdContext(db, user, tripId);
+      const context = sandbox
+        ? await requestHouseholdContext(db, user, true)
+        : await readExistingHouseholdContext(db, user, tripId);
+      if (tripId && context.currentTrip.id !== tripId) {
+        // requestHouseholdContext only returns the current sandbox trip. Keep
+        // an explicit ownership check for polling a historical sandbox trip.
+        const authorized = await authorizedTrip(db, context.household.id, tripId);
+        return json(await readHouseholdListState(db, { ...context, currentTrip: authorized }));
+      }
       return json(await readHouseholdListState(db, context));
     }
-    const context = await bootstrapHousehold(db, user);
+    const context = await requestHouseholdContext(db, user, sandbox);
     const view = url.searchParams.get("view");
     if (view === "data-health") {
       return json(await readDataHealth(db, context));
@@ -5347,7 +5487,7 @@ export async function handleHouseholdPost(
     const user = authenticatedUser(request);
     const body = await requestBody(request);
     await ensureReadableSchema(db);
-    const context = await bootstrapHousehold(db, user);
+    const context = await requestHouseholdContext(db, user, sandboxRequested(body.sandbox));
     const action = body.action as HouseholdPostRequest["action"] | undefined;
 
     if (action === "add_list_item") {
@@ -5377,7 +5517,7 @@ export async function handleHouseholdPatch(
     const user = authenticatedUser(request);
     const body = await requestBody(request);
     await ensureReadableSchema(db);
-    const context = await bootstrapHousehold(db, user);
+    const context = await requestHouseholdContext(db, user, sandboxRequested(body.sandbox));
     const action = body.action as HouseholdPatchRequest["action"] | undefined;
 
     if (action === "set_item_included") {

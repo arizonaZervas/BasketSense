@@ -271,6 +271,113 @@ test("Data Health is owner-only, household-scoped, and exportable without a SQL 
   }
 });
 
+test("owner-only test sandbox is isolated from shared history and inaccessible to the second member", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const owner = "sandbox-owner@example.test";
+    const member = "sandbox-member@example.test";
+    const shared = await responseJson(
+      await handleHouseholdGet(householdRequest(owner), db),
+    );
+    const sandbox = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(owner, "GET", undefined, "?sandbox=1"),
+        db,
+      ),
+    );
+
+    assert.equal(sandbox.household.name, "BasketSense owner-only test sandbox");
+    assert.notEqual(sandbox.household.id, shared.household.id);
+    assert.equal(sandbox.members.length, 1);
+    assert.equal(sandbox.members[0].email, owner);
+    assert.equal(sandbox.dashboard.transactions.length, 0);
+    assert.ok(shared.dashboard.transactions.length > 0);
+
+    const added = await handleHouseholdPost(
+      householdRequest(owner, "POST", {
+        action: "add_list_item",
+        sandbox: true,
+        tripId: sandbox.currentTrip.id,
+        label: "Sandbox-only receipt test item",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(added.status, 201);
+
+    const sharedAfter = await responseJson(
+      await handleHouseholdGet(householdRequest(owner), db),
+    );
+    assert.ok(
+      !sharedAfter.listItems.some((item) => item.label === "Sandbox-only receipt test item"),
+    );
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "freeze_trip",
+            sandbox: true,
+            tripId: sandbox.currentTrip.id,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const draft = await responseJson(
+      await handleHouseholdPost(
+        householdRequest(owner, "POST", {
+          action: "ingest_receipt_draft",
+          sandbox: true,
+          clientDraftId: "sandbox-finalized-receipt",
+          tripId: sandbox.currentTrip.id,
+          purchasedAt: "2026-07-25T10:30:00-07:00",
+          subtotalCents: 1000,
+          taxCents: 0,
+          totalCents: 1000,
+          discountCents: 0,
+          captureMode: "totals_only",
+          items: [],
+        }),
+        db,
+      ),
+    );
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "finalize_receipt",
+            sandbox: true,
+            receiptId: draft.receiptId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const sharedAfterFinalization = await responseJson(
+      await handleHouseholdGet(householdRequest(owner), db),
+    );
+    assert.deepEqual(
+      sharedAfterFinalization.dashboard,
+      sharedAfter.dashboard,
+      "Finalizing a sandbox receipt must not change shared totals or flash cards",
+    );
+
+    await handleHouseholdGet(householdRequest(member), db);
+    const denied = await handleHouseholdGet(
+      householdRequest(member, "GET", undefined, "?sandbox=1"),
+      db,
+    );
+    assert.equal(denied.status, 403);
+  } finally {
+    db.close();
+  }
+});
+
 test("product metadata migration upgrades an existing catalog safely", () => {
   const db = new D1DatabaseAdapter();
   try {
