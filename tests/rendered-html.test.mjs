@@ -142,17 +142,21 @@ test("keeps sandbox review answers in the owner-only test household", async () =
   assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
 });
 
-test("uses a slow, viewport-wide completion celebration", async () => {
+test("uses a dense, center-origin completion celebration", async () => {
   const dashboardSource = await readFile(
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
   );
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(dashboardSource, /Array\.from\(\{ length: 32 \}/);
+  assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
+  assert.match(dashboardSource, /shoppingCompleteConfettiStyle/);
   assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
-  assert.match(styles, /animation: shopping-confetti 2600ms/);
-  assert.match(styles, /translate3d\(0, 120vh, 0\)/);
+  assert.match(styles, /left: 50vw;/);
+  assert.match(styles, /top: 50dvh;/);
+  assert.match(styles, /animation: shopping-confetti-burst 2100ms/);
+  assert.match(styles, /var\(--blast-x\)/);
+  assert.match(styles, /var\(--blast-y\)/);
 });
 
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {

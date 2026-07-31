@@ -158,6 +158,19 @@ const primaryTabs = [
 
 const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
 
+function shoppingCompleteConfettiStyle(index: number): CSSProperties {
+  // The golden-angle spread gives every burst a full viewport of distinct,
+  // deterministic trajectories without a hydration-unsafe random value.
+  const angle = ((index * 137.508) % 360) * (Math.PI / 180);
+  const distance = 44 + (index % 5) * 13;
+  return {
+    "--confetti-index": index,
+    "--blast-x": Math.cos(angle) * distance,
+    "--blast-y": Math.sin(angle) * distance,
+    "--confetti-size": 6 + (index % 4) * 2,
+  } as CSSProperties;
+}
+
 const THEME_STORAGE_KEY = "basketsense-color-theme";
 
 const currency = new Intl.NumberFormat("en-US", {
@@ -2043,14 +2056,10 @@ function ThisWeekTab({
           {showListComplete ? (
             <section className="shopping-complete" role="status" aria-live="polite">
               <div className="shopping-complete-confetti" aria-hidden="true">
-                {Array.from({ length: 32 }, (_, index) => (
+                {Array.from({ length: 120 }, (_, index) => (
                   <span
                     key={index}
-                    style={{
-                      "--confetti-index": index,
-                      "--confetti-lane": index % 16,
-                      "--confetti-wave": Math.floor(index / 16),
-                    } as CSSProperties}
+                    style={shoppingCompleteConfettiStyle(index)}
                   />
                 ))}
               </div>
