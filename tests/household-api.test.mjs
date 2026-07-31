@@ -367,6 +367,89 @@ test("owner-only test sandbox is isolated from shared history and inaccessible t
       "Finalizing a sandbox receipt must not change shared totals or flash cards",
     );
 
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "reopen_sandbox_trip",
+            sandbox: true,
+            tripId: sandbox.currentTrip.id,
+            receiptId: draft.receiptId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const reopened = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(owner, "GET", undefined, "?sandbox=1"),
+        db,
+      ),
+    );
+    assert.equal(reopened.currentTrip.id, sandbox.currentTrip.id);
+    assert.equal(reopened.currentTrip.status, "planning");
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "reopen_sandbox_trip",
+            tripId: reopened.currentTrip.id,
+            receiptId: draft.receiptId,
+          }),
+          db,
+        )
+      ).status,
+      403,
+      "The shared household route cannot reopen a sandbox receipt",
+    );
+    assert.equal(
+      (
+        await handleHouseholdPost(
+          householdRequest(owner, "POST", {
+            action: "add_list_item",
+            sandbox: true,
+            tripId: reopened.currentTrip.id,
+            label: "Added after reopening the test",
+            source: "manual",
+            section: "essentials",
+            included: true,
+          }),
+          db,
+        )
+      ).status,
+      201,
+      "The reopened sandbox list accepts changes",
+    );
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "freeze_trip",
+            sandbox: true,
+            tripId: reopened.currentTrip.id,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", {
+            action: "update_receipt_draft",
+            sandbox: true,
+            receiptId: draft.receiptId,
+            totalCents: 1000,
+          }),
+          db,
+        )
+      ).status,
+      200,
+      "The reopened sandbox receipt can be edited again",
+    );
+
     await handleHouseholdGet(householdRequest(member), db);
     const denied = await handleHouseholdGet(
       householdRequest(member, "GET", undefined, "?sandbox=1"),

@@ -484,6 +484,11 @@ export type HouseholdPatchRequest =
       tripId: string;
     }
   | {
+      action: "reopen_sandbox_trip";
+      tripId: string;
+      receiptId: string;
+    }
+  | {
       action: "update_receipt_draft";
       receiptId: string;
       purchasedAt?: string;

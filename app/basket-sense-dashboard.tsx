@@ -1054,6 +1054,24 @@ export function BasketSenseDashboard({
     });
   }
 
+  async function reopenSandboxTrip(receiptId: string, tripId: string) {
+    const reopened = await performWrite("reopen-sandbox-trip", {
+      method: "PATCH",
+      body: {
+        action: "reopen_sandbox_trip",
+        receiptId,
+        tripId,
+      },
+      successMessage: "Sandbox test reopened — update the list, start shopping, then recheck the receipt",
+    });
+    if (reopened) {
+      setIsReceiptFlowOpen(false);
+      setActiveTab("week");
+      window.scrollTo({ top: 0 });
+    }
+    return reopened;
+  }
+
   async function copyList() {
     const included = household?.listItems.filter((item) => item.included) ?? [];
     const text = included
@@ -1384,6 +1402,7 @@ export function BasketSenseDashboard({
         }}
         onOpenReview={openTripReview}
         sandboxMode={sandboxMode}
+        onReopenSandboxTrip={reopenSandboxTrip}
       />
 
       <div className="live-region" aria-live="polite" aria-atomic="true">

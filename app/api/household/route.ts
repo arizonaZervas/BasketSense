@@ -3290,6 +3290,69 @@ async function unfreezeTrip(
   });
 }
 
+async function reopenSandboxTrip(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  if (context.household.id !== SANDBOX_HOUSEHOLD_ID || context.member.role !== "owner") {
+    throw new ApiError(403, "Only the owner can reopen a disposable test trip");
+  }
+
+  const tripId = requiredString(body.tripId, "tripId", 128);
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const trip = await authorizedTrip(db, context.household.id, tripId);
+  const receipt = await authorizedReceipt(db, context.household.id, receiptId);
+  if (trip.status !== "completed" || receipt.trip_id !== trip.id || receipt.source_type !== "receipt_photo") {
+    throw new ApiError(409, "Only a completed sandbox receipt can be reopened for testing");
+  }
+
+  // This is intentionally limited to the owner-only disposable household. It
+  // restores a needs-review receipt and its trip so the list and receipt can be
+  // changed, then finalized again, without weakening shared-history immutability.
+  const now = nowIso();
+  await db.batch([
+    db.prepare(`DELETE FROM trip_item_matches WHERE household_id = ? AND trip_id = ?`)
+      .bind(context.household.id, trip.id),
+    db.prepare(`DELETE FROM review_questions WHERE household_id = ? AND trip_id = ?`)
+      .bind(context.household.id, trip.id),
+    db.prepare(`DELETE FROM trip_intent_snapshots WHERE trip_id = ?`)
+      .bind(trip.id),
+    db.prepare(
+      `UPDATE trip_list_items
+       SET source = CASE WHEN source = 'in_store' THEN 'manual' ELSE source END,
+           checked = 0, included_at_freeze = NULL, added_after_freeze = 0,
+           updated_at = ?
+       WHERE trip_id = ?`,
+    ).bind(now, trip.id),
+    db.prepare(
+      `UPDATE receipt_transactions
+       SET parse_status = 'needs_review',
+           audit_flag = CASE WHEN item_count = 0
+             THEN 'closed_loop_totals_only_draft'
+             ELSE 'closed_loop_draft'
+           END,
+           updated_at = ?
+       WHERE id = ? AND household_id = ?`,
+    ).bind(now, receipt.id, context.household.id),
+    db.prepare(
+      `UPDATE trips
+       SET status = 'planning', frozen_at = NULL, completed_at = NULL,
+           estimated_list_total_at_freeze_cents = NULL,
+           estimated_priced_item_count_at_freeze = NULL,
+           estimated_unpriced_item_count_at_freeze = NULL,
+           updated_at = ?
+       WHERE id = ? AND household_id = ? AND status = 'completed'`,
+    ).bind(now, trip.id, context.household.id),
+  ]);
+
+  const reopenedTrip = await authorizedTrip(db, context.household.id, trip.id);
+  if (reopenedTrip.status !== "planning") {
+    throw new ApiError(409, "This sandbox trip could not be reopened");
+  }
+  return json({ trip: tripSummary(reopenedTrip), reopened: true });
+}
+
 interface ValidatedDraftItem {
   sourceLineNumber: number;
   costcoItemNumber: string | null;
@@ -5531,6 +5594,9 @@ export async function handleHouseholdPatch(
     }
     if (action === "unfreeze_trip") {
       return await unfreezeTrip(db, context, body);
+    }
+    if (action === "reopen_sandbox_trip") {
+      return await reopenSandboxTrip(db, context, body);
     }
     if (action === "update_receipt_draft") {
       return await updateReceiptDraft(db, context, body);

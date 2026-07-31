@@ -579,6 +579,7 @@ export function ReceiptFlowDialog({
   onRefresh,
   onOpenReview,
   sandboxMode = false,
+  onReopenSandboxTrip,
 }: {
   open: boolean;
   initialStep?: ReceiptStep;
@@ -589,6 +590,7 @@ export function ReceiptFlowDialog({
   onRefresh: () => Promise<void>;
   onOpenReview: () => void;
   sandboxMode?: boolean;
+  onReopenSandboxTrip?: (receiptId: string, tripId: string) => Promise<boolean>;
 }) {
   const [step, setStep] = useState<ReceiptStep>(initialStep);
   const [workingClosedLoop, setWorkingClosedLoop] =
@@ -1119,6 +1121,23 @@ export function ReceiptFlowDialog({
     }
   }
 
+  async function reopenSandboxTest() {
+    const receipt = workingClosedLoop?.receipt;
+    if (!receipt?.id || !receipt.tripId || !onReopenSandboxTrip) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const reopened = await onReopenSandboxTrip(receipt.id, receipt.tripId);
+      if (!reopened) throw new Error("The sandbox test could not be reopened.");
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : "The sandbox test could not be reopened.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const planningWithoutFreeze = tripStatus === "planning";
   const receiptStored = Boolean(receiptId);
 
@@ -1460,6 +1479,16 @@ export function ReceiptFlowDialog({
               <button type="button" className="text-button" onClick={() => setStep("capture")}>
                 Back
               </button>
+              {sandboxMode && workingClosedLoop?.receipt?.id && workingClosedLoop.receipt.tripId ? (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={saving}
+                  onClick={() => void reopenSandboxTest()}
+                >
+                  Reopen this test
+                </button>
+              ) : null}
               {!canFinalize ? (
                 <button
                   type="button"
@@ -1529,6 +1558,16 @@ export function ReceiptFlowDialog({
               </div>
             ) : null}
             <div className="receipt-flow-actions end">
+              {sandboxMode && workingClosedLoop?.receipt?.id && workingClosedLoop.receipt.tripId ? (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={saving}
+                  onClick={() => void reopenSandboxTest()}
+                >
+                  Reopen this test
+                </button>
+              ) : null}
               <button type="button" className="secondary-button" onClick={() => setStep("check")}>
                 Recheck receipt
               </button>
