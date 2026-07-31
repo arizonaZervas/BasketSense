@@ -2748,23 +2748,25 @@ button.price-point:hover {
 }
 
 .shopping-complete-confetti {
-  position: absolute;
+  position: fixed;
   inset: 0;
+  z-index: 30;
+  overflow: hidden;
   pointer-events: none;
 }
 
 .shopping-complete-confetti span {
   position: absolute;
-  left: calc(6% + (var(--confetti-index) * 6.7%));
-  top: -10px;
-  width: 7px;
-  height: 11px;
+  left: calc(2% + (var(--confetti-lane) * 6.35%));
+  top: calc(-10vh - (var(--confetti-wave) * 16vh));
+  width: 8px;
+  height: 12px;
   border-radius: 2px;
   background: var(--apricot);
   opacity: 0;
   transform: rotate(calc(var(--confetti-index) * 21deg));
-  animation: shopping-confetti 620ms cubic-bezier(0.25, 1, 0.5, 1) both;
-  animation-delay: calc(var(--confetti-index) * 18ms);
+  animation: shopping-confetti 2600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--confetti-index) * 70ms);
 }
 
 .shopping-complete-confetti span:nth-child(3n) { background: var(--forest); }
@@ -2772,9 +2774,10 @@ button.price-point:hover {
 .shopping-complete-confetti span:nth-child(3n + 2) { background: var(--warning-ink); }
 
 @keyframes shopping-confetti {
-  0% { opacity: 0; transform: translateY(-8px) rotate(0deg); }
-  18% { opacity: 1; }
-  100% { opacity: 0; transform: translateY(84px) rotate(210deg); }
+  0% { opacity: 0; transform: translate3d(0, -8px, 0) rotate(0deg); }
+  12% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(0, 120vh, 0) rotate(420deg); }
 }
 
 .suggestion-dot {

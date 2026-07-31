@@ -1349,6 +1349,7 @@ export function BasketSenseDashboard({
           <ReviewTab
             closedLoop={closedLoop}
             connected={Boolean(household) && syncStatus !== "offline"}
+            sandboxMode={sandboxMode}
             onOpenReceipt={(step) => openReceiptFlow(step, "latest")}
             onRefresh={async () => {
               await refreshHousehold(true, true);
@@ -2042,8 +2043,15 @@ function ThisWeekTab({
           {showListComplete ? (
             <section className="shopping-complete" role="status" aria-live="polite">
               <div className="shopping-complete-confetti" aria-hidden="true">
-                {Array.from({ length: 14 }, (_, index) => (
-                  <span key={index} style={{ "--confetti-index": index } as CSSProperties} />
+                {Array.from({ length: 32 }, (_, index) => (
+                  <span
+                    key={index}
+                    style={{
+                      "--confetti-index": index,
+                      "--confetti-lane": index % 16,
+                      "--confetti-wave": Math.floor(index / 16),
+                    } as CSSProperties}
+                  />
                 ))}
               </div>
               <span className="shopping-complete-mark" aria-hidden="true">✓</span>
@@ -3695,11 +3703,13 @@ function ProductsTab({
 function ReviewTab({
   closedLoop,
   connected,
+  sandboxMode,
   onOpenReceipt,
   onRefresh,
 }: {
   closedLoop: ClosedLoopSnapshot | null;
   connected: boolean;
+  sandboxMode: boolean;
   onOpenReceipt: (step?: ReceiptStep) => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -3716,6 +3726,7 @@ function ReviewTab({
       <ClosedLoopReview
         closedLoop={closedLoop}
         connected={connected}
+        sandboxMode={sandboxMode}
         onOpenReceipt={onOpenReceipt}
         onRefresh={onRefresh}
       />

@@ -127,6 +127,34 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 
+test("keeps sandbox review answers in the owner-only test household", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const reviewSource = await readFile(
+    new URL("../app/receipt-review-flow.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(dashboardSource, /<ReviewTab[\s\S]*sandboxMode=\{sandboxMode\}/);
+  assert.match(dashboardSource, /<ClosedLoopReview[\s\S]*sandboxMode=\{sandboxMode\}/);
+  assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
+});
+
+test("uses a slow, viewport-wide completion celebration", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(dashboardSource, /Array\.from\(\{ length: 32 \}/);
+  assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
+  assert.match(styles, /animation: shopping-confetti 2600ms/);
+  assert.match(styles, /translate3d\(0, 120vh, 0\)/);
+});
+
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {
   const source = await readFile(
     new URL("../app/receipt-review-flow.tsx", import.meta.url),

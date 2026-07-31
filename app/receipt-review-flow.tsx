@@ -1928,11 +1928,13 @@ export function ExpectedActualBridge({
 export function ClosedLoopReview({
   closedLoop,
   connected,
+  sandboxMode = false,
   onOpenReceipt,
   onRefresh,
 }: {
   closedLoop?: ClosedLoopSnapshot | null;
   connected: boolean;
+  sandboxMode?: boolean;
   onOpenReceipt: (step?: ReceiptStep) => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -1993,6 +1995,7 @@ export function ClosedLoopReview({
           action: "answer_review_question",
           questionId: question.id,
           value,
+          ...(sandboxMode ? { sandbox: true } : {}),
           ...details,
         }),
       });
