@@ -1,0 +1,65 @@
+export type GeneratedProductIllustration = {
+  imageUrl: string;
+  alt: string;
+};
+
+const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
+  Record<string, GeneratedProductIllustration>
+> = {
+  "1550393": { imageUrl: "/product-illustrations/1550393.jpg", alt: "Illustration of an organic milk multipack" },
+  "720650": { imageUrl: "/product-illustrations/720650.jpg", alt: "Illustration of mini cucumbers" },
+  "2619": { imageUrl: "/product-illustrations/2619.jpg", alt: "Illustration of organic bananas" },
+  "7113": { imageUrl: "/product-illustrations/7113.jpg", alt: "Illustration of fresh lychee" },
+  "38742": { imageUrl: "/product-illustrations/38742.jpg", alt: "Illustration of sweet corn" },
+  "1465518": { imageUrl: "/product-illustrations/1465518.jpg", alt: "Illustration of ginger wellness shots" },
+  "1068083": { imageUrl: "/product-illustrations/1068083.jpg", alt: "Illustration of free-range eggs" },
+  "1344": { imageUrl: "/product-illustrations/1344.jpg", alt: "Illustration of Roma tomatoes" },
+  "2023727": { imageUrl: "/product-illustrations/2023727.jpg", alt: "Illustration of fruit and vegetable smoothie pouches" },
+  "57554": { imageUrl: "/product-illustrations/57554.jpg", alt: "Illustration of fresh blueberries" },
+  "289660": { imageUrl: "/product-illustrations/289660.jpg", alt: "Illustration of cottage cheese" },
+  "1935800": { imageUrl: "/product-illustrations/1935800.jpg", alt: "Illustration of pita bread" },
+  "2254": { imageUrl: "/product-illustrations/2254.jpg", alt: "Illustration of organic mandarins" },
+  "1851141": { imageUrl: "/product-illustrations/1851141.jpg", alt: "Illustration of a protein bar variety pack" },
+  "1985987": { imageUrl: "/product-illustrations/1985987.jpg", alt: "Illustration of superfruit gummy snacks" },
+  "1659424": { imageUrl: "/product-illustrations/1659424.jpg", alt: "Illustration of immune wellness shots" },
+  "1560969": { imageUrl: "/product-illustrations/1560969.jpg", alt: "Illustration of mini granola snack bites" },
+  "47825": { imageUrl: "/product-illustrations/47825.jpg", alt: "Illustration of green grapes" },
+  "1550956": { imageUrl: "/product-illustrations/1550956.jpg", alt: "Illustration of paneer cheese" },
+  "532683": { imageUrl: "/product-illustrations/532683.jpg", alt: "Illustration of fresh ginger root" },
+  "38175": { imageUrl: "/product-illustrations/38175.jpg", alt: "Illustration of Cara Cara oranges" },
+  "2064923": { imageUrl: "/product-illustrations/2064923.jpg", alt: "Illustration of cinnamon bagels" },
+  "9218": { imageUrl: "/product-illustrations/9218.jpg", alt: "Illustration of red onions" },
+  "2990": { imageUrl: "/product-illustrations/2990.jpg", alt: "Illustration of organic kids juice boxes" },
+  "1700118": { imageUrl: "/product-illustrations/1700118.jpg", alt: "Illustration of chocolate nut-butter cups" },
+  "1271446": { imageUrl: "/product-illustrations/1271446.jpg", alt: "Illustration of a Greek yogurt multipack" },
+  "7923": { imageUrl: "/product-illustrations/7923.jpg", alt: "Illustration of a large honey bottle" },
+  "1620332": { imageUrl: "/product-illustrations/1620332.jpg", alt: "Illustration of macaroni and cheese" },
+  "531860": { imageUrl: "/product-illustrations/531860.jpg", alt: "Illustration of dahi yogurt" },
+  "2534": { imageUrl: "/product-illustrations/2534.jpg", alt: "Illustration of fresh cherries" },
+  "1388332": { imageUrl: "/product-illustrations/1388332.jpg", alt: "Illustration of coconut wafer rolls" },
+  "2251987": { imageUrl: "/product-illustrations/2251987.jpg", alt: "Illustration of organic hummus" },
+  "1801": { imageUrl: "/product-illustrations/1801.jpg", alt: "Illustration of mandarins" },
+  "96716": { imageUrl: "/product-illustrations/96716.jpg", alt: "Illustration of organic spinach" },
+  "30669": { imageUrl: "/product-illustrations/30669.jpg", alt: "Illustration of bananas" },
+  "1935002": { imageUrl: "/product-illustrations/1935002.jpg", alt: "Illustration of training pants" },
+  "1485984": { imageUrl: "/product-illustrations/1485984.jpg", alt: "Illustration of chocolate protein shakes" },
+  "1725952": { imageUrl: "/product-illustrations/1725952.jpg", alt: "Illustration of premium laundry detergent" },
+  "1582922": { imageUrl: "/product-illustrations/1582922.jpg", alt: "Illustration of organic ghee" },
+  "1998317": { imageUrl: "/product-illustrations/1998317.jpg", alt: "Illustration of cookies-and-cream protein bars" },
+  "1995349": { imageUrl: "/product-illustrations/1995349.jpg", alt: "Illustration of organic cold-pressed juices" },
+  "891742": { imageUrl: "/product-illustrations/891742.jpg", alt: "Illustration of zero-sugar cola cans" },
+  "1920724": { imageUrl: "/product-illustrations/1920724.jpg", alt: "Illustration of pressed juice shots" },
+  "1617506": { imageUrl: "/product-illustrations/1617506.jpg", alt: "Illustration of organic cashews" },
+  "1172471": { imageUrl: "/product-illustrations/1172471.jpg", alt: "Illustration of Irish butter" },
+  "1471275": { imageUrl: "/product-illustrations/1471275.jpg", alt: "Illustration of a four-piece clothing set" },
+  "1966645": { imageUrl: "/product-illustrations/1966645.jpg", alt: "Illustration of crewneck sweatshirts" },
+  "5161251": { imageUrl: "/product-illustrations/5161251.jpg", alt: "Illustration of fresh-scent laundry beads" },
+  "1892398": { imageUrl: "/product-illustrations/1892398.jpg", alt: "Illustration of a smoothie multipack" },
+  "1879628": { imageUrl: "/product-illustrations/1879628.jpg", alt: "Illustration of elderberry-orange wellness gummies" },
+};
+
+export function generatedProductIllustration(
+  itemNumber: string | null | undefined,
+) {
+  return itemNumber ? GENERATED_PRODUCT_ILLUSTRATIONS[itemNumber] ?? null : null;
+}

@@ -25,6 +25,7 @@ import type {
   ProductPrimaryImageSummary,
 } from "./api/household/types";
 import { DataHealthExplorer } from "./data-health-explorer";
+import { generatedProductIllustration } from "./generated-product-illustrations";
 import {
   isProductCategoryKey,
   mergeHouseholdProductMetadata,
@@ -3648,6 +3649,7 @@ function ProductsTab({
   const catalogProduct = catalogProducts.find(
     (product) => product.costcoItemNumber === selected?.itemNumber,
   );
+  const selectedIllustration = generatedProductIllustration(selected?.itemNumber);
   const reviewFailure = catalogProduct
     ? failedWrites[`product-review-${catalogProduct.id}`]
     : undefined;
@@ -3754,6 +3756,14 @@ function ProductsTab({
   if (!selected) return null;
 
   const picturedProductCount = catalogProducts.filter((product) => product.image).length;
+  const illustratedProductCount = products.filter((product) => {
+    const approvedPhoto = catalogProducts.find(
+      (candidate) => candidate.costcoItemNumber === product.itemNumber,
+    )?.image;
+    return Boolean(
+      !approvedPhoto && generatedProductIllustration(product.itemNumber),
+    );
+  }).length;
   const candidateProductCount = catalogProducts.filter(
     (product) => !product.image && product.imageCandidateCount > 0,
   ).length;
@@ -3830,7 +3840,7 @@ function ProductsTab({
         <div className="product-image-library-copy">
           <strong>Image library</strong>
           <span>
-            {picturedProductCount} of {catalogProducts.length} products pictured
+            {picturedProductCount} verified photos · {illustratedProductCount} AI illustrations
             {candidateProductCount > 0
               ? ` · ${candidateProductCount} ready to review`
               : ""}
@@ -3861,7 +3871,8 @@ function ProductsTab({
             </small>
           ) : (
             <small>
-              Licensed matches stay in review until one of you confirms the package.
+              Verified photos take priority. AI illustrations are decorative and the
+              package may differ.
             </small>
           )}
         </div>
@@ -3895,6 +3906,9 @@ function ProductsTab({
             const rowCatalogProduct = catalogProducts.find(
               (candidate) => candidate.costcoItemNumber === product.itemNumber,
             );
+            const rowIllustration = generatedProductIllustration(product.itemNumber);
+            const rowImageUrl =
+              rowCatalogProduct?.image?.imageUrl ?? rowIllustration?.imageUrl;
             const rowListItem = rowCatalogProduct
               ? listItems.find((item) => item.productId === rowCatalogProduct.id)
               : undefined;
@@ -3921,11 +3935,11 @@ function ProductsTab({
                   }}
                 >
                   <span
-                    className={`product-initial ${rowCatalogProduct?.image ? "has-photo" : ""}`}
+                    className={`product-initial ${rowImageUrl ? "has-photo" : ""}`}
                     aria-hidden="true"
                   >
-                    {rowCatalogProduct?.image ? (
-                      <img src={rowCatalogProduct.image.imageUrl} alt="" loading="lazy" />
+                    {rowImageUrl ? (
+                      <img src={rowImageUrl} alt="" loading="lazy" />
                     ) : (
                       product.name.charAt(0)
                     )}
@@ -4016,13 +4030,25 @@ function ProductsTab({
           </button>
           <div className="product-detail-summary">
             <figure
-              className={`product-detail-image ${catalogProduct?.image ? "has-photo" : ""}`}
+              className={`product-detail-image ${
+                catalogProduct?.image || selectedIllustration ? "has-photo" : ""
+              }`}
             >
               {catalogProduct?.image ? (
                 <img
                   src={catalogProduct.image.imageUrl}
                   alt={`${productDisplayName(selected)} package`}
                 />
+              ) : selectedIllustration ? (
+                <>
+                  <img
+                    src={selectedIllustration.imageUrl}
+                    alt={selectedIllustration.alt}
+                  />
+                  <figcaption className="product-illustration-note">
+                    AI illustration · package may differ
+                  </figcaption>
+                </>
               ) : (
                 <>
                   <span aria-hidden="true">{productDisplayName(selected).charAt(0)}</span>
