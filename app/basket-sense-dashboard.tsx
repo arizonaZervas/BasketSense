@@ -2987,6 +2987,7 @@ function CategorySpendDonut({
   totalCents: number;
   onSelectCategory: (category: ProductCategoryKey) => void;
 }) {
+  const [hoveredCategory, setHoveredCategory] = useState<ProductCategoryKey | null>(null);
   const visibleCategories = categories.filter(
     (category) => category.householdViewCents > 0,
   );
@@ -3013,6 +3014,7 @@ function CategorySpendDonut({
       endAngle: startAngle + span - padding,
     };
   });
+  const hoveredSlice = slices.find(({ category }) => category.key === hoveredCategory);
   return (
     <div className="category-donut-explorer">
       <div className="category-donut-wrap">
@@ -3032,6 +3034,10 @@ function CategorySpendDonut({
               role="button"
               tabIndex={0}
               aria-label={`Open ${category.label}: ${currency.format(category.householdViewCents / 100)}, ${Math.round(share)}% of category merchandise`}
+              onPointerEnter={() => setHoveredCategory(category.key)}
+              onPointerLeave={() => setHoveredCategory(null)}
+              onFocus={() => setHoveredCategory(category.key)}
+              onBlur={() => setHoveredCategory(null)}
               onClick={() => onSelectCategory(category.key)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
@@ -3042,9 +3048,19 @@ function CategorySpendDonut({
             />
           ))}
         </svg>
-        <div className="category-donut-center" aria-hidden="true">
-          <span>Categories</span>
-          <strong>{currency.format(categoryTotalCents / 100)}</strong>
+        <div className="category-donut-center" aria-live="polite">
+          {hoveredSlice ? (
+            <>
+              <span>{hoveredSlice.category.shortLabel}</span>
+              <strong>{Math.round(hoveredSlice.share)}%</strong>
+              <small>{currency.format(hoveredSlice.category.householdViewCents / 100)}</small>
+            </>
+          ) : (
+            <>
+              <span>Categories</span>
+              <strong>{currency.format(categoryTotalCents / 100)}</strong>
+            </>
+          )}
         </div>
       </div>
 
