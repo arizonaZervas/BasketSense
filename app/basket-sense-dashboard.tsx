@@ -2584,18 +2584,29 @@ function SuggestionShelf({
                         data-list-item-location="ideas"
                       >
                         <div className="suggestion-copy">
-                          <strong>{item.label}</strong>
-                          <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                          <small>
-                            {[
-                              confidence,
-                              item.estimatedPriceCents === null
-                                ? "Price estimate unavailable"
-                                : `Latest regular price ~${currency.format(item.estimatedPriceCents / 100)}`,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </small>
+                          <ListItemThumbnail
+                            item={item}
+                            products={household.products}
+                          />
+                          <div className="suggestion-copy-body">
+                            <strong>{item.label}</strong>
+                            <details className="suggestion-evidence">
+                              <summary>Why this was suggested</summary>
+                              <p>
+                                {item.recommendationReason ?? sourceLabel(item.source)}
+                              </p>
+                              <small>
+                                {[
+                                  confidence,
+                                  item.estimatedPriceCents === null
+                                    ? "Price estimate unavailable"
+                                    : `Latest regular price ~${currency.format(item.estimatedPriceCents / 100)}`,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")}
+                              </small>
+                            </details>
+                          </div>
                         </div>
                         <button
                           type="button"

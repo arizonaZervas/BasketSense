@@ -3849,8 +3849,34 @@ button.price-point:hover {
   display: block;
 }
 
-.suggestion-copy p {
-  margin: 5px 0;
+.suggestion-copy {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.suggestion-copy-body {
+  min-width: 0;
+}
+
+.suggestion-evidence {
+  margin-top: 1px;
+}
+
+.suggestion-evidence summary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--forest);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.suggestion-evidence p {
+  margin: 0 0 4px;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
@@ -6689,7 +6715,7 @@ button.price-point:hover {
   bottom: 0;
   width: var(--week-hero-art-width);
   border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
-  background-image: url("/basketsense-social-card.png");
+  background-image: url("/basketsense-hero-art.png");
   background-repeat: no-repeat;
   background-position: 90% bottom;
   background-size: 700px auto;
