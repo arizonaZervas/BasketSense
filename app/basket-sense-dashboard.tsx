@@ -149,6 +149,8 @@ type BasketSenseDashboardProps = {
   sandboxMode?: boolean;
 };
 
+type ProductSort = "alphabetical" | "recent";
+
 const primaryTabs = [
   { id: "week", label: "List", symbol: "✓" },
   { id: "overview", label: "Insights", symbol: "↗" },
@@ -159,15 +161,27 @@ const primaryTabs = [
 const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
 
 function shoppingCompleteConfettiStyle(index: number): CSSProperties {
-  // The golden-angle spread gives every burst a full viewport of distinct,
-  // deterministic trajectories without a hydration-unsafe random value.
-  const angle = ((index * 137.508) % 360) * (Math.PI / 180);
-  const distance = 44 + (index % 5) * 13;
+  // Deterministic values keep hydration stable while giving each piece its own
+  // Robinhood-inspired pop, flutter, and slow fall through the viewport.
+  const startX = ((index * 47) % 126) - 13;
+  const driftX = ((index * 31) % 34) - 17;
+  const swayX = ((index * 23) % 26) - 13;
+  const spinDirection = index % 2 === 0 ? 1 : -1;
+  const spin = spinDirection * (560 + (index % 6) * 120);
+  const size = 7 + (index % 5) * 1.25;
   return {
-    "--confetti-index": index,
-    "--blast-x": Math.cos(angle) * distance,
-    "--blast-y": Math.sin(angle) * distance,
-    "--confetti-size": 6 + (index % 4) * 2,
+    "--confetti-start-x": `${startX}vw`,
+    "--confetti-sway-a": `${swayX}vw`,
+    "--confetti-sway-b": `${swayX * -0.62}vw`,
+    "--confetti-drift-x": `${driftX}vw`,
+    "--confetti-fall": `${112 + (index % 4) * 6}dvh`,
+    "--confetti-size": `${size}px`,
+    "--confetti-height": `${size * (index % 4 === 0 ? 1 : 1.65)}px`,
+    "--confetti-delay": `${(index % 24) * 15 + Math.floor(index / 24) * 30}ms`,
+    "--confetti-duration": `${3600 + (index % 7) * 150}ms`,
+    "--confetti-spin-a": `${spin * 0.3}deg`,
+    "--confetti-spin-b": `${spin * 0.68}deg`,
+    "--confetti-spin-c": `${spin}deg`,
   } as CSSProperties;
 }
 
@@ -413,6 +427,7 @@ export function BasketSenseDashboard({
   const [productCategory, setProductCategory] = useState<ProductCategoryKey | "all">(
     "all",
   );
+  const [productSort, setProductSort] = useState<ProductSort>("alphabetical");
   const [selectedProductId, setSelectedProductId] = useState(
     viewData.products[0]?.id ?? "",
   );
@@ -1025,6 +1040,33 @@ export function BasketSenseDashboard({
     if (saved) setNewItem("");
   }
 
+  async function addCatalogProductToList(product: SharedProduct) {
+    if (!household) return false;
+    const existingItem = household.listItems.find(
+      (item) => item.productId === product.id,
+    );
+    if (existingItem?.included) {
+      flash(`${existingItem.label} is already on the active list`);
+      return true;
+    }
+    return await performWrite(`product-list-${product.id}`, {
+      method: "POST",
+      body: {
+        action: "add_list_item",
+        tripId: household.currentTrip.id,
+        productId: product.id,
+        label: product.canonicalName,
+        source: household.currentTrip.status === "frozen" ? "in_store" : "manual",
+        section: "essentials",
+        included: true,
+      },
+      successMessage:
+        household.currentTrip.status === "frozen"
+          ? `${product.canonicalName} added during this trip`
+          : `${product.canonicalName} added to the shared list`,
+    });
+  }
+
   async function confirmProductMetadata(
     product: SharedProduct,
     canonicalName: string,
@@ -1344,6 +1386,8 @@ export function BasketSenseDashboard({
             setSearch={setProductSearch}
             category={productCategory}
             setCategory={setProductCategory}
+            sort={productSort}
+            setSort={setProductSort}
             selectedProductId={selectedProductId}
             setSelectedProductId={setSelectedProductId}
             detailOpen={productDetailOpen}
@@ -1353,6 +1397,8 @@ export function BasketSenseDashboard({
             openedFromInsights={productOrigin === "insights"}
             onBack={closeProductDetail}
             onConfirmProduct={confirmProductMetadata}
+            listItems={household?.listItems ?? []}
+            onAddToList={addCatalogProductToList}
             failedWrites={failedWrites}
             onOpenTransaction={openTransaction}
           />
@@ -3291,6 +3337,8 @@ function ProductsTab({
   setSearch,
   category,
   setCategory,
+  sort,
+  setSort,
   selectedProductId,
   setSelectedProductId,
   detailOpen,
@@ -3300,6 +3348,8 @@ function ProductsTab({
   openedFromInsights,
   onBack,
   onConfirmProduct,
+  listItems,
+  onAddToList,
   failedWrites,
   onOpenTransaction,
 }: {
@@ -3309,6 +3359,8 @@ function ProductsTab({
   setSearch: (value: string) => void;
   category: ProductCategoryKey | "all";
   setCategory: (value: ProductCategoryKey | "all") => void;
+  sort: ProductSort;
+  setSort: (value: ProductSort) => void;
   selectedProductId: string;
   setSelectedProductId: (value: string) => void;
   detailOpen: boolean;
@@ -3322,6 +3374,8 @@ function ProductsTab({
     canonicalName: string,
     category: ProductCategoryKey,
   ) => Promise<boolean>;
+  listItems: readonly SharedListItem[];
+  onAddToList: (product: SharedProduct) => Promise<boolean>;
   failedWrites: Record<string, FailedWrite>;
   onOpenTransaction: (transactionId: string) => void;
 }) {
@@ -3335,14 +3389,21 @@ function ProductsTab({
   const [reviewSaving, setReviewSaving] = useState(false);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    return products.filter((product) => {
+    const matching = products.filter((product) => {
       if (category !== "all" && product.categoryKey !== category) return false;
       if (!query) return true;
       return [product.name, product.rawDescription, product.itemNumber].some((value) =>
         value.toLocaleLowerCase().includes(query),
       );
     });
-  }, [category, products, search]);
+    return matching.sort((left, right) =>
+      sort === "alphabetical"
+        ? productDisplayName(left).localeCompare(productDisplayName(right)) ||
+          left.itemNumber.localeCompare(right.itemNumber)
+        : (right.lastPurchasedOn ?? "").localeCompare(left.lastPurchasedOn ?? "") ||
+          productDisplayName(left).localeCompare(productDisplayName(right)),
+    );
+  }, [category, products, search, sort]);
   const selected =
     products.find((product) => product.id === selectedProductId) ?? products[0];
   const catalogProduct = catalogProducts.find(
@@ -3350,6 +3411,9 @@ function ProductsTab({
   );
   const reviewFailure = catalogProduct
     ? failedWrites[`product-review-${catalogProduct.id}`]
+    : undefined;
+  const selectedListItem = catalogProduct
+    ? listItems.find((item) => item.productId === catalogProduct.id)
     : undefined;
 
   useEffect(() => {
@@ -3439,6 +3503,16 @@ function ProductsTab({
               placeholder="Name or item number"
             />
           </label>
+          <label className="select-label">
+            <span>Sort</span>
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value as ProductSort)}
+            >
+              <option value="alphabetical">A–Z</option>
+              <option value="recent">Most recent</option>
+            </select>
+          </label>
         </div>
       </section>
 
@@ -3457,7 +3531,7 @@ function ProductsTab({
         <div className="product-list card" aria-label="Product results">
           <div className="product-list-header">
             <span>{filteredProducts.length} products</span>
-            <span>Repeat count, then spend</span>
+            <span>{sort === "alphabetical" ? "Alphabetical" : "Most recent"}</span>
           </div>
           {filteredProducts.map((product) => {
             const priceDelta =
@@ -3558,6 +3632,16 @@ function ProductsTab({
                 {selected.classificationStatus === "needs_review"
                   ? "Help identify this item"
                   : "Edit identification"}
+              </button>
+              <button
+                type="button"
+                className="secondary-button product-add-to-list"
+                disabled={!catalogProduct || selectedListItem?.included}
+                onClick={() => {
+                  if (catalogProduct) void onAddToList(catalogProduct);
+                }}
+              >
+                {selectedListItem?.included ? "On active list" : "Add to list"}
               </button>
             </div>
           </div>

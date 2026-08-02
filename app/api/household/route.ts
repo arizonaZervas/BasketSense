@@ -4210,9 +4210,15 @@ async function readClosedLoopReview(
     ? await authorizedReceipt(db, householdId, receiptId)
     : await db
         .prepare(
-          `SELECT * FROM receipt_transactions
-           WHERE household_id = ? AND trip_id IS NOT NULL
-           ORDER BY purchased_at DESC, created_at DESC
+          `SELECT receipt_transactions.*
+           FROM receipt_transactions
+           INNER JOIN trips ON trips.id = receipt_transactions.trip_id
+           WHERE receipt_transactions.household_id = ?
+             AND trips.household_id = receipt_transactions.household_id
+             AND trips.status = 'completed'
+           ORDER BY trips.completed_at DESC,
+                    receipt_transactions.created_at DESC,
+                    receipt_transactions.id DESC
            LIMIT 1`
         )
         .bind(householdId)

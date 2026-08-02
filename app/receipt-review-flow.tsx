@@ -237,7 +237,15 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
 
 async function prepareReceiptUpload(file: File) {
   const contentType = file.type.toLowerCase();
-  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(contentType)) {
+  if (
+    !new Set([
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/heic",
+      "image/heif",
+    ]).has(contentType)
+  ) {
     return file;
   }
 
@@ -765,7 +773,11 @@ export function ReceiptFlowDialog({
           const amountCents = inputToCents(item.amount);
           const looksLikeDiscount =
             item.kind === "discount" ||
-            (amountCents < 0 && /coupon|discount|rebate|savings/i.test(item.description));
+            (amountCents < 0 &&
+              /coupon|discount|rebate|savings|instant|^\s*\d+\s*\/\s*\d+\s*$/i.test(
+                item.description,
+              ));
+          const discountCents = looksLikeDiscount ? Math.abs(amountCents) : 0;
           return {
             sourceLineNumber: index + 1,
             costcoItemNumber: item.itemNumber.trim() || undefined,
@@ -773,8 +785,8 @@ export function ReceiptFlowDialog({
             quantityMilli: item.quantityMilli,
             unitPriceCents: item.unitPriceCents,
             lineSubtotalCents: looksLikeDiscount ? 0 : amountCents,
-            netAmountCents: amountCents,
-            discountCents: looksLikeDiscount ? Math.abs(amountCents) : 0,
+            netAmountCents: looksLikeDiscount ? -discountCents : amountCents,
+            discountCents,
             taxStatus: item.taxStatus,
             kind: looksLikeDiscount ? ("discount" as const) : ("item" as const),
           };
@@ -965,6 +977,16 @@ export function ReceiptFlowDialog({
       ...current,
       items: current.items.map((item) =>
         item.clientId === id ? { ...item, [field]: value } : item,
+      ),
+    }));
+  }
+
+  function updateLineKind(id: string, kind: ReceiptDraftLine["kind"]) {
+    cancelReceiptOcr();
+    setDraft((current) => ({
+      ...current,
+      items: current.items.map((item) =>
+        item.clientId === id ? { ...item, kind } : item,
       ),
     }));
   }
@@ -1363,6 +1385,10 @@ export function ReceiptFlowDialog({
                 </label>
               ))}
             </div>
+            <p className="receipt-discount-help">
+              Enter Discounts as a positive total. BasketSense subtracts each discount only
+              once, whether it is a receipt total, a separate line, or attached to an item.
+            </p>
 
             <details className="receipt-lines-disclosure">
               <summary>
@@ -1406,8 +1432,24 @@ export function ReceiptFlowDialog({
                       aria-label={`Line ${index + 1} description`}
                     />
                   </label>
+                  <label className="draft-kind">
+                    <span>Type</span>
+                    <select
+                      value={item.kind}
+                      onChange={(event) =>
+                        updateLineKind(
+                          item.clientId,
+                          event.target.value as ReceiptDraftLine["kind"],
+                        )
+                      }
+                      aria-label={`Line ${index + 1} type`}
+                    >
+                      <option value="item">Product</option>
+                      <option value="discount">Discount</option>
+                    </select>
+                  </label>
                   <label className="draft-amount">
-                    <span>Amount</span>
+                    <span>{item.kind === "discount" ? "Savings" : "Amount"}</span>
                     <span className="money-input">
                       <span aria-hidden="true">$</span>
                       <input

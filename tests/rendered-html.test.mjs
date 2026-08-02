@@ -142,7 +142,7 @@ test("keeps sandbox review answers in the owner-only test household", async () =
   assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
 });
 
-test("uses a dense, center-origin completion celebration", async () => {
+test("uses a dense, top-down pop and flutter celebration", async () => {
   const dashboardSource = await readFile(
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
@@ -152,11 +152,15 @@ test("uses a dense, center-origin completion celebration", async () => {
   assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
   assert.match(dashboardSource, /shoppingCompleteConfettiStyle/);
   assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
-  assert.match(styles, /left: 50vw;/);
-  assert.match(styles, /top: 50dvh;/);
-  assert.match(styles, /animation: shopping-confetti-burst 2100ms/);
-  assert.match(styles, /var\(--blast-x\)/);
-  assert.match(styles, /var\(--blast-y\)/);
+  assert.match(styles, /left: var\(--confetti-start-x\);/);
+  assert.match(styles, /top: -10dvh;/);
+  assert.match(styles, /animation: shopping-confetti-shower var\(--confetti-duration\)/);
+  assert.match(styles, /var\(--confetti-sway-a\)/);
+  assert.match(styles, /var\(--confetti-sway-b\)/);
+  assert.match(styles, /var\(--confetti-drift-x\)/);
+  assert.match(styles, /var\(--confetti-fall\)/);
+  assert.match(styles, /clip-path: polygon/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.shopping-complete-confetti/);
 });
 
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {
@@ -170,4 +174,31 @@ test("receipt capture offers camera, photo-library, and Costco PDF actions", asy
   assert.match(source, /Choose photo or PDF/);
   assert.match(source, /accept="image\/\*,application\/pdf"/);
   assert.match(source, /Choose a Costco receipt photo or PDF from your library/);
+  assert.match(source, /image\/heic/);
+  assert.match(source, /Enter Discounts as a positive total/);
+  assert.match(source, /<option value="discount">Discount<\/option>/);
+});
+
+test("keeps product-history additions and sorting in the shared list flow", async () => {
+  const source = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /async function addCatalogProductToList/);
+  assert.match(source, /action: "add_list_item"/);
+  assert.match(source, /: "Add to list"/);
+  assert.match(source, /<option value="alphabetical">A–Z<\/option>/);
+  assert.match(source, /productDisplayName\(left\)\.localeCompare/);
+});
+
+test("chooses the latest completed trip for the recap", async () => {
+  const source = await readFile(
+    new URL("../app/api/household/route.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /INNER JOIN trips ON trips\.id = receipt_transactions\.trip_id/);
+  assert.match(source, /trips\.status = 'completed'/);
+  assert.match(source, /ORDER BY trips\.completed_at DESC/);
 });

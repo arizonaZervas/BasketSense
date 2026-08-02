@@ -1583,6 +1583,10 @@ td small {
   gap: 8px;
 }
 
+.product-add-to-list {
+  min-height: 36px;
+}
+
 .product-review-trigger {
   min-height: 34px;
   padding: 4px 0;
@@ -2757,43 +2761,68 @@ button.price-point:hover {
 
 .shopping-complete-confetti span {
   position: absolute;
-  left: 50vw;
-  top: 50dvh;
-  width: calc(var(--confetti-size) * 1px);
-  height: calc(var(--confetti-size) * 1.65px);
-  border-radius: 1px;
+  left: var(--confetti-start-x);
+  top: -10dvh;
+  width: var(--confetti-size);
+  height: var(--confetti-height);
+  border-radius: 2px;
   background: var(--apricot);
   opacity: 0;
   will-change: transform, opacity;
-  animation: shopping-confetti-burst 2100ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  animation-delay: calc(var(--confetti-index) * 4ms);
+  animation: shopping-confetti-shower var(--confetti-duration)
+    cubic-bezier(0.18, 0.72, 0.22, 1) var(--confetti-delay) both;
 }
 
-.shopping-complete-confetti span:nth-child(3n) { background: var(--forest); }
-.shopping-complete-confetti span:nth-child(3n + 1) { background: var(--apricot); }
-.shopping-complete-confetti span:nth-child(3n + 2) { background: var(--warning-ink); }
+.shopping-complete-confetti span:nth-child(5n) { background: var(--forest); }
+.shopping-complete-confetti span:nth-child(5n + 1) { background: var(--apricot); }
+.shopping-complete-confetti span:nth-child(5n + 2) { background: var(--lilac); }
+.shopping-complete-confetti span:nth-child(5n + 3) { background: var(--sky); }
+.shopping-complete-confetti span:nth-child(5n + 4) { background: var(--rose); }
+.shopping-complete-confetti span:nth-child(4n) { border-radius: 50%; }
+.shopping-complete-confetti span:nth-child(7n) {
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
 
-@keyframes shopping-confetti-burst {
+@keyframes shopping-confetti-shower {
   0% {
     opacity: 0;
-    transform: translate3d(-50%, -50%, 0) scale(0.25) rotate(0deg);
+    transform: translate3d(-50%, -5dvh, 0) scale(0.4) rotate(0deg);
   }
-  9% { opacity: 1; }
-  56% {
+  8% {
+    opacity: 1;
+    transform: translate3d(-50%, 4dvh, 0) scale(1.08) rotate(0deg);
+  }
+  30% {
     opacity: 1;
     transform: translate3d(
-      calc(-50% + (var(--blast-x) * 1vw)),
-      calc(-50% + (var(--blast-y) * 1vh)),
+      calc(-50% + var(--confetti-sway-a)),
+      30dvh,
       0
-    ) scale(1) rotate(420deg);
+    ) scale(1) rotate(var(--confetti-spin-a));
+  }
+  62% {
+    opacity: 1;
+    transform: translate3d(
+      calc(-50% + var(--confetti-sway-b)),
+      65dvh,
+      0
+    ) scale(0.96) rotate(var(--confetti-spin-b));
+  }
+  84% {
+    opacity: 1;
+    transform: translate3d(
+      calc(-50% + var(--confetti-drift-x)),
+      91dvh,
+      0
+    ) scale(0.92) rotate(var(--confetti-spin-c));
   }
   100% {
     opacity: 0;
     transform: translate3d(
-      calc(-50% + (var(--blast-x) * 1vw)),
-      calc(-50% + (var(--blast-y) * 1vh) + 22vh),
+      calc(-50% + var(--confetti-drift-x)),
+      var(--confetti-fall),
       0
-    ) scale(0.82) rotate(760deg);
+    ) scale(0.86) rotate(var(--confetti-spin-c));
   }
 }
 
@@ -4700,6 +4729,13 @@ button.price-point:hover {
   line-height: 1.5;
 }
 
+.receipt-discount-help {
+  margin: -16px 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .receipt-lines-disclosure .draft-lines-heading {
   justify-content: flex-end;
   margin: 0 0 4px;
@@ -4768,7 +4804,8 @@ button.price-point:hover {
 }
 
 .receipt-total-fields input,
-.draft-line input {
+.draft-line input,
+.draft-line select {
   width: 100%;
   min-width: 0;
   min-height: 44px;
@@ -4839,7 +4876,7 @@ button.price-point:hover {
 
 .draft-line {
   display: grid;
-  grid-template-columns: 28px minmax(92px, 0.25fr) minmax(230px, 1fr) minmax(110px, 0.25fr) 44px;
+  grid-template-columns: 28px minmax(84px, 0.2fr) minmax(180px, 1fr) minmax(92px, 0.2fr) minmax(110px, 0.25fr) 44px;
   align-items: end;
   gap: 8px;
   border-bottom: 1px solid var(--line);
@@ -6056,6 +6093,7 @@ button.price-point:hover {
   }
 
   .draft-description,
+  .draft-kind,
   .draft-amount {
     grid-column: 2 / -1;
   }

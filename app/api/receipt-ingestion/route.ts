@@ -258,7 +258,11 @@ function parseArtifact(value: unknown) {
       netAmountCents: line.netAmountCents ?? line.lineSubtotalCents ?? 0,
       discountCents: line.discountCents ?? 0,
       taxStatus: line.taxStatus ?? "unknown",
-      kind: (line.discountCents ?? 0) > 0 && (line.lineSubtotalCents ?? 0) === 0 ? "discount" : "item",
+      kind:
+        (line.discountCents ?? 0) > 0 &&
+        (line.netAmountCents ?? line.lineSubtotalCents ?? 0) < 0
+          ? "discount"
+          : "item",
     })),
   };
 }

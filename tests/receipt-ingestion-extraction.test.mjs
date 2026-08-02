@@ -68,6 +68,7 @@ test("Gemini request uses inline document data and a strict JSON field contract"
   assert.equal(parts[0].inlineData.mimeType, "application/pdf");
   assert.equal(parts[0].inlineData.data, "c3ludGhldGljIHJlY2VpcHQ=");
   assert.match(parts[1].text, /Costco receipt/i);
+  assert.match(parts[1].text, /Identify every visible coupon, instant saving, and discount/i);
   assert.match(parts[1].text, /"purchasedAt"/);
   assert.match(parts[1].text, /"rawDescription"/);
   assert.equal(request.generationConfig.responseMimeType, "application/json");
