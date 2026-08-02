@@ -4010,23 +4010,29 @@ function ProductsTab({
               }`}
             >
               {catalogProduct?.image ? (
-                <img
-                  src={catalogProduct.image.imageUrl}
-                  alt={`${productDisplayName(selected)} package`}
-                />
+                <div className="product-detail-artwork">
+                  <img
+                    src={catalogProduct.image.imageUrl}
+                    alt={`${productDisplayName(selected)} package`}
+                  />
+                </div>
               ) : selectedIllustration ? (
                 <>
-                  <img
-                    src={selectedIllustration.imageUrl}
-                    alt={selectedIllustration.alt}
-                  />
+                  <div className="product-detail-artwork">
+                    <img
+                      src={selectedIllustration.imageUrl}
+                      alt={selectedIllustration.alt}
+                    />
+                  </div>
                   <figcaption className="product-illustration-note">
                     AI illustration · package may differ
                   </figcaption>
                 </>
               ) : (
                 <>
-                  <span aria-hidden="true">{productDisplayName(selected).charAt(0)}</span>
+                  <div className="product-detail-artwork">
+                    <span aria-hidden="true">{productDisplayName(selected).charAt(0)}</span>
+                  </div>
                   <figcaption>Photo pending</figcaption>
                 </>
               )}
