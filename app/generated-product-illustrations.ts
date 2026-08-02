@@ -118,6 +118,16 @@ const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
   "1335089": { imageUrl: "/product-illustrations/1335089.jpg", alt: "Illustration of fresh bagels" },
   "1347776": { imageUrl: "/product-illustrations/1347776.jpg", alt: "Illustration of wildflower honey" },
   "1359296": { imageUrl: "/product-illustrations/1359296.jpg", alt: "Illustration of a children’s UV swim set" },
+  "1360840": { imageUrl: "/product-illustrations/1360840.jpg", alt: "Illustration of premium eggs" },
+  "1392843": { imageUrl: "/product-illustrations/1392843.jpg", alt: "Illustration of avocado oil spray" },
+  "1408146": { imageUrl: "/product-illustrations/1408146.jpg", alt: "Illustration of a children’s lucky graphic T-shirt" },
+  "1433996": { imageUrl: "/product-illustrations/1433996.jpg", alt: "Illustration of naan dippers" },
+  "1448891": { imageUrl: "/product-illustrations/1448891.jpg", alt: "Illustration of a fresh chicken breast family pack" },
+  "1449725": { imageUrl: "/product-illustrations/1449725.jpg", alt: "Illustration of low-carb keto bread" },
+  "1453434": { imageUrl: "/product-illustrations/1453434.jpg", alt: "Illustration of cheese bread rolls" },
+  "1494546": { imageUrl: "/product-illustrations/1494546.jpg", alt: "Illustration of a men’s golf polo" },
+  "1518783": { imageUrl: "/product-illustrations/1518783.jpg", alt: "Illustration of a coconut water multipack" },
+  "1536795": { imageUrl: "/product-illustrations/1536795.jpg", alt: "Illustration of a charcoal hoodie" },
 };
 
 export function generatedProductIllustration(
