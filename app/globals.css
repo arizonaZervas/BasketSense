@@ -2793,7 +2793,7 @@ button.price-point:hover {
 
 .week-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(270px, 0.65fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
@@ -3783,7 +3783,9 @@ button.price-point:hover {
 
 .idea-groups {
   display: grid;
-  gap: 24px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+  row-gap: 24px;
   margin-top: 18px;
 }
 
@@ -4575,6 +4577,7 @@ button.price-point:hover {
   }
 
   .idea-groups {
+    grid-template-columns: 1fr;
     gap: 22px;
   }
 
