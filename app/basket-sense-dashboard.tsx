@@ -2189,33 +2189,39 @@ function ThisWeekTab({
                           </button>
                         ) : null}
                         <div className="list-row-copy">
-                          <strong>{item.label}</strong>
-                          {!shoppingStarted ? (
-                            <>
-                              <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                              <small>
-                                {[
-                                  activeItemStatus(item, trip?.status ?? "planning"),
-                                  addedBy ? `Added by ${addedBy}` : null,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" · ") || sourceLabel(item.source)}
-                              </small>
-                            </>
-                          ) : (
-                            <details className="item-evidence">
-                              <summary>Why it is here</summary>
-                              <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                              <small>
-                                {[
-                                  freezeEvidence(item, trip?.status ?? "planning"),
-                                  addedBy ? `Added by ${addedBy}` : null,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" · ")}
-                              </small>
-                            </details>
-                          )}
+                          <ListItemThumbnail
+                            item={item}
+                            products={household.products}
+                          />
+                          <div className="list-row-copy-body">
+                            <strong>{item.label}</strong>
+                            {!shoppingStarted ? (
+                              <>
+                                <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
+                                <small>
+                                  {[
+                                    activeItemStatus(item, trip?.status ?? "planning"),
+                                    addedBy ? `Added by ${addedBy}` : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ") || sourceLabel(item.source)}
+                                </small>
+                              </>
+                            ) : (
+                              <details className="item-evidence">
+                                <summary>Why it is here</summary>
+                                <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
+                                <small>
+                                  {[
+                                    freezeEvidence(item, trip?.status ?? "planning"),
+                                    addedBy ? `Added by ${addedBy}` : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </small>
+                              </details>
+                            )}
+                          </div>
                         </div>
                         <div className="list-row-actions">
                           {estimateEditorOpen ? (
@@ -2381,8 +2387,14 @@ function ThisWeekTab({
                             <span aria-hidden="true">✓</span>
                           </button>
                           <div className="list-row-copy">
-                            <strong>{item.label}</strong>
-                            <small>Marked off this trip</small>
+                            <ListItemThumbnail
+                              item={item}
+                              products={household.products}
+                            />
+                            <div className="list-row-copy-body">
+                              <strong>{item.label}</strong>
+                              <small>Marked off this trip</small>
+                            </div>
                           </div>
                           <div className="list-row-actions">
                             <button
@@ -2455,41 +2467,35 @@ function ThisWeekTab({
           />
         </div>
 
-        <aside className="week-rail">
-          <article className="card why-card">
-            <p className="section-label">How suggestions work</p>
-            <h2>Receipts suggest timing. You decide need.</h2>
-            <p>
-              Purchase cadence is not consumption cadence. BasketSense shows the
-              evidence and waits for either spouse to add the item.
-            </p>
-            <details className="rules-disclosure">
-              <summary>See the first rules</summary>
-              <ul>
-                <li>Exact item-number purchase count</li>
-                <li>Median days between matching purchases</li>
-                <li>Days since the last matching receipt</li>
-                <li>No pantry or waste claim without household input</li>
-              </ul>
-            </details>
-          </article>
-          <article className="card share-card">
-            <div className="avatar-stack" aria-hidden="true">
-              <span className="avatar avatar-one">1</span>
-              <span className="avatar avatar-two">2</span>
-            </div>
-            <h2>One list, two phones</h2>
-            <p>
-              The database is the shared source of truth. This list checks for
-              your spouse’s changes every five seconds while visible.
-            </p>
-            <button className="secondary-button" onClick={onCopy}>
-              Copy a snapshot
-            </button>
-          </article>
-        </aside>
       </div>
     </div>
+  );
+}
+
+function ListItemThumbnail({
+  item,
+  products,
+}: {
+  item: SharedListItem;
+  products: readonly SharedProduct[];
+}) {
+  const product = item.productId
+    ? products.find((candidate) => candidate.id === item.productId)
+    : undefined;
+  const illustration = generatedProductIllustration(product?.costcoItemNumber);
+  const imageUrl = product?.image?.imageUrl ?? illustration?.imageUrl;
+
+  return (
+    <span
+      className={`list-item-thumbnail ${imageUrl ? "has-photo" : ""}`}
+      aria-hidden="true"
+    >
+      {imageUrl ? (
+        <img src={imageUrl} alt="" loading="lazy" />
+      ) : (
+        <span>{item.label.trim().charAt(0).toLocaleUpperCase()}</span>
+      )}
+    </span>
   );
 }
 
