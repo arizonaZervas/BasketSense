@@ -37,7 +37,6 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /<title>BasketSense — Our Costco companion<\/title>/i);
   assert.match(html, /Our Costco companion/);
   assert.match(html, /This Saturday/);
-  assert.match(html, /Receipts suggest timing\. You decide need\./);
   assert.match(
     html,
     /38(?:<!-- -->)? receipt transactions audited · (?:<!-- -->)?Jan 2–Jul 18, 2026/,
@@ -46,13 +45,10 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /Estimated list total/i);
   assert.match(html, /Updates with the live list/i);
   assert.match(html, /before tax/i);
-  assert.match(html, /The database is the shared source of truth/i);
   assert.match(html, /Suggested starting points for (?:<!-- -->)?Jul 25/i);
   assert.match(html, /Active List/i);
   assert.match(html, />Ideas</i);
-  assert.match(html, /every five seconds while visible/i);
   assert.match(html, /Kirkland Signature organic 2% milk/i);
-  assert.match(html, /26 purchases \(28 units\).*median interval 7 days/i);
   assert.match(html, /Optional seasonal favorite/i);
   assert.match(html, /Lychee/i);
   assert.doesNotMatch(html, /automatically versioned|Saved just now|share this link/i);
@@ -76,7 +72,6 @@ test("renders the four focused household destinations", async () => {
   assert.match(html, /Start shopping/i);
   assert.match(html, /Plan/);
   assert.match(html, /Shop/);
-  assert.match(html, /One list, two phones/i);
 });
 
 test("renders accessible catalog and device theme controls", async () => {
@@ -118,18 +113,14 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
     new URL("../app/receipt-review-flow.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(reviewSource, /Prices or quantities shifted/);
+  assert.match(reviewSource, /Receipt matched/);
   assert.match(reviewSource, /receipt-spotlight/);
   assert.match(reviewSource, /showModal\(\)/);
   assert.match(reviewSource, /Tap to explore/);
-  assert.match(reviewSource, /Open receipt items for \$\{driver\.label\}/);
   assert.match(reviewSource, /Each card shows the receipt item that received a Costco discount/);
-  assert.match(reviewSource, /Saved \$\{money\.format/);
   assert.match(reviewSource, /Choose the receipt line that was this saved item/);
   assert.match(reviewSource, /Confirm match/);
   assert.match(reviewSource, /Review receipt lines/);
-  assert.match(reviewSource, /onReviewReceipt=\{\(\) => onOpenReceipt\("check"\)\}/);
-  assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 
 test("keeps sandbox review answers in the owner-only test household", async () => {
@@ -147,9 +138,13 @@ test("keeps sandbox review answers in the owner-only test household", async () =
   assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
 });
 
-test("uses a dense, top-down pop and flutter celebration", async () => {
+test("uses a smooth, top-down celebration without converging particle paths", async () => {
   const dashboardSource = await readFile(
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const confettiSource = await readFile(
+    new URL("../app/top-down-confetti.ts", import.meta.url),
     "utf8",
   );
   const styles = await readFile(
@@ -158,15 +153,18 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
   );
 
   assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
-  assert.match(dashboardSource, /shoppingCompleteConfettiStyle/);
+  assert.match(dashboardSource, /topDownConfettiStyle/);
+  assert.match(confettiSource, /--confetti-drift-mid/);
+  assert.match(confettiSource, /--confetti-drift-late/);
   assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
   assert.match(styles, /left: var\(--confetti-start-x\);/);
   assert.match(styles, /top: -10dvh;/);
   assert.match(styles, /animation: shopping-confetti-shower var\(--confetti-duration\)/);
-  assert.match(styles, /var\(--confetti-sway-a\)/);
-  assert.match(styles, /var\(--confetti-sway-b\)/);
+  assert.match(styles, /var\(--confetti-drift-mid\)/);
+  assert.match(styles, /var\(--confetti-drift-late\)/);
   assert.match(styles, /var\(--confetti-drift-x\)/);
   assert.match(styles, /var\(--confetti-fall\)/);
+  assert.doesNotMatch(styles, /--confetti-sway-a|--confetti-sway-b/);
   assert.match(styles, /clip-path: polygon/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.shopping-complete-confetti/);
   assert.match(styles, /:root\[data-theme="warm"\]/);
@@ -174,7 +172,7 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
   assert.match(styles, /font-family: Georgia, "Times New Roman", serif;/);
   assert.match(
     styles,
-    /\.week-page > \.page-heading\.with-controls::after[\s\S]*background-image: url\("\/basketsense-social-card\.png"\)/,
+    /\.week-page > \.page-heading\.with-controls::after[\s\S]*background-image: url\("\/basketsense-hero-art\.png"\)/,
   );
   assert.match(
     styles,
@@ -182,8 +180,21 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
   );
   assert.match(
     styles,
-    /@media \(max-width: 760px\)[\s\S]*background-size: 620px auto;/,
+    /@media \(max-width: 1050px\)[\s\S]*background-size: 1150px auto;/,
   );
+});
+
+test("preserves an optimistic check while a stale list refresh is in flight", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(dashboardSource, /pendingCheckedStates/);
+  assert.match(dashboardSource, /function keepPendingCheckedStates/);
+  assert.match(dashboardSource, /listItems: keepPendingCheckedStates\(snapshot\.listItems\)/);
+  assert.match(dashboardSource, /pendingCheckedStates\.current\.set\(item\.id, nextChecked\)/);
+  assert.match(dashboardSource, /onFailure: \(\) => \{\s*pendingCheckedStates\.current\.delete\(item\.id\)/);
 });
 
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {

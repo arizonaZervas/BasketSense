@@ -3069,7 +3069,7 @@ button.price-point:hover {
   opacity: 0;
   will-change: transform, opacity;
   animation: shopping-confetti-shower var(--confetti-duration)
-    cubic-bezier(0.18, 0.72, 0.22, 1) var(--confetti-delay) both;
+    linear var(--confetti-delay) both;
 }
 
 .shopping-complete-confetti span:nth-child(5n) { background: var(--forest); }
@@ -3085,35 +3085,27 @@ button.price-point:hover {
 @keyframes shopping-confetti-shower {
   0% {
     opacity: 0;
-    transform: translate3d(-50%, -5dvh, 0) scale(0.4) rotate(0deg);
+    transform: translate3d(-50%, -8dvh, 0) scale(0.82) rotate(0deg);
   }
-  8% {
+  7% {
     opacity: 1;
-    transform: translate3d(-50%, 4dvh, 0) scale(1.08) rotate(0deg);
+    transform: translate3d(-50%, 0dvh, 0) scale(1) rotate(0deg);
   }
-  30% {
-    opacity: 1;
-    transform: translate3d(
-      calc(-50% + var(--confetti-sway-a)),
-      30dvh,
-      0
-    ) scale(1) rotate(var(--confetti-spin-a));
-  }
-  62% {
+  48% {
     opacity: 1;
     transform: translate3d(
-      calc(-50% + var(--confetti-sway-b)),
-      65dvh,
+      calc(-50% + var(--confetti-drift-mid)),
+      49dvh,
       0
-    ) scale(0.96) rotate(var(--confetti-spin-b));
+    ) rotate(var(--confetti-spin-a));
   }
-  84% {
+  82% {
     opacity: 1;
     transform: translate3d(
-      calc(-50% + var(--confetti-drift-x)),
-      91dvh,
+      calc(-50% + var(--confetti-drift-late)),
+      92dvh,
       0
-    ) scale(0.92) rotate(var(--confetti-spin-c));
+    ) rotate(var(--confetti-spin-b));
   }
   100% {
     opacity: 0;
@@ -3121,7 +3113,7 @@ button.price-point:hover {
       calc(-50% + var(--confetti-drift-x)),
       var(--confetti-fall),
       0
-    ) scale(0.86) rotate(var(--confetti-spin-c));
+    ) rotate(var(--confetti-spin-c));
   }
 }
 

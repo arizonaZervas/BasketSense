@@ -1,40 +1,18 @@
 "use client";
 
 import {
-  CSSProperties,
   ChangeEvent,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { topDownConfettiStyle } from "./top-down-confetti";
 import { reconcileReceipt } from "./receipt-logic";
 import {
   PRODUCT_CATEGORY_PRESENTATION,
   type ProductCategoryKey,
 } from "./product-categories";
-
-function receiptCelebrationConfettiStyle(index: number): CSSProperties {
-  const startX = ((index * 47) % 126) - 13;
-  const driftX = ((index * 31) % 34) - 17;
-  const swayX = ((index * 23) % 26) - 13;
-  const spin = (index % 2 === 0 ? 1 : -1) * (560 + (index % 6) * 120);
-  const size = 7 + (index % 5) * 1.25;
-  return {
-    "--confetti-start-x": `${startX}vw`,
-    "--confetti-sway-a": `${swayX}vw`,
-    "--confetti-sway-b": `${swayX * -0.62}vw`,
-    "--confetti-drift-x": `${driftX}vw`,
-    "--confetti-fall": `${112 + (index % 4) * 6}dvh`,
-    "--confetti-size": `${size}px`,
-    "--confetti-height": `${size * (index % 4 === 0 ? 1 : 1.65)}px`,
-    "--confetti-delay": `${(index % 24) * 15 + Math.floor(index / 24) * 30}ms`,
-    "--confetti-duration": `${3600 + (index % 7) * 150}ms`,
-    "--confetti-spin-a": `${spin * 0.3}deg`,
-    "--confetti-spin-b": `${spin * 0.68}deg`,
-    "--confetti-spin-c": `${spin}deg`,
-  } as CSSProperties;
-}
 
 export type ClosedLoopReceipt = {
   id: string;
@@ -635,7 +613,7 @@ export function ReceiptNextStepCard({
           <section className="shopping-complete receipt-celebration" role="status" aria-live="polite">
             <div className="shopping-complete-confetti" aria-hidden="true">
               {Array.from({ length: 120 }, (_, index) => (
-                <span key={index} style={receiptCelebrationConfettiStyle(index)} />
+                <span key={index} style={topDownConfettiStyle(index)} />
               ))}
             </div>
             <span className="shopping-complete-mark" aria-hidden="true">✦</span>

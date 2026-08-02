@@ -3,7 +3,6 @@
 /* eslint-disable @next/next/no-img-element -- household product photos use authenticated R2 URLs that are not compatible with next/image */
 
 import {
-  CSSProperties,
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
   useCallback,
@@ -46,6 +45,7 @@ import {
   type ClosedLoopSnapshot,
   type ReceiptStep,
 } from "./receipt-review-flow";
+import { topDownConfettiStyle } from "./top-down-confetti";
 
 type Tab = "overview" | "products" | "week" | "review" | "data";
 type TripStatus = "planning" | "frozen" | "completed";
@@ -141,6 +141,7 @@ type WriteRequest = {
   method: "POST" | "PATCH";
   body: Record<string, unknown>;
   successMessage: string;
+  onFailure?: () => void;
 };
 
 type FailedWrite = {
@@ -166,31 +167,6 @@ const primaryTabs = [
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
 
 const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
-
-function shoppingCompleteConfettiStyle(index: number): CSSProperties {
-  // Deterministic values keep hydration stable while giving each piece its own
-  // Robinhood-inspired pop, flutter, and slow fall through the viewport.
-  const startX = ((index * 47) % 126) - 13;
-  const driftX = ((index * 31) % 34) - 17;
-  const swayX = ((index * 23) % 26) - 13;
-  const spinDirection = index % 2 === 0 ? 1 : -1;
-  const spin = spinDirection * (560 + (index % 6) * 120);
-  const size = 7 + (index % 5) * 1.25;
-  return {
-    "--confetti-start-x": `${startX}vw`,
-    "--confetti-sway-a": `${swayX}vw`,
-    "--confetti-sway-b": `${swayX * -0.62}vw`,
-    "--confetti-drift-x": `${driftX}vw`,
-    "--confetti-fall": `${112 + (index % 4) * 6}dvh`,
-    "--confetti-size": `${size}px`,
-    "--confetti-height": `${size * (index % 4 === 0 ? 1 : 1.65)}px`,
-    "--confetti-delay": `${(index % 24) * 15 + Math.floor(index / 24) * 30}ms`,
-    "--confetti-duration": `${3600 + (index % 7) * 150}ms`,
-    "--confetti-spin-a": `${spin * 0.3}deg`,
-    "--confetti-spin-b": `${spin * 0.68}deg`,
-    "--confetti-spin-c": `${spin}deg`,
-  } as CSSProperties;
-}
 
 const THEME_STORAGE_KEY = "basketsense-color-theme";
 
@@ -468,6 +444,7 @@ export function BasketSenseDashboard({
   const [themeReady, setThemeReady] = useState(false);
   const refreshPromise = useRef<Promise<void> | null>(null);
   const listRefreshPromise = useRef<Promise<void> | null>(null);
+  const pendingCheckedStates = useRef(new Map<string, boolean>());
   const toastTimer = useRef<number | null>(null);
   const checkedAnimationTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
@@ -515,6 +492,20 @@ export function BasketSenseDashboard({
     },
     [],
   );
+
+  function keepPendingCheckedStates(listItems: SharedListItem[]) {
+    if (!pendingCheckedStates.current.size) return listItems;
+
+    return listItems.map((item) => {
+      const expectedChecked = pendingCheckedStates.current.get(item.id);
+      if (expectedChecked === undefined) return item;
+      if (item.checked === expectedChecked) {
+        pendingCheckedStates.current.delete(item.id);
+        return item;
+      }
+      return { ...item, checked: expectedChecked };
+    });
+  }
 
   useEffect(() => {
     const colorScheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -592,7 +583,11 @@ export function BasketSenseDashboard({
             apiErrorMessage(body, "The shared household could not be reached."),
           );
         }
-        setHousehold(body as HouseholdSnapshot);
+        const snapshot = body as HouseholdSnapshot;
+        setHousehold({
+          ...snapshot,
+          listItems: keepPendingCheckedStates(snapshot.listItems),
+        });
         setSyncStatus("shared");
         setSyncError(null);
         setLastSyncedAt(new Date());
@@ -651,7 +646,7 @@ export function BasketSenseDashboard({
               : {
                   ...current,
                   currentTrip: snapshot.currentTrip,
-                  listItems: snapshot.listItems,
+                  listItems: keepPendingCheckedStates(snapshot.listItems),
                 },
           );
           setSyncStatus("shared");
@@ -867,6 +862,7 @@ export function BasketSenseDashboard({
       flash(request.successMessage);
       return true;
     } catch (error) {
+      request.onFailure?.();
       const failure = {
         message:
           error instanceof Error ? error.message : "That change was not saved.",
@@ -935,6 +931,7 @@ export function BasketSenseDashboard({
 
   function toggleChecked(item: SharedListItem) {
     const key = `item-${item.id}`;
+    const nextChecked = !item.checked;
     if (!item.checked) {
       if (checkedAnimationTimer.current !== null) {
         window.clearTimeout(checkedAnimationTimer.current);
@@ -945,13 +942,14 @@ export function BasketSenseDashboard({
         checkedAnimationTimer.current = null;
       }, 500);
     }
+    pendingCheckedStates.current.set(item.id, nextChecked);
     setHousehold((current) =>
       current
         ? {
             ...current,
             listItems: current.listItems.map((candidate) =>
               candidate.id === item.id
-                ? { ...candidate, checked: !item.checked }
+                ? { ...candidate, checked: nextChecked }
                 : candidate,
             ),
           }
@@ -962,9 +960,12 @@ export function BasketSenseDashboard({
       body: {
         action: "set_item_checked",
         itemId: item.id,
-        checked: !item.checked,
+        checked: nextChecked,
       },
       successMessage: item.checked ? "Item unchecked" : "Item checked off",
+      onFailure: () => {
+        pendingCheckedStates.current.delete(item.id);
+      },
     });
   }
 
@@ -2108,7 +2109,7 @@ function ThisWeekTab({
                 {Array.from({ length: 120 }, (_, index) => (
                   <span
                     key={index}
-                    style={shoppingCompleteConfettiStyle(index)}
+                    style={topDownConfettiStyle(index)}
                   />
                 ))}
               </div>
