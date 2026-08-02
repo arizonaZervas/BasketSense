@@ -3684,8 +3684,10 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
     discountCents: row.discount_cents,
     netAmountCents: row.net_amount_cents,
     isReturn: Boolean(row.is_return),
-    parseConfidenceBps:
-      row.product_id === null ? 0 : (row.match_confidence_bps ?? 9_000),
+    // A missing catalog match is not a failed receipt parse. Once the household
+    // has checked and saved the receipt, an uncataloged item is valid receipt
+    // evidence and belongs in receipt-only additions rather than Needs review.
+    parseConfidenceBps: row.match_confidence_bps ?? 9_000,
   };
 }
 
@@ -3755,10 +3757,13 @@ function buildClosedLoopComparison(
   for (const item of receiptItems) {
     if (matchedReceiptIds.has(item.id)) continue;
     const paidCents = receiptPaidCents(item);
-    if (!item.product_id || item.match_confidence_bps === 0) {
+    if (item.discount_cents > 0 && item.line_subtotal_cents === 0) continue;
+    if (item.is_return) {
       unresolvedCents += paidCents;
       unresolved.push({ receiptItemId: item.id });
     } else {
+      // Catalog membership is optional. A household-reviewed receipt line is
+      // still valid purchase evidence even when it is new to BasketSense.
       additionsCents += paidCents;
       receiptOnly.push({ receiptItemId: item.id });
     }
@@ -3977,25 +3982,34 @@ async function rebuildReviewQuestions(
   const candidates: QuestionCandidateInput[] = [];
   const receiptById = new Map(receiptItems.map((item) => [item.id, item]));
   const intentById = new Map(intentItems.map((item) => [item.id, item]));
+  const matchedReceiptIds = new Set(
+    persistedMatches.map((match) => match.receipt_item_id)
+  );
   const tenPercentThreshold = Math.round(
     Math.abs(receipt.total_cents) * 0.1
   );
   const materialThreshold =
     tenPercentThreshold > 0 ? Math.min(1500, tenPercentThreshold) : 1500;
-  const materialUnresolved = comparison.buckets.unresolved
-    .map((entry) => receiptById.get(entry.receiptItemId))
-    .filter((item): item is ReceiptItemRow => Boolean(item))
-    .filter((item) => Math.abs(item.net_amount_cents) >= materialThreshold)
+  const materialCatalogCandidate = receiptItems
+    .filter(
+      (item) =>
+        !matchedReceiptIds.has(item.id) &&
+        !item.product_id &&
+        !item.is_return &&
+        item.discount_cents === 0 &&
+        item.net_amount_cents > 0 &&
+        item.net_amount_cents >= materialThreshold
+    )
     .sort(
       (left, right) =>
         Math.abs(right.net_amount_cents) - Math.abs(left.net_amount_cents)
     )[0];
-  if (materialUnresolved) {
+  if (materialCatalogCandidate) {
     candidates.push({
-      key: `verify-line:${materialUnresolved.id}`,
+      key: `verify-line:${materialCatalogCandidate.id}`,
       purpose: "data_quality",
-      prompt: `Add “${materialUnresolved.raw_description}” (${moneyLabel(
-        materialUnresolved.net_amount_cents
+      prompt: `Add “${materialCatalogCandidate.raw_description}” (${moneyLabel(
+        materialCatalogCandidate.net_amount_cents
       )}) to your household catalog?`,
       options: [
         {
@@ -4006,12 +4020,12 @@ async function rebuildReviewQuestions(
         {
           value: "leave_unresolved",
           label: "Not now",
-          effect: "Keeps this line outside the catalog until you decide.",
+          effect: "Keeps this receipt line uncataloged without blocking the final recap.",
         },
       ],
-      declaredEffect: "Creates one confirmed household catalog product or leaves this line unresolved",
+      declaredEffect: "Creates one confirmed household catalog product or leaves this receipt line uncataloged",
       effectTarget: "receipt_record",
-      receiptItemId: materialUnresolved.id,
+      receiptItemId: materialCatalogCandidate.id,
       priority: 10,
     });
   }
@@ -4117,9 +4131,6 @@ async function rebuildReviewQuestions(
     });
   }
 
-  const matchedReceiptIds = new Set(
-    persistedMatches.map((match) => match.receipt_item_id)
-  );
   const largestAddition = receiptItems
     .filter(
       (item) =>

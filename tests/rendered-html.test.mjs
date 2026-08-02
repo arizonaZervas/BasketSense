@@ -124,6 +124,8 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(reviewSource, /Saved \$\{money\.format/);
   assert.match(reviewSource, /Choose the receipt line that was this saved item/);
   assert.match(reviewSource, /Confirm match/);
+  assert.match(reviewSource, /Review receipt lines/);
+  assert.match(reviewSource, /onReviewReceipt=\{\(\) => onOpenReceipt\("check"\)\}/);
   assert.doesNotMatch(reviewSource, /Matched price or quantity change/);
 });
 

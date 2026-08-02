@@ -5454,6 +5454,16 @@ button.price-point:hover {
   padding: 12px;
 }
 
+.trip-story-caveat-copy {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.trip-story-caveat-copy .secondary-button {
+  min-height: 40px;
+}
+
 .trip-story-caveat > span {
   display: grid;
   width: 28px;
@@ -5478,6 +5488,10 @@ button.price-point:hover {
 
 .trip-story-caveat strong {
   margin-right: 4px;
+}
+
+.receipt-spotlight-review-action {
+  width: 100%;
 }
 
 .bridge-totals {

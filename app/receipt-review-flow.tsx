@@ -1576,6 +1576,7 @@ export function ReceiptFlowDialog({
               <ExpectedActualBridge
                 comparison={workingClosedLoop.comparison}
                 receiptItems={workingClosedLoop.items ?? []}
+                onReviewReceipt={() => setStep("check")}
               />
             ) : (
               <div className="receipt-flow-note">
@@ -1627,9 +1628,11 @@ export function ReceiptFlowDialog({
 export function ExpectedActualBridge({
   comparison,
   receiptItems = [],
+  onReviewReceipt,
 }: {
   comparison: ClosedLoopComparison;
   receiptItems?: ClosedLoopReceiptItem[];
+  onReviewReceipt?: () => void;
 }) {
   const buckets = normalizeBuckets(comparison, receiptItems);
   const totalsOnly = comparison.isTotalsOnly === true;
@@ -1740,6 +1743,11 @@ export function ExpectedActualBridge({
   function closeSpotlight() {
     if (spotlightRef.current?.open) spotlightRef.current.close();
     setSpotlightBucket(null);
+  }
+
+  function reviewReceiptLines() {
+    closeSpotlight();
+    onReviewReceipt?.();
   }
 
   function moveSpotlight(direction: -1 | 1) {
@@ -1890,10 +1898,21 @@ export function ExpectedActualBridge({
       {provisional && !totalsOnly ? (
         <div className="trip-story-caveat" role="note">
           <span aria-hidden="true">!</span>
-          <p>
-            <strong>{money.format(unresolvedCents / 100)} still needs a receipt check.</strong>
-            The replay is useful now, and will become final once that amount is matched or corrected.
-          </p>
+          <div className="trip-story-caveat-copy">
+            <p>
+              <strong>
+                {unresolvedCents > 5
+                  ? `${money.format(unresolvedCents / 100)} still needs a receipt check.`
+                  : "The receipt arithmetic still needs a quick check."}
+              </strong>
+              Open the receipt check to correct or confirm the remaining lines.
+            </p>
+            {onReviewReceipt ? (
+              <button type="button" className="secondary-button" onClick={onReviewReceipt}>
+                Review receipt lines
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -1960,6 +1979,16 @@ export function ExpectedActualBridge({
               <span>Chapter total</span>
               <strong>{money.format(spotlightBucket.amountCents / 100)}</strong>
             </div>
+
+            {spotlightBucket.key.toLowerCase() === "unresolved" && onReviewReceipt ? (
+              <button
+                type="button"
+                className="primary-button receipt-spotlight-review-action"
+                onClick={reviewReceiptLines}
+              >
+                Review receipt lines
+              </button>
+            ) : null}
           </div>
         ) : null}
       </dialog>
@@ -2107,6 +2136,7 @@ export function ClosedLoopReview({
             <ExpectedActualBridge
               comparison={closedLoop.comparison}
               receiptItems={closedLoop.items ?? []}
+              onReviewReceipt={() => onOpenReceipt("check")}
             />
           </article>
         </section>

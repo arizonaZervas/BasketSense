@@ -2763,6 +2763,9 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
     const catalogQuestion = ingest.questions.find((question) =>
       question.options.some((option) => option.value === "add_to_catalog"),
     );
+    assert.equal(ingest.comparison.buckets.unresolved.length, 0);
+    assert.equal(ingest.comparison.buckets.receiptOnly.length, 1);
+    assert.equal(ingest.comparison.unresolvedCents, 0);
     assert.ok(catalogQuestion);
     assert.ok(catalogQuestion.receiptItemId);
 
@@ -2889,6 +2892,94 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
   }
 });
 
+test("declining optional catalog enrichment does not block a reviewed receipt", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("optional-catalog@example.test"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest("optional-catalog@example.test", "PATCH", {
+            action: "freeze_trip",
+            tripId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+
+    const ingest = await responseJson(
+      await handleHouseholdPost(
+        householdRequest("optional-catalog@example.test", "POST", {
+          action: "ingest_receipt_draft",
+          clientDraftId: "optional-catalog-line",
+          tripId,
+          purchasedAt: "2026-08-01T10:30:00-07:00",
+          subtotalCents: 1799,
+          taxCents: 0,
+          totalCents: 1799,
+          discountCents: 0,
+          items: [
+            receiptDraftLine({
+              sourceLineNumber: 1,
+              costcoItemNumber: "1122334",
+              rawDescription: "NEW HOUSEHOLD ITEM",
+              unitPriceCents: 1799,
+              lineSubtotalCents: 1799,
+            }),
+          ],
+        }),
+        db,
+      ),
+    );
+    assert.equal(ingest.comparison.buckets.unresolved.length, 0);
+    assert.equal(ingest.comparison.buckets.receiptOnly.length, 1);
+
+    const catalogQuestion = ingest.questions.find((question) =>
+      question.options.some((option) => option.value === "add_to_catalog"),
+    );
+    assert.ok(catalogQuestion);
+    const notNowResponse = await handleHouseholdPost(
+      householdRequest("optional-catalog@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: catalogQuestion.id,
+        value: "leave_unresolved",
+      }),
+      db,
+    );
+    assert.equal(notNowResponse.status, 200);
+
+    const finalizeResponse = await handleHouseholdPatch(
+      householdRequest("optional-catalog@example.test", "PATCH", {
+        action: "finalize_receipt",
+        receiptId: ingest.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizeResponse.status, 200);
+
+    const refreshed = await responseJson(
+      await handleHouseholdGet(householdRequest("optional-catalog@example.test"), db),
+    );
+    assert.equal(refreshed.closedLoop.receipt.id, ingest.receiptId);
+    assert.equal(refreshed.closedLoop.comparison.isProvisional, false);
+    assert.equal(refreshed.closedLoop.comparison.buckets.unresolved.length, 0);
+    assert.equal(refreshed.closedLoop.comparison.buckets.receiptOnly.length, 1);
+    assert.equal(
+      db.database
+        .prepare(`SELECT product_id FROM receipt_items WHERE receipt_transaction_id = ?`)
+        .get(ingest.receiptId).product_id,
+      null,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("a provisional receipt refuses finalization and review answers have bounded idempotent effects", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -2960,7 +3051,8 @@ test("a provisional receipt refuses finalization and review answers have bounded
     assert.equal(draft.comparison.arithmetic.subtotalDeltaCents, -6);
     assert.equal(draft.comparison.arithmetic.isReconciled, false);
     assert.equal(draft.comparison.isProvisional, true);
-    assert.equal(draft.comparison.buckets.unresolved.length, 1);
+    assert.equal(draft.comparison.buckets.unresolved.length, 0);
+    assert.equal(draft.comparison.buckets.receiptOnly.length, 2);
     assert.equal(
       db.database.prepare(`SELECT status FROM trips WHERE id = ?`).get(tripId)
         .status,
