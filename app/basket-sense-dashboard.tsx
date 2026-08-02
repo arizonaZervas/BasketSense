@@ -158,7 +158,7 @@ type BasketSenseDashboardProps = {
   sandboxMode?: boolean;
 };
 
-type ProductSort = "alphabetical" | "recent";
+type ProductSort = "alphabetical" | "recent" | "rank";
 
 const primaryTabs = [
   { id: "week", label: "List", symbol: "✓" },
@@ -3636,13 +3636,26 @@ function ProductsTab({
         value.toLocaleLowerCase().includes(query),
       );
     });
-    return matching.sort((left, right) =>
-      sort === "alphabetical"
-        ? productDisplayName(left).localeCompare(productDisplayName(right)) ||
+    return matching.sort((left, right) => {
+      if (sort === "alphabetical") {
+        return (
+          productDisplayName(left).localeCompare(productDisplayName(right)) ||
           left.itemNumber.localeCompare(right.itemNumber)
-        : (right.lastPurchasedOn ?? "").localeCompare(left.lastPurchasedOn ?? "") ||
-          productDisplayName(left).localeCompare(productDisplayName(right)),
-    );
+        );
+      }
+      if (sort === "rank") {
+        return (
+          right.purchaseCount - left.purchaseCount ||
+          productDisplayName(left).localeCompare(productDisplayName(right)) ||
+          left.itemNumber.localeCompare(right.itemNumber)
+        );
+      }
+      return (
+        (right.lastPurchasedOn ?? "").localeCompare(left.lastPurchasedOn ?? "") ||
+        productDisplayName(left).localeCompare(productDisplayName(right)) ||
+        left.itemNumber.localeCompare(right.itemNumber)
+      );
+    });
   }, [category, products, search, sort]);
   const selected =
     products.find((product) => product.id === selectedProductId) ?? products[0];
@@ -3820,6 +3833,7 @@ function ProductsTab({
             >
               <option value="alphabetical">A–Z</option>
               <option value="recent">Most recent</option>
+              <option value="rank">Purchase rank</option>
             </select>
           </label>
         </div>
@@ -3895,9 +3909,15 @@ function ProductsTab({
         <div className="product-list card" aria-label="Product results">
           <div className="product-list-header">
             <span>{filteredProducts.length} products</span>
-            <span>{sort === "alphabetical" ? "Alphabetical" : "Most recent"}</span>
+            <span>
+              {sort === "alphabetical"
+                ? "Alphabetical"
+                : sort === "rank"
+                  ? "Most purchased"
+                  : "Most recent"}
+            </span>
           </div>
-          {filteredProducts.map((product) => {
+          {filteredProducts.map((product, index) => {
             const priceDelta =
               product.lastPriceCents !== null && product.previousPriceCents !== null
                 ? product.lastPriceCents - product.previousPriceCents
@@ -3947,6 +3967,7 @@ function ProductsTab({
                   <span className="product-main">
                     <strong title={rowProductName}>{rowProductName}</strong>
                     <small>
+                      {sort === "rank" ? `Rank ${index + 1} · ` : ""}
                       {product.categoryLabel} · {product.purchaseCount}{" "}
                       {product.purchaseCount === 1 ? "purchase" : "purchases"}
                       {rowCatalogProduct?.imageCandidateCount
