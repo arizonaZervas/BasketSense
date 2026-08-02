@@ -343,7 +343,28 @@ function draftFromClosedLoop(closedLoop: ClosedLoopSnapshot | null | undefined) 
   } satisfies ReceiptDraft;
 }
 
-export function draftFromParser(value: unknown): ReceiptDraft {
+function receiptDateForExpectedTrip(
+  parsedDate: string | null | undefined,
+  expectedPurchasedOn?: string | null,
+) {
+  const fallback = expectedPurchasedOn ?? todayInputValue();
+  if (!parsedDate) return fallback;
+  const purchasedOn = parsedDate.slice(0, 10);
+  const expectedOn = expectedPurchasedOn?.slice(0, 10);
+  if (
+    expectedOn &&
+    purchasedOn.slice(5) === expectedOn.slice(5) &&
+    purchasedOn.slice(0, 4) !== expectedOn.slice(0, 4)
+  ) {
+    return expectedOn;
+  }
+  return purchasedOn;
+}
+
+export function draftFromParser(
+  value: unknown,
+  expectedPurchasedOn?: string | null,
+): ReceiptDraft {
   const parsed = (value ?? {}) as {
     purchasedAt?: string | null;
     purchasedOn?: string | null;
@@ -391,9 +412,9 @@ export function draftFromParser(value: unknown): ReceiptDraft {
     taxStatus: item.taxStatus ?? "unknown",
   }));
   return {
-    purchasedOn: (parsed.purchasedAt ?? parsed.purchasedOn ?? todayInputValue()).slice(
-      0,
-      10,
+    purchasedOn: receiptDateForExpectedTrip(
+      parsed.purchasedAt ?? parsed.purchasedOn,
+      expectedPurchasedOn,
     ),
     subtotal: centsToInput(parsed.subtotalCents),
     tax: centsToInput(parsed.taxCents),
@@ -620,6 +641,7 @@ export function ReceiptFlowDialog({
   open,
   initialStep = "capture",
   tripId,
+  tripScheduledFor,
   tripStatus,
   closedLoop,
   onClose,
@@ -631,6 +653,7 @@ export function ReceiptFlowDialog({
   open: boolean;
   initialStep?: ReceiptStep;
   tripId: string | null;
+  tripScheduledFor?: string | null;
   tripStatus: "planning" | "frozen" | "completed" | null;
   closedLoop?: ClosedLoopSnapshot | null;
   onClose: () => void;
@@ -736,7 +759,7 @@ export function ReceiptFlowDialog({
             setPendingParsedDraft(ingestion.draft);
             setOcrStatus("Draft ready — your edits are still in place");
           } else {
-            setDraft(draftFromParser(ingestion.draft));
+            setDraft(draftFromParser(ingestion.draft, tripScheduledFor));
             appliedIngestionDraftId.current = receiptIngestionId;
             setPendingParsedDraft(null);
             setOcrStatus("Draft ready to check");
@@ -774,7 +797,14 @@ export function ReceiptFlowDialog({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [draft, open, pollReceiptIngestion, receiptIngestionId]);
+  }, [
+    draft,
+    open,
+    pollReceiptIngestion,
+    receiptIngestionId,
+    sandboxMode,
+    tripScheduledFor,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -937,7 +967,7 @@ export function ReceiptFlowDialog({
           setPendingParsedDraft(ingestion.draft);
           setOcrStatus("Draft ready — your edits are still in place");
         } else {
-          setDraft(draftFromParser(ingestion.draft));
+          setDraft(draftFromParser(ingestion.draft, tripScheduledFor));
           appliedIngestionDraftId.current = ingestion.id;
           setOcrStatus("Receipt read — check the totals and items");
         }
@@ -1354,7 +1384,7 @@ export function ReceiptFlowDialog({
                   type="button"
                   className="text-button"
                   onClick={() => {
-                    setDraft(draftFromParser(pendingParsedDraft));
+                    setDraft(draftFromParser(pendingParsedDraft, tripScheduledFor));
                     appliedIngestionDraftId.current = receiptIngestionId;
                     setPendingParsedDraft(null);
                     setOcrStatus("Draft ready to check");

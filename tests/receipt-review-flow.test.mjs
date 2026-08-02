@@ -65,3 +65,19 @@ test("a manually marked discount saves as negative evidence, not a product", () 
   assert.equal(saved.discountCents, 200);
   assert.equal(saved.netAmountCents, -200);
 });
+
+test("the review draft aligns an OCR year error to the active trip date", () => {
+  const draft = draftFromParser(
+    {
+      purchasedAt: "2020-08-01",
+      subtotalCents: 1000,
+      taxCents: 0,
+      totalCents: 1000,
+      discountCents: 0,
+      items: [],
+    },
+    "2026-08-01",
+  );
+
+  assert.equal(draft.purchasedOn, "2026-08-01");
+});

@@ -3447,6 +3447,37 @@ function requiredDateTime(value: unknown, field: string) {
   return date.toISOString();
 }
 
+const RECEIPT_TRIP_DATE_TOLERANCE_DAYS = 14;
+
+function receiptDateForTrip(
+  value: unknown,
+  trip: TripRow,
+  field = "purchasedAt"
+) {
+  const parsed = requiredDateTime(value, field);
+  const purchasedOn = parsed.slice(0, 10);
+  const scheduledFor = trip.scheduled_for.slice(0, 10);
+
+  if (
+    purchasedOn.slice(5) === scheduledFor.slice(5) &&
+    purchasedOn.slice(0, 4) !== scheduledFor.slice(0, 4)
+  ) {
+    return `${scheduledFor}T00:00:00.000Z`;
+  }
+
+  const purchasedDay = Date.parse(`${purchasedOn}T00:00:00.000Z`);
+  const scheduledDay = Date.parse(`${scheduledFor}T00:00:00.000Z`);
+  const dayDistance = Math.abs(purchasedDay - scheduledDay) / 86_400_000;
+  if (dayDistance > RECEIPT_TRIP_DATE_TOLERANCE_DAYS) {
+    throw new ApiError(
+      400,
+      `${field} must be within ${RECEIPT_TRIP_DATE_TOLERANCE_DAYS} days of the trip date`
+    );
+  }
+
+  return parsed;
+}
+
 function validateDraftItems(
   value: unknown,
   allowTotalsOnly = false
@@ -4678,7 +4709,7 @@ async function ingestReceiptDraft(
     throw new ApiError(409, "This trip already has a receipt draft");
   }
 
-  const purchasedAt = requiredDateTime(body.purchasedAt, "purchasedAt");
+  const purchasedAt = receiptDateForTrip(body.purchasedAt, trip);
   const subtotalCents = requiredInteger(
     body.subtotalCents,
     "subtotalCents",
@@ -4778,12 +4809,14 @@ async function updateReceiptDraft(
   if (receipt.source_type !== "receipt_photo") {
     throw new ApiError(409, "Audited historical receipts cannot be edited here");
   }
-  if (receipt.trip_id) {
-    const trip = await authorizedTrip(
+  const trip = receipt.trip_id
+    ? await authorizedTrip(
       db,
       context.household.id,
       receipt.trip_id
-    );
+    )
+    : null;
+  if (trip) {
     if (trip.status === "completed") {
       throw new ApiError(
         409,
@@ -4794,7 +4827,9 @@ async function updateReceiptDraft(
   const purchasedAt =
     body.purchasedAt === undefined
       ? receipt.purchased_at
-      : requiredDateTime(body.purchasedAt, "purchasedAt");
+      : trip
+        ? receiptDateForTrip(body.purchasedAt, trip)
+        : requiredDateTime(body.purchasedAt, "purchasedAt");
   const subtotalCents =
     body.subtotalCents === undefined
       ? receipt.subtotal_cents

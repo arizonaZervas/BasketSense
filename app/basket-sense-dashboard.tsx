@@ -1444,6 +1444,7 @@ export function BasketSenseDashboard({
         open={isReceiptFlowOpen}
         initialStep={receiptFlowInitialStep}
         tripId={household?.currentTrip.id ?? null}
+        tripScheduledFor={household?.currentTrip.scheduledFor ?? null}
         tripStatus={household?.currentTrip.status ?? null}
         closedLoop={
           receiptFlowScope === "latest" ? closedLoop : currentTripClosedLoop

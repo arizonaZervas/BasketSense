@@ -603,6 +603,52 @@ test("trip report outbox migration creates an idempotent delivery ledger", () =>
   }
 });
 
+test("August receipt date migration repairs only the linked 2026 trip", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE trips (
+        id TEXT PRIMARY KEY NOT NULL,
+        scheduled_for TEXT NOT NULL
+      );
+      CREATE TABLE receipt_transactions (
+        id TEXT PRIMARY KEY NOT NULL,
+        trip_id TEXT,
+        source_type TEXT NOT NULL,
+        purchased_at TEXT NOT NULL,
+        total_cents INTEGER NOT NULL
+      );
+      INSERT INTO trips (id, scheduled_for)
+      VALUES ('trip-august-1', '2026-08-01');
+      INSERT INTO receipt_transactions (
+        id, trip_id, source_type, purchased_at, total_cents
+      ) VALUES
+        ('repair-me', 'trip-august-1', 'receipt_photo', '2020-08-01T00:00:00.000Z', 17181),
+        ('leave-me', NULL, 'receipt_photo', '2020-08-01T00:00:00.000Z', 17181);
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0006_fix_august_receipt_date.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+
+    const rows = db.database
+      .prepare(
+        `SELECT id, purchased_at AS purchasedAt
+         FROM receipt_transactions ORDER BY id`,
+      )
+      .all();
+    assert.deepEqual(rows.map((row) => ({ ...row })), [
+      { id: "leave-me", purchasedAt: "2020-08-01T00:00:00.000Z" },
+      { id: "repair-me", purchasedAt: "2026-08-01T00:00:00.000Z" },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
 test("receipt cadence produces a conservative, explainable July 25 list", () => {
   const recommendations = buildSaturdayRecommendations(
     RECURRING_PRODUCT_HISTORIES_2026,
@@ -2009,6 +2055,69 @@ function productForListItem(state, listItem) {
   assert.ok(product?.costcoItemNumber, `Expected ${listItem.label} to have a Costco item number`);
   return product;
 }
+
+test("receipt ingestion repairs an OCR year error from the linked trip date", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("receipt-date@example.test"), db),
+    );
+    const scheduledFor = initial.currentTrip.scheduledFor;
+    const wrongYear = `${Number(scheduledFor.slice(0, 4)) - 6}${scheduledFor.slice(4)}`;
+
+    const response = await handleHouseholdPost(
+      householdRequest("receipt-date@example.test", "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "receipt-date-year-repair",
+        tripId: initial.currentTrip.id,
+        purchasedAt: wrongYear,
+        subtotalCents: 1000,
+        taxCents: 0,
+        totalCents: 1000,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+
+    assert.equal(response.status, 200);
+    const ingested = await responseJson(response);
+    assert.equal(ingested.receipt.purchasedAt.slice(0, 10), scheduledFor);
+  } finally {
+    db.close();
+  }
+});
+
+test("receipt ingestion rejects a date far from the linked trip", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("receipt-date-guard@example.test"), db),
+    );
+    const response = await handleHouseholdPost(
+      householdRequest("receipt-date-guard@example.test", "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "receipt-date-too-far",
+        tripId: initial.currentTrip.id,
+        purchasedAt: "2025-01-02",
+        subtotalCents: 1000,
+        taxCents: 0,
+        totalCents: 1000,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+
+    assert.equal(response.status, 400);
+    const body = await responseJson(response);
+    assert.match(body.error, /within 14 days of the trip date/i);
+  } finally {
+    db.close();
+  }
+});
 
 test("receipt discounts fold into the product paid price and stay out of additions", async () => {
   const db = new D1DatabaseAdapter();

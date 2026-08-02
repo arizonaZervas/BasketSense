@@ -43,6 +43,13 @@
       "when": 1785065581188,
       "tag": "0005_cheerful_the_professor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785648055408,
+      "tag": "0006_fix_august_receipt_date",
+      "breakpoints": true
     }
   ]
 }
