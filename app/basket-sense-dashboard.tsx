@@ -2820,7 +2820,7 @@ function OverviewTab({
             </div>
             <EvidenceBadge label="After discounts" tone="receipt" />
           </div>
-          <ProductCategoryBars
+          <CategorySpendDonut
             categories={categories}
             taxCents={scopeWarehouseTaxCents}
             totalCents={scopeHouseholdCents}
@@ -2895,10 +2895,30 @@ function MonthlyBarChart({
   const max = Math.max(...data.map((month) => month.householdFundedCents));
   const total = data.reduce((sum, month) => sum + month.householdFundedCents, 0);
   const transactions = data.reduce((sum, month) => sum + month.transactionCount, 0);
+  const selected = data.find((month) => month.key === selectedMonth);
+  const highestMonth = data.reduce(
+    (highest, month) =>
+      !highest || month.householdFundedCents > highest.householdFundedCents
+        ? month
+        : highest,
+    undefined as DashboardViewData["months"][number] | undefined,
+  );
   return (
     <div className="bar-chart">
       <div className="chart-scope-actions">
-        <span>Household-funded 2026</span>
+        <div className="chart-scope-copy">
+          <span>{selected ? selected.label : "2026 household-funded"}</span>
+          <strong>
+            {selected
+              ? currency.format(selected.householdFundedCents / 100)
+              : currency.format(total / 100)}
+          </strong>
+          <small>
+            {selected
+              ? `${selected.transactionCount} ${selected.transactionCount === 1 ? "receipt" : "receipts"}`
+              : `Highest month: ${highestMonth?.label ?? "—"}`}
+          </small>
+        </div>
         <button
           type="button"
           className={selectedMonth === "all" ? "active" : ""}
@@ -2943,7 +2963,22 @@ function MonthlyBarChart({
   );
 }
 
-function ProductCategoryBars({
+function polarPoint(cx: number, cy: number, radius: number, angle: number) {
+  const radians = ((angle - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(radians),
+    y: cy + radius * Math.sin(radians),
+  };
+}
+
+function donutArcPath(startAngle: number, endAngle: number) {
+  const start = polarPoint(100, 100, 71, endAngle);
+  const end = polarPoint(100, 100, 71, startAngle);
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  return `M ${start.x} ${start.y} A 71 71 0 ${largeArc} 0 ${end.x} ${end.y}`;
+}
+
+function CategorySpendDonut({
   categories,
   taxCents,
   totalCents,
@@ -2957,63 +2992,90 @@ function ProductCategoryBars({
   const visibleCategories = categories.filter(
     (category) => category.householdViewCents > 0,
   );
-  const max = Math.max(
-    taxCents,
-    ...visibleCategories.map((category) => category.householdViewCents),
+  const categoryTotalCents = visibleCategories.reduce(
+    (sum, category) => sum + category.householdViewCents,
+    0,
   );
+  const slices = visibleCategories.map((category, index) => {
+    const share = categoryTotalCents
+      ? (category.householdViewCents / categoryTotalCents) * 100
+      : 0;
+    const span = (share / 100) * 360;
+    const padding = Math.min(2.2, span / 5);
+    const earlierCents = visibleCategories
+      .slice(0, index)
+      .reduce((sum, earlierCategory) => sum + earlierCategory.householdViewCents, 0);
+    const startAngle = categoryTotalCents
+      ? (earlierCents / categoryTotalCents) * 360
+      : 0;
+    return {
+      category,
+      share,
+      startAngle: startAngle + padding,
+      endAngle: startAngle + span - padding,
+    };
+  });
   return (
-    <div className="category-bars">
-      {visibleCategories.map((category) => {
-        const share = totalCents
-          ? Math.round((category.householdViewCents / totalCents) * 100)
-          : 0;
-        return (
+    <div className="category-donut-explorer">
+      <div className="category-donut-wrap">
+        <svg
+          className="category-donut"
+          viewBox="0 0 200 200"
+          role="group"
+          aria-label={`Category merchandise total: ${currency.format(categoryTotalCents / 100)}`}
+        >
+          <circle className="category-donut-track" cx="100" cy="100" r="71" />
+          {slices.map(({ category, share, startAngle, endAngle }) => (
+            <path
+              key={category.key}
+              className="category-donut-segment"
+              d={donutArcPath(startAngle, endAngle)}
+              stroke={category.color}
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${category.label}: ${currency.format(category.householdViewCents / 100)}, ${Math.round(share)}% of category merchandise`}
+              onClick={() => onSelectCategory(category.key)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectCategory(category.key);
+                }
+              }}
+            />
+          ))}
+        </svg>
+        <div className="category-donut-center" aria-hidden="true">
+          <span>Categories</span>
+          <strong>{currency.format(categoryTotalCents / 100)}</strong>
+        </div>
+      </div>
+
+      <div className="category-donut-legend">
+        {visibleCategories.map((category) => {
+          const share = categoryTotalCents
+            ? Math.round((category.householdViewCents / categoryTotalCents) * 100)
+            : 0;
+          return (
           <button
             type="button"
-            className="category-bar-row category-bar-button"
+            className="category-donut-legend-row"
             key={category.key}
             onClick={() => onSelectCategory(category.key)}
           >
-            <div className="category-label">
-              <span>{category.shortLabel}</span>
-              <strong>{currency.format(category.householdViewCents / 100)}</strong>
-            </div>
-            <div
-              className="category-track"
-              aria-label={`${category.label}: ${currency.format(category.householdViewCents / 100)}, ${share}% of household-funded spend`}
-            >
-              <span
-                style={{
-                  width: `${(category.householdViewCents / max) * 100}%`,
-                  background: category.color,
-                }}
-              />
-            </div>
-            <small>
-              {category.transactionCount} {category.transactionCount === 1 ? "trip" : "trips"} · {share}% · Open details →
-            </small>
+            <span className="category-donut-swatch" style={{ background: category.color }} />
+            <span className="category-donut-legend-copy">
+              <strong>{category.shortLabel}</strong>
+              <small>{category.transactionCount} {category.transactionCount === 1 ? "trip" : "trips"} · {share}%</small>
+            </span>
+            <span>{currency.format(category.householdViewCents / 100)}</span>
           </button>
-        );
-      })}
-      <div className="category-bar-row tax-row">
-        <div className="category-label">
-          <span>Warehouse sales tax</span>
-          <strong>{currency.format(taxCents / 100)}</strong>
-        </div>
-        <div className="category-track" aria-label={`Warehouse sales tax: ${currency.format(taxCents / 100)}`}>
-          <span
-            style={{
-              width: `${max ? (taxCents / max) * 100 : 0}%`,
-              background: "var(--review)",
-            }}
-          />
-        </div>
-        <small>Kept separate instead of being silently allocated to products</small>
+          );
+        })}
+        <p className="channel-footnote">
+          {currency.format(taxCents / 100)} warehouse tax stays separate. Categories show
+          merchandise after discounts; {currency.format(totalCents / 100)} is the full household-funded total.
+        </p>
       </div>
-      <p className="channel-footnote">
-        Warehouse categories use merchandise after discounts and before tax. Fuel
-        and optical use household-funded totals; optical excludes insurance benefits.
-      </p>
     </div>
   );
 }

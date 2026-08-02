@@ -947,7 +947,8 @@ summary:focus-visible,
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.85fr);
+  grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+  align-items: stretch;
   gap: 18px;
   margin-top: 18px;
 }
@@ -959,18 +960,43 @@ summary:focus-visible,
   padding: 26px;
 }
 
+.spend-card,
+.category-card {
+  display: flex;
+  flex-direction: column;
+}
+
 .bar-chart {
   margin-top: 22px;
 }
 
+.spend-card .bar-chart {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
 .chart-scope-actions {
   display: flex;
-  min-height: 44px;
-  align-items: center;
+  min-height: 52px;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.chart-scope-copy span,
+.chart-scope-copy small {
+  display: block;
   color: var(--muted);
   font-size: 12px;
+}
+
+.chart-scope-copy strong {
+  display: block;
+  margin: 2px 0 1px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 19px;
+  letter-spacing: -0.04em;
 }
 
 .chart-scope-actions button {
@@ -989,37 +1015,6 @@ summary:focus-visible,
   background: var(--forest-soft);
 }
 
-.chart-legend {
-  display: flex;
-  justify-content: flex-end;
-  gap: 16px;
-  margin-bottom: 12px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.chart-legend span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.chart-legend i {
-  display: inline-block;
-  width: 11px;
-  height: 11px;
-  border-radius: 3px;
-}
-
-.legend-current {
-  background: var(--forest);
-}
-
-.legend-previous {
-  border: 1px solid var(--control-border);
-  background: var(--surface-muted);
-}
-
 .bars {
   display: grid;
   height: 235px;
@@ -1027,6 +1022,12 @@ summary:focus-visible,
   gap: clamp(6px, 1.5vw, 16px);
   border-bottom: 1px solid var(--line);
   padding: 12px 6px 0;
+}
+
+.spend-card .bars {
+  height: auto;
+  min-height: 235px;
+  flex: 1;
 }
 
 .bar-chart.compact .bars {
@@ -1079,11 +1080,6 @@ summary:focus-visible,
   background: var(--forest);
 }
 
-.bar.previous {
-  border: 1px solid var(--control-border);
-  background: var(--surface-muted);
-}
-
 .bar-group:hover .bar,
 .bar-group:focus .bar {
   opacity: 0.72;
@@ -1103,65 +1099,141 @@ summary:focus-visible,
   line-height: 1.45;
 }
 
-.category-bars {
+.category-donut-explorer {
   display: grid;
-  gap: 17px;
-  margin-top: 25px;
+  min-height: 294px;
+  grid-template-columns: minmax(185px, 0.82fr) minmax(200px, 1.18fr);
+  align-items: center;
+  gap: 22px;
+  margin-top: 22px;
 }
 
-.category-label {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 7px;
-  font-size: 13px;
+.category-donut-wrap {
+  position: relative;
+  width: min(100%, 255px);
+  margin: 0 auto;
 }
 
-.category-label strong {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 12px;
-}
-
-.category-track {
-  height: 9px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--surface-muted);
-}
-
-.category-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-}
-
-.category-bar-row small {
-  display: block;
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.category-bar-button {
+.category-donut {
   display: block;
   width: 100%;
-  min-height: 62px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
+  height: auto;
+  overflow: visible;
+}
+
+.category-donut-track {
+  fill: none;
+  stroke: var(--surface-muted);
+  stroke-width: 28;
+}
+
+.category-donut-segment {
+  fill: none;
   cursor: pointer;
-  padding: 4px;
+  stroke-width: 28;
+  transition:
+    opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke-width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.category-donut-segment:hover,
+.category-donut-segment:focus-visible {
+  opacity: 0.78;
+  outline: none;
+  stroke-width: 33;
+}
+
+.category-donut-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  pointer-events: none;
+  text-align: center;
+}
+
+.category-donut-center span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.category-donut-center strong {
+  margin-top: 2px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 20px;
+  letter-spacing: -0.045em;
+}
+
+.category-donut-legend {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.category-donut-legend-row {
+  display: grid;
+  width: 100%;
+  min-height: 46px;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 6px 7px;
   text-align: left;
 }
 
-.category-bar-button:hover {
+.category-donut-legend-row:hover,
+.category-donut-legend-row:focus-visible {
   background: var(--surface-hover);
+  outline: none;
 }
 
-.tax-row {
-  padding: 4px;
+.category-donut-swatch {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+}
+
+.category-donut-legend-copy {
+  min-width: 0;
+}
+
+.category-donut-legend-copy strong,
+.category-donut-legend-copy small {
+  display: block;
+}
+
+.category-donut-legend-copy strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-donut-legend-copy small {
+  margin-top: 1px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.category-donut-legend-row > span:last-child {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.category-donut-legend .channel-footnote {
+  margin: 10px 7px 0;
+  border-top: 0;
+  padding-top: 0;
+  font-size: 11px;
 }
 
 .learning-section {
@@ -4188,8 +4260,22 @@ button.price-point:hover {
     gap: 6px;
   }
 
-  .chart-legend {
-    justify-content: flex-start;
+  .spend-card .bars {
+    min-height: 190px;
+  }
+
+  .category-donut-explorer {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .category-donut-wrap {
+    width: min(100%, 218px);
+  }
+
+  .category-donut-legend {
+    gap: 3px;
   }
 
   .learning-grid {
