@@ -231,10 +231,34 @@ export interface ProductSummary {
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
+  image: ProductPrimaryImageSummary | null;
+  imageCandidateCount: number;
   brand: string | null;
   unitDescription: string | null;
   active: boolean;
   updatedAt: string;
+}
+
+export interface ProductPrimaryImageSummary {
+  id: string;
+  sourceType: "household_upload" | "open_food_facts" | "manufacturer";
+  sourcePageUrl: string | null;
+  attributionText: string | null;
+  licenseCode: string | null;
+  imageUrl: string;
+  updatedAt: string;
+}
+
+export interface ProductImageSummary extends ProductPrimaryImageSummary {
+  productId: string;
+  productName: string | null;
+  brand: string | null;
+  quantity: string | null;
+  confidenceBps: number | null;
+  status: "candidate" | "approved" | "rejected";
+  isPrimary: boolean;
+  widthPx: number | null;
+  heightPx: number | null;
 }
 
 export interface ReceiptTransactionSummary {
@@ -292,6 +316,7 @@ export type DataHealthTableKey =
   | "households"
   | "householdMembers"
   | "products"
+  | "productImages"
   | "trips"
   | "tripListItems"
   | "receiptTransactions"

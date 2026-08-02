@@ -88,6 +88,75 @@ export const products = sqliteTable(
   ]
 );
 
+export const productImages = sqliteTable(
+  "product_images",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    sourceType: text("source_type", {
+      enum: ["household_upload", "open_food_facts", "manufacturer"],
+    }).notNull(),
+    sourcePageUrl: text("source_page_url"),
+    sourceImageUrl: text("source_image_url"),
+    sourceExternalId: text("source_external_id"),
+    sourceProductName: text("source_product_name"),
+    sourceBrand: text("source_brand"),
+    sourceQuantity: text("source_quantity"),
+    storageKey: text("storage_key"),
+    attributionText: text("attribution_text"),
+    licenseCode: text("license_code"),
+    confidenceBps: integer("confidence_bps"),
+    status: text("status", {
+      enum: ["candidate", "approved", "rejected"],
+    })
+      .notNull()
+      .default("candidate"),
+    isPrimary: integer("is_primary", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    widthPx: integer("width_px"),
+    heightPx: integer("height_px"),
+    contentType: text("content_type"),
+    byteSize: integer("byte_size"),
+    contentSha256: text("content_sha256"),
+    createdByMemberId: text("created_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" },
+    ),
+    reviewedByMemberId: text("reviewed_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" },
+    ),
+    reviewedAt: text("reviewed_at"),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("product_images_product_source_unique")
+      .on(table.productId, table.sourceImageUrl),
+    uniqueIndex("product_images_storage_key_unique")
+      .on(table.storageKey),
+    uniqueIndex("product_images_product_primary_unique")
+      .on(table.productId)
+      .where(sql`is_primary = 1 AND status = 'approved'`),
+    index("product_images_household_status_idx").on(
+      table.householdId,
+      table.status,
+      table.updatedAt,
+    ),
+    index("product_images_product_status_idx").on(
+      table.productId,
+      table.status,
+      table.isPrimary,
+    ),
+  ],
+);
+
 export const trips = sqliteTable(
   "trips",
   {
@@ -691,6 +760,7 @@ export const reviewQuestions = sqliteTable(
 export type Household = typeof households.$inferSelect;
 export type HouseholdMember = typeof householdMembers.$inferSelect;
 export type Product = typeof products.$inferSelect;
+export type ProductImage = typeof productImages.$inferSelect;
 export type Trip = typeof trips.$inferSelect;
 export type TripListItem = typeof tripListItems.$inferSelect;
 export type ReceiptTransaction = typeof receiptTransactions.$inferSelect;

@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- product photos use authenticated R2 and licensed-source proxy URLs that are not compatible with next/image */
+
 import {
   CSSProperties,
   FormEvent,
@@ -17,7 +19,11 @@ import type {
   DashboardTransaction,
   DashboardViewData,
 } from "./dashboard-types";
-import type { HouseholdListResponse } from "./api/household/types";
+import type {
+  HouseholdListResponse,
+  ProductImageSummary,
+  ProductPrimaryImageSummary,
+} from "./api/household/types";
 import { DataHealthExplorer } from "./data-health-explorer";
 import {
   isProductCategoryKey,
@@ -105,6 +111,8 @@ type SharedProduct = HouseholdCatalogProductMetadata & {
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
+  image: ProductPrimaryImageSummary | null;
+  imageCandidateCount: number;
   updatedAt: string;
 };
 
@@ -1393,6 +1401,9 @@ export function BasketSenseDashboard({
             onAddToList={addCatalogProductToList}
             failedWrites={failedWrites}
             onOpenTransaction={openTransaction}
+            onImagesUpdated={async () => {
+              await refreshHousehold(true, true);
+            }}
           />
         ) : null}
 
@@ -3323,6 +3334,232 @@ function ReceiptDetail({
   );
 }
 
+function ProductImageStudio({
+  product,
+  onImagesUpdated,
+}: {
+  product: SharedProduct;
+  onImagesUpdated: () => Promise<void>;
+}) {
+  const uploadInput = useRef<HTMLInputElement | null>(null);
+  const [images, setImages] = useState<ProductImageSummary[]>([]);
+  const [loading, setLoading] = useState<"list" | "discover" | "upload" | string | null>(
+    "list",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void fetch(`/api/product-images?productId=${encodeURIComponent(product.id)}`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        const body = (await response.json().catch(() => null)) as
+          | { images?: ProductImageSummary[] }
+          | null;
+        if (!response.ok) {
+          throw new Error(apiErrorMessage(body, "Product photos could not be loaded."));
+        }
+        if (active) setImages(Array.isArray(body?.images) ? body.images : []);
+      })
+      .catch((loadError: unknown) => {
+        if (!active) return;
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Product photos could not be loaded.",
+        );
+      })
+      .finally(() => {
+        if (active) setLoading(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [product.id]);
+
+  async function runJsonAction(
+    action: "discover" | "approve" | "reject",
+    imageId?: string,
+  ) {
+    const loadingKey = imageId ? `${action}-${imageId}` : action;
+    setLoading(loadingKey);
+    setError(null);
+    try {
+      const response = await fetch("/api/product-images", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          productId: product.id,
+          imageId,
+          force: action === "discover" && images.some((image) => image.status === "candidate"),
+        }),
+      });
+      const body = (await response.json().catch(() => null)) as
+        | { images?: ProductImageSummary[] }
+        | null;
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(body, "The product photo was not updated."));
+      }
+      setImages(Array.isArray(body?.images) ? body.images : []);
+      if (action !== "discover") await onImagesUpdated();
+    } catch (actionError) {
+      setError(
+        actionError instanceof Error
+          ? actionError.message
+          : "The product photo was not updated.",
+      );
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function uploadPhoto(file: File) {
+    setLoading("upload");
+    setError(null);
+    try {
+      const form = new FormData();
+      form.set("productId", product.id);
+      form.set("file", file);
+      const response = await fetch("/api/product-images", {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: form,
+      });
+      const body = (await response.json().catch(() => null)) as
+        | { images?: ProductImageSummary[] }
+        | null;
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(body, "The product photo was not uploaded."));
+      }
+      setImages(Array.isArray(body?.images) ? body.images : []);
+      await onImagesUpdated();
+    } catch (uploadError) {
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "The product photo was not uploaded.",
+      );
+    } finally {
+      if (uploadInput.current) uploadInput.current.value = "";
+      setLoading(null);
+    }
+  }
+
+  const candidates = images.filter((image) => image.status === "candidate");
+  const busy = loading !== null;
+
+  return (
+    <section className="product-image-studio" aria-label="Product photo library">
+      <div className="product-image-studio-heading">
+        <div>
+          <h3>Product photo</h3>
+          <p>
+            Add your own package photo or review licensed Open Food Facts matches.
+          </p>
+        </div>
+        <div className="product-image-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={busy}
+            onClick={() => uploadInput.current?.click()}
+          >
+            {loading === "upload" ? "Uploading…" : "Add your photo"}
+          </button>
+          <input
+            ref={uploadInput}
+            className="product-photo-input"
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void uploadPhoto(file);
+            }}
+          />
+          <button
+            type="button"
+            className="text-button"
+            disabled={busy}
+            onClick={() => void runJsonAction("discover")}
+          >
+            {loading === "discover"
+              ? "Searching…"
+              : candidates.length
+                ? "Refresh matches"
+                : "Find licensed photos"}
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <p className="product-image-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {loading === "list" ? (
+        <p className="product-image-empty">Loading photo options…</p>
+      ) : candidates.length ? (
+        <div className="product-image-candidates">
+          {candidates.map((image) => {
+            const approving = loading === `approve-${image.id}`;
+            const rejecting = loading === `reject-${image.id}`;
+            return (
+              <article className="product-image-candidate" key={image.id}>
+                <img src={image.imageUrl} alt="" loading="lazy" />
+                <div>
+                  <strong>{image.productName ?? "Possible product match"}</strong>
+                  <span>
+                    {[image.brand, image.quantity].filter(Boolean).join(" · ") ||
+                      "Package details unavailable"}
+                  </span>
+                  <small>
+                    {image.confidenceBps === null
+                      ? "Name match not scored"
+                      : `${Math.round(image.confidenceBps / 100)}% name match`}
+                    {" · "}
+                    <a href={image.sourcePageUrl ?? undefined} target="_blank" rel="noreferrer">
+                      Open Food Facts
+                    </a>
+                  </small>
+                </div>
+                <div className="product-image-candidate-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={busy}
+                    onClick={() => void runJsonAction("approve", image.id)}
+                  >
+                    {approving ? "Saving…" : "Use photo"}
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={busy}
+                    onClick={() => void runJsonAction("reject", image.id)}
+                  >
+                    {rejecting ? "Removing…" : "Not this item"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="product-image-empty">
+          No photo options yet. Your own front-of-package photo is the most reliable match.
+        </p>
+      )}
+      <small className="product-image-license">
+        Open Food Facts photos are shown under CC BY-SA 3.0 with source attribution.
+      </small>
+    </section>
+  );
+}
+
 function ProductsTab({
   products,
   catalogProducts,
@@ -3345,6 +3582,7 @@ function ProductsTab({
   onAddToList,
   failedWrites,
   onOpenTransaction,
+  onImagesUpdated,
 }: {
   products: readonly DashboardProduct[];
   catalogProducts: readonly SharedProduct[];
@@ -3371,6 +3609,7 @@ function ProductsTab({
   onAddToList: (product: SharedProduct) => Promise<boolean>;
   failedWrites: Record<string, FailedWrite>;
   onOpenTransaction: (transactionId: string) => void;
+  onImagesUpdated: () => Promise<void>;
 }) {
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement | null>(null);
@@ -3381,6 +3620,12 @@ function ProductsTab({
   >("");
   const [reviewSaving, setReviewSaving] = useState(false);
   const [addingProductId, setAddingProductId] = useState<string | null>(null);
+  const [imageBatch, setImageBatch] = useState<{
+    done: number;
+    total: number;
+    found: number;
+  } | null>(null);
+  const [imageBatchError, setImageBatchError] = useState<string | null>(null);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matching = products.filter((product) => {
@@ -3460,7 +3705,58 @@ function ProductsTab({
     }
   }
 
+  async function findNextLicensedImages() {
+    const queue = catalogProducts
+      .filter((product) => !product.image && product.imageCandidateCount === 0)
+      .sort(
+        (left, right) =>
+          right.purchaseCount - left.purchaseCount ||
+          left.canonicalName.localeCompare(right.canonicalName),
+      )
+      .slice(0, 10);
+    if (!queue.length) return;
+
+    setImageBatch({ done: 0, total: queue.length, found: 0 });
+    setImageBatchError(null);
+    let found = 0;
+    for (let index = 0; index < queue.length; index += 1) {
+      const product = queue[index];
+      try {
+        const response = await fetch("/api/product-images", {
+          method: "POST",
+          headers: { Accept: "application/json", "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "discover", productId: product.id }),
+        });
+        const body = (await response.json().catch(() => null)) as
+          | { images?: ProductImageSummary[] }
+          | null;
+        if (!response.ok) {
+          throw new Error(apiErrorMessage(body, "Licensed image search paused."));
+        }
+        if (body?.images?.some((image) => image.status === "candidate")) found += 1;
+      } catch (batchError) {
+        setImageBatchError(
+          batchError instanceof Error
+            ? batchError.message
+            : "Licensed image search paused.",
+        );
+        break;
+      }
+      setImageBatch({ done: index + 1, total: queue.length, found });
+      if (index < queue.length - 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 6_500));
+      }
+    }
+    await onImagesUpdated();
+    setImageBatch(null);
+  }
+
   if (!selected) return null;
+
+  const picturedProductCount = catalogProducts.filter((product) => product.image).length;
+  const candidateProductCount = catalogProducts.filter(
+    (product) => !product.image && product.imageCandidateCount > 0,
+  ).length;
 
   return (
     <div className="page products-page">
@@ -3530,6 +3826,60 @@ function ProductsTab({
         </p>
       </section>
 
+      <section className="product-image-library" aria-label="Product image library progress">
+        <div className="product-image-library-copy">
+          <strong>Image library</strong>
+          <span>
+            {picturedProductCount} of {catalogProducts.length} products pictured
+            {candidateProductCount > 0
+              ? ` · ${candidateProductCount} ready to review`
+              : ""}
+          </span>
+          <div
+            className="product-image-progress"
+            role="progressbar"
+            aria-label="Products with an approved photo"
+            aria-valuemin={0}
+            aria-valuemax={Math.max(catalogProducts.length, 1)}
+            aria-valuenow={picturedProductCount}
+          >
+            <span
+              style={{
+                width: `${catalogProducts.length ? (picturedProductCount / catalogProducts.length) * 100 : 0}%`,
+              }}
+            />
+          </div>
+          {imageBatch ? (
+            <small aria-live="polite">
+              Searching {Math.min(imageBatch.done + 1, imageBatch.total)} of{" "}
+              {imageBatch.total} · matches found for{" "}
+              {imageBatch.found} products
+            </small>
+          ) : imageBatchError ? (
+            <small className="product-image-error" role="alert">
+              {imageBatchError}
+            </small>
+          ) : (
+            <small>
+              Licensed matches stay in review until one of you confirms the package.
+            </small>
+          )}
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={
+            imageBatch !== null ||
+            !catalogProducts.some(
+              (product) => !product.image && product.imageCandidateCount === 0,
+            )
+          }
+          onClick={() => void findNextLicensedImages()}
+        >
+          {imageBatch ? "Building library…" : "Find next 10"}
+        </button>
+      </section>
+
       <section className={`product-layout ${detailOpen ? "detail-open" : ""}`}>
         <div className="product-list card" aria-label="Product results">
           <div className="product-list-header">
@@ -3570,14 +3920,26 @@ function ProductsTab({
                     setReviewOpen(false);
                   }}
                 >
-                  <span className="product-initial" aria-hidden="true">
-                    {product.name.charAt(0)}
+                  <span
+                    className={`product-initial ${rowCatalogProduct?.image ? "has-photo" : ""}`}
+                    aria-hidden="true"
+                  >
+                    {rowCatalogProduct?.image ? (
+                      <img src={rowCatalogProduct.image.imageUrl} alt="" loading="lazy" />
+                    ) : (
+                      product.name.charAt(0)
+                    )}
                   </span>
                   <span className="product-main">
                     <strong title={rowProductName}>{rowProductName}</strong>
                     <small>
                       {product.categoryLabel} · {product.purchaseCount}{" "}
                       {product.purchaseCount === 1 ? "purchase" : "purchases"}
+                      {rowCatalogProduct?.imageCandidateCount
+                        ? ` · ${rowCatalogProduct.imageCandidateCount} photo ${
+                            rowCatalogProduct.imageCandidateCount === 1 ? "match" : "matches"
+                          }`
+                        : ""}
                     </small>
                   </span>
                   <span className="product-meta">
@@ -3652,15 +4014,31 @@ function ProductsTab({
           >
             ← Back to {openedFromInsights ? "Insights" : "products"}
           </button>
-          <div className="product-detail-top">
-            <div>
+          <div className="product-detail-summary">
+            <figure
+              className={`product-detail-image ${catalogProduct?.image ? "has-photo" : ""}`}
+            >
+              {catalogProduct?.image ? (
+                <img
+                  src={catalogProduct.image.imageUrl}
+                  alt={`${productDisplayName(selected)} package`}
+                />
+              ) : (
+                <>
+                  <span aria-hidden="true">{productDisplayName(selected).charAt(0)}</span>
+                  <figcaption>Photo pending</figcaption>
+                </>
+              )}
+            </figure>
+            <div className="product-detail-top">
+              <div>
               <p className="section-label">Item {selected.itemNumber}</p>
               <h2 ref={detailHeading} tabIndex={-1}>
                 {productDisplayName(selected)}
               </h2>
               <p>{selected.categoryLabel} · receipt history through {formatShortDate(auditThrough)}</p>
-            </div>
-            <div className="product-identification-actions">
+              </div>
+              <div className="product-identification-actions">
               <EvidenceBadge
                 label={
                   selected.classificationStatus === "reviewed"
@@ -3697,6 +4075,7 @@ function ProductsTab({
               >
                 {selectedListItem?.included ? "On active list" : "Add to list"}
               </button>
+              </div>
             </div>
           </div>
           {reviewOpen && catalogProduct ? (
@@ -3766,6 +4145,13 @@ function ProductsTab({
                 </small>
               ) : null}
             </form>
+          ) : null}
+          {catalogProduct ? (
+            <ProductImageStudio
+              key={catalogProduct.id}
+              product={catalogProduct}
+              onImagesUpdated={onImagesUpdated}
+            />
           ) : null}
           <div className="detail-metrics">
             <div>

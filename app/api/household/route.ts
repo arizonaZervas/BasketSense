@@ -155,6 +155,49 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON products (household_id, canonical_name)`,
   `CREATE INDEX IF NOT EXISTS products_household_category_status_idx
     ON products (household_id, category_status)`,
+  `CREATE TABLE IF NOT EXISTS product_images (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_page_url TEXT,
+    source_image_url TEXT,
+    source_external_id TEXT,
+    source_product_name TEXT,
+    source_brand TEXT,
+    source_quantity TEXT,
+    storage_key TEXT,
+    attribution_text TEXT,
+    license_code TEXT,
+    confidence_bps INTEGER,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    width_px INTEGER,
+    height_px INTEGER,
+    content_type TEXT,
+    byte_size INTEGER,
+    content_sha256 TEXT,
+    created_by_member_id TEXT,
+    reviewed_by_member_id TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL,
+    FOREIGN KEY (reviewed_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_images_product_source_unique
+    ON product_images (product_id, source_image_url)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_images_storage_key_unique
+    ON product_images (storage_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_images_product_primary_unique
+    ON product_images (product_id)
+    WHERE is_primary = 1 AND status = 'approved'`,
+  `CREATE INDEX IF NOT EXISTS product_images_household_status_idx
+    ON product_images (household_id, status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS product_images_product_status_idx
+    ON product_images (product_id, status, is_primary)`,
   `CREATE TABLE IF NOT EXISTS trips (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -597,6 +640,13 @@ interface ProductRow {
   latest_paid_unit_price_cents?: number | null;
   latest_discount_unit_cents?: number | null;
   receipt_purchase_count?: number | null;
+  image_id?: string | null;
+  image_source_type?: "household_upload" | "open_food_facts" | "manufacturer" | null;
+  image_source_page_url?: string | null;
+  image_attribution_text?: string | null;
+  image_license_code?: string | null;
+  image_updated_at?: string | null;
+  image_candidate_count?: number | null;
 }
 
 interface ReceiptTransactionRow {
@@ -823,9 +873,10 @@ async function ensureSchema(db: D1Database) {
 async function ensureReadableSchema(db: D1Database) {
   try {
     await db.prepare("SELECT 1 FROM households LIMIT 1").first();
+    await db.prepare("SELECT 1 FROM product_images LIMIT 1").first();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!/no such table:\s*households/i.test(message)) {
+    if (!/no such table:\s*(?:households|product_images)/i.test(message)) {
       throw error;
     }
     await ensureSchema(db);
@@ -1575,6 +1626,18 @@ function productSummary(row: ProductRow): ProductSummary {
     latestPaidUnitPriceCents: row.latest_paid_unit_price_cents ?? null,
     latestDiscountUnitCents: row.latest_discount_unit_cents ?? null,
     purchaseCount: row.receipt_purchase_count ?? 0,
+    image: row.image_id
+      ? {
+          id: row.image_id,
+          sourceType: row.image_source_type ?? "household_upload",
+          sourcePageUrl: row.image_source_page_url ?? null,
+          attributionText: row.image_attribution_text ?? null,
+          licenseCode: row.image_license_code ?? null,
+          imageUrl: `/api/product-images?imageId=${encodeURIComponent(row.image_id)}`,
+          updatedAt: row.image_updated_at ?? row.updated_at,
+        }
+      : null,
+    imageCandidateCount: row.image_candidate_count ?? 0,
     brand: row.brand,
     unitDescription: row.unit_description,
     active: Boolean(row.active),
@@ -1651,6 +1714,13 @@ async function readHouseholdState(
       .prepare(
         `SELECT products.*,
                 reviewer.display_name AS category_reviewed_by_display_name,
+                primary_image.id AS image_id,
+                primary_image.source_type AS image_source_type,
+                primary_image.source_page_url AS image_source_page_url,
+                primary_image.attribution_text AS image_attribution_text,
+                primary_image.license_code AS image_license_code,
+                primary_image.updated_at AS image_updated_at,
+                COALESCE(image_candidates.candidate_count, 0) AS image_candidate_count,
                 latest.raw_description AS latest_raw_description,
                 latest.purchased_at AS latest_purchased_at,
                 latest.regular_unit_price_cents AS latest_regular_unit_price_cents,
@@ -1660,6 +1730,16 @@ async function readHouseholdState(
          FROM products
          LEFT JOIN household_members AS reviewer
            ON reviewer.id = products.category_reviewed_by_member_id
+         LEFT JOIN product_images AS primary_image
+           ON primary_image.product_id = products.id
+          AND primary_image.status = 'approved'
+          AND primary_image.is_primary = 1
+         LEFT JOIN (
+           SELECT product_id, COUNT(*) AS candidate_count
+           FROM product_images
+           WHERE status = 'candidate'
+           GROUP BY product_id
+         ) AS image_candidates ON image_candidates.product_id = products.id
          LEFT JOIN (
            SELECT ranked.* FROM (
              SELECT receipt_items.product_id,
@@ -1770,6 +1850,7 @@ const DATA_HEALTH_TABLES = [
   { key: "households", label: "Households", sql: "SELECT COUNT(*) AS count FROM households WHERE id = ?" },
   { key: "householdMembers", label: "Household members", sql: "SELECT COUNT(*) AS count FROM household_members WHERE household_id = ?" },
   { key: "products", label: "Products", sql: "SELECT COUNT(*) AS count FROM products WHERE household_id = ?" },
+  { key: "productImages", label: "Product images", sql: "SELECT COUNT(*) AS count FROM product_images WHERE household_id = ?" },
   { key: "trips", label: "Trips", sql: "SELECT COUNT(*) AS count FROM trips WHERE household_id = ?" },
   { key: "tripListItems", label: "Live list items", sql: "SELECT COUNT(*) AS count FROM trip_list_items INNER JOIN trips ON trips.id = trip_list_items.trip_id WHERE trips.household_id = ?" },
   { key: "receiptTransactions", label: "Receipt transactions", sql: "SELECT COUNT(*) AS count FROM receipt_transactions WHERE household_id = ?" },
