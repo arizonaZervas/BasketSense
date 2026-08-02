@@ -152,7 +152,10 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
   );
-  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
 
   assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
   assert.match(dashboardSource, /shoppingCompleteConfettiStyle/);
@@ -191,12 +194,27 @@ test("keeps product-history additions and sorting in the shared list flow", asyn
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
   );
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(source, /async function addCatalogProductToList/);
   assert.match(source, /action: "add_list_item"/);
   assert.match(source, /: "Add to list"/);
+  assert.match(source, /className="product-row-open"/);
+  assert.match(source, /className=\{`secondary-button product-row-action/);
+  assert.match(source, /`Add \$\{rowProductName\} to list`/);
+  assert.match(source, /void addProductFromRow\(rowCatalogProduct\)/);
+  assert.match(source, /isOnList\s*\?\s*"On list"/);
   assert.match(source, /<option value="alphabetical">A–Z<\/option>/);
   assert.match(source, /productDisplayName\(left\)\.localeCompare/);
+  assert.match(
+    styles,
+    /\.product-row \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/,
+  );
+  assert.match(styles, /\.product-row-action \{[\s\S]*min-width: 64px;/);
+  assert.match(
+    styles,
+    /@media \(max-width: 520px\)[\s\S]*\.product-row-open \.product-initial \{[\s\S]*display: none;/,
+  );
 });
 
 test("chooses the latest completed trip for the recap", async () => {

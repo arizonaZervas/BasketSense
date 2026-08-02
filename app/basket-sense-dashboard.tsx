@@ -3380,6 +3380,7 @@ function ProductsTab({
     ProductCategoryKey | ""
   >("");
   const [reviewSaving, setReviewSaving] = useState(false);
+  const [addingProductId, setAddingProductId] = useState<string | null>(null);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matching = products.filter((product) => {
@@ -3448,6 +3449,15 @@ function ProductsTab({
     );
     setReviewSaving(false);
     if (saved) setReviewOpen(false);
+  }
+
+  async function addProductFromRow(product: SharedProduct) {
+    setAddingProductId(product.id);
+    try {
+      await onAddToList(product);
+    } finally {
+      setAddingProductId((current) => (current === product.id ? null : current));
+    }
   }
 
   if (!selected) return null;
@@ -3531,46 +3541,97 @@ function ProductsTab({
               product.lastPriceCents !== null && product.previousPriceCents !== null
                 ? product.lastPriceCents - product.previousPriceCents
                 : null;
+            const rowProductName = productDisplayName(product);
+            const rowCatalogProduct = catalogProducts.find(
+              (candidate) => candidate.costcoItemNumber === product.itemNumber,
+            );
+            const rowListItem = rowCatalogProduct
+              ? listItems.find((item) => item.productId === rowCatalogProduct.id)
+              : undefined;
+            const rowAddFailure = rowCatalogProduct
+              ? failedWrites[`product-list-${rowCatalogProduct.id}`]
+              : undefined;
+            const isAdding = addingProductId === rowCatalogProduct?.id;
+            const isOnList = rowListItem?.included === true;
             return (
-              <button
-                type="button"
+              <div
                 key={product.id}
                 className={`product-row ${selected.id === product.id ? "active" : ""}`}
-                aria-current={selected.id === product.id ? "true" : undefined}
-                onClick={(event) => {
-                  returnFocus.current = event.currentTarget;
-                  setSelectedProductId(product.id);
-                  setDetailOpen(true);
-                  setReviewOpen(false);
-                }}
               >
-                <span className="product-initial" aria-hidden="true">
-                  {product.name.charAt(0)}
-                </span>
-                <span className="product-main">
-                  <strong title={productDisplayName(product)}>
-                    {productDisplayName(product)}
-                  </strong>
-                  <small>
-                    {product.categoryLabel} · {product.purchaseCount}{" "}
-                    {product.purchaseCount === 1 ? "purchase" : "purchases"}
-                  </small>
-                </span>
-                <span className="product-meta">
-                  <strong>
-                    {product.lastPriceCents === null
-                      ? "—"
-                      : currency.format(product.lastPriceCents / 100)}
-                  </strong>
-                  <small className={priceDelta !== null && priceDelta > 0 ? "delta-up" : priceDelta !== null && priceDelta < 0 ? "delta-down" : ""}>
-                    {priceDelta === null
-                      ? formatShortDate(product.lastPurchasedOn)
-                      : priceDelta === 0
-                      ? "No latest change"
-                      : `${priceDelta > 0 ? "+" : ""}${currency.format(priceDelta / 100)}`}
-                  </small>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className="product-row-open"
+                  aria-current={selected.id === product.id ? "true" : undefined}
+                  aria-label={`Open details for ${rowProductName}`}
+                  onClick={(event) => {
+                    returnFocus.current = event.currentTarget;
+                    setSelectedProductId(product.id);
+                    setDetailOpen(true);
+                    setReviewOpen(false);
+                  }}
+                >
+                  <span className="product-initial" aria-hidden="true">
+                    {product.name.charAt(0)}
+                  </span>
+                  <span className="product-main">
+                    <strong title={rowProductName}>{rowProductName}</strong>
+                    <small>
+                      {product.categoryLabel} · {product.purchaseCount}{" "}
+                      {product.purchaseCount === 1 ? "purchase" : "purchases"}
+                    </small>
+                  </span>
+                  <span className="product-meta">
+                    <strong>
+                      {product.lastPriceCents === null
+                        ? "—"
+                        : currency.format(product.lastPriceCents / 100)}
+                    </strong>
+                    <small
+                      className={
+                        priceDelta !== null && priceDelta > 0
+                          ? "delta-up"
+                          : priceDelta !== null && priceDelta < 0
+                            ? "delta-down"
+                            : ""
+                      }
+                    >
+                      {priceDelta === null
+                        ? formatShortDate(product.lastPurchasedOn)
+                        : priceDelta === 0
+                        ? "No latest change"
+                        : `${priceDelta > 0 ? "+" : ""}${currency.format(priceDelta / 100)}`}
+                    </small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={`secondary-button product-row-action ${
+                    rowAddFailure ? "has-error" : ""
+                  }`}
+                  disabled={!rowCatalogProduct || isOnList || addingProductId !== null}
+                  aria-label={
+                    isAdding
+                      ? `Adding ${rowProductName} to list`
+                      : isOnList
+                        ? `${rowProductName} is on the active list`
+                        : rowAddFailure
+                          ? `Retry adding ${rowProductName} to list`
+                          : `Add ${rowProductName} to list`
+                  }
+                  title={rowAddFailure?.message}
+                  onClick={() => {
+                    if (rowCatalogProduct) void addProductFromRow(rowCatalogProduct);
+                  }}
+                >
+                  {isAdding
+                    ? "Adding…"
+                    : isOnList
+                      ? "On list"
+                      : rowAddFailure
+                        ? "Retry"
+                        : "Add"}
+                </button>
+              </div>
             );
           })}
           {!filteredProducts.length ? (

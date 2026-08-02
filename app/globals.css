@@ -1488,15 +1488,11 @@ td small {
   display: grid;
   width: 100%;
   min-height: 72px;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  border: 0;
+  gap: 8px;
   border-bottom: 1px solid var(--line);
   background: transparent;
-  cursor: pointer;
-  padding: 10px 16px;
-  text-align: left;
 }
 
 .product-row:hover,
@@ -1506,6 +1502,39 @@ td small {
 
 .product-row.active {
   background: var(--surface-selected);
+}
+
+.product-row-open {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 71px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 10px 4px 10px 16px;
+  text-align: left;
+}
+
+.product-row-open:focus-visible {
+  outline-offset: -4px;
+}
+
+.product-row-action {
+  min-width: 64px;
+  margin-right: 12px;
+  padding-inline: 10px;
+  white-space: nowrap;
+}
+
+.product-row-action.has-error {
+  border-color: var(--danger-border);
+  background: var(--surface-danger);
+  color: var(--danger-ink);
 }
 
 .product-initial {
@@ -3954,6 +3983,10 @@ button.price-point:hover {
     gap: 13px;
   }
 
+  .product-row-action {
+    margin-right: 10px;
+  }
+
   .product-layout:not(.detail-open) .product-detail,
   .product-layout.detail-open .product-list {
     display: none;
@@ -6317,5 +6350,27 @@ button.price-point:hover {
 
   .data-explorer-controls {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .product-row {
+    gap: 4px;
+  }
+
+  .product-row-open {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding-left: 12px;
+  }
+
+  .product-row-open .product-initial {
+    display: none;
+  }
+
+  .product-row-action {
+    min-width: 56px;
+    margin-right: 8px;
+    padding-inline: 8px;
   }
 }
