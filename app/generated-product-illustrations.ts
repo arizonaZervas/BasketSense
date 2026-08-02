@@ -56,6 +56,18 @@ const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
   "5161251": { imageUrl: "/product-illustrations/5161251.jpg", alt: "Illustration of fresh-scent laundry beads" },
   "1892398": { imageUrl: "/product-illustrations/1892398.jpg", alt: "Illustration of a smoothie multipack" },
   "1879628": { imageUrl: "/product-illustrations/1879628.jpg", alt: "Illustration of elderberry-orange wellness gummies" },
+  "1975527": { imageUrl: "/product-illustrations/1975527.jpg", alt: "Illustration of an ultrafiltered milk multipack" },
+  "1025795": { imageUrl: "/product-illustrations/1025795.jpg", alt: "Illustration of a five-dozen egg tray" },
+  "1380620": { imageUrl: "/product-illustrations/1380620.jpg", alt: "Illustration of organic rolled oats" },
+  "1472774": { imageUrl: "/product-illustrations/1472774.jpg", alt: "Illustration of organic fruit bars" },
+  "2011219": { imageUrl: "/product-illustrations/2011219.jpg", alt: "Illustration of protein waffles" },
+  "1917654": { imageUrl: "/product-illustrations/1917654.jpg", alt: "Illustration of green nutrition powder" },
+  "1257371": { imageUrl: "/product-illustrations/1257371.jpg", alt: "Illustration of facial moisturizer" },
+  "2700048": { imageUrl: "/product-illustrations/2700048.jpg", alt: "Illustration of laundry detergent pods" },
+  "1825596": { imageUrl: "/product-illustrations/1825596.jpg", alt: "Illustration of food-storage containers" },
+  "1851658": { imageUrl: "/product-illustrations/1851658.jpg", alt: "Illustration of a bubble blaster toy" },
+  "1564302": { imageUrl: "/product-illustrations/1564302.jpg", alt: "Illustration of children’s T-shirts" },
+  "1953511": { imageUrl: "/product-illustrations/1953511.jpg", alt: "Illustration of twill pants" },
 };
 
 export function generatedProductIllustration(
