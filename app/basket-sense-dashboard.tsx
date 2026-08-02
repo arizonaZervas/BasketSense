@@ -440,7 +440,7 @@ export function BasketSenseDashboard({
   const [productCategory, setProductCategory] = useState<ProductCategoryKey | "all">(
     "all",
   );
-  const [productSort, setProductSort] = useState<ProductSort>("alphabetical");
+  const [productSort, setProductSort] = useState<ProductSort>("rank");
   const [selectedProductId, setSelectedProductId] = useState(
     viewData.products[0]?.id ?? "",
   );
