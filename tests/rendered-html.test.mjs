@@ -171,6 +171,19 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.shopping-complete-confetti/);
   assert.match(styles, /:root\[data-theme="warm"\]/);
   assert.match(styles, /--card-shadow: 0 2px 6px/);
+  assert.match(styles, /font-family: Georgia, "Times New Roman", serif;/);
+  assert.match(
+    styles,
+    /\.week-page > \.page-heading\.with-controls::after[\s\S]*background-image: url\("\/basketsense-social-card\.png"\)/,
+  );
+  assert.match(
+    styles,
+    /\.week-summary > div:first-child[\s\S]*background: var\(--apricot-soft\)/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 760px\)[\s\S]*background-size: 620px auto;/,
+  );
 });
 
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {

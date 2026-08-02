@@ -55,52 +55,52 @@
 
 :root[data-theme="warm"] {
   color-scheme: light;
-  --ink: #203128;
-  --muted: #57645c;
-  --line: #d8cebc;
-  --canvas: #f1ece3;
-  --paper: #fffdf8;
-  --paper-strong: #fff9ee;
-  --forest: #25543e;
-  --forest-dark: #17372a;
-  --forest-soft: #dcebdd;
-  --sage: #6c9274;
-  --apricot: #e98d59;
-  --apricot-soft: #fce3d3;
-  --lilac: #8d84b8;
-  --lilac-soft: #e8e4f3;
-  --sky: #6f9baa;
-  --sand: #8a7247;
-  --rose: #a85f58;
-  --slate: #536f7d;
-  --plum: #6d6188;
-  --review: #747a73;
-  --shadow: 0 3px 8px rgba(74, 57, 35, 0.09);
-  --card-shadow: 0 2px 6px rgba(74, 57, 35, 0.08);
-  --on-forest: #fffdf8;
-  --focus-ring: #2f6a4d;
-  --topbar-bg: rgba(241, 236, 227, 0.94);
-  --hero-bg: #214b38;
-  --mobile-nav-bg: rgba(255, 253, 248, 0.96);
-  --control-bg: rgba(255, 249, 238, 0.92);
-  --control-border: #cbbda5;
-  --surface-subtle: #faf5ea;
-  --surface-hover: #f4ebdc;
-  --surface-selected: #e5eee6;
-  --surface-success: #edf5ed;
-  --surface-success-strong: #e5efe5;
-  --surface-warning: #f8edd9;
-  --surface-danger: #faece5;
-  --surface-sand: #f9eddc;
-  --surface-muted: #ece6da;
-  --success-border: #b9ceb9;
-  --warning-border: #d8bf91;
-  --danger-border: #d9b5a5;
-  --danger-ink: #6d3827;
-  --warm-ink: #684428;
-  --apricot-ink: #703313;
-  --lilac-ink: #4d456f;
-  --popover-shadow: 0 18px 45px rgba(46, 36, 24, 0.18);
+  --ink: #17251e;
+  --muted: #5f5a4f;
+  --line: #d9c9ae;
+  --canvas: #f3ecdf;
+  --paper: #fffaf0;
+  --paper-strong: #fffdf7;
+  --forest: #2c5b43;
+  --forest-dark: #1c3a2d;
+  --forest-soft: #dce9d8;
+  --sage: #7f8d67;
+  --apricot: #df8055;
+  --apricot-soft: #f8ddca;
+  --lilac: #496f86;
+  --lilac-soft: #dfeaf0;
+  --sky: #4f7b93;
+  --sand: #d3a532;
+  --rose: #c96549;
+  --slate: #466a78;
+  --plum: #6c657d;
+  --review: #787a70;
+  --shadow: 0 3px 8px rgba(79, 56, 31, 0.1);
+  --card-shadow: 0 2px 6px rgba(79, 56, 31, 0.09);
+  --on-forest: #fffaf0;
+  --focus-ring: #b95333;
+  --topbar-bg: rgba(243, 236, 223, 0.95);
+  --hero-bg: #274d39;
+  --mobile-nav-bg: rgba(255, 250, 240, 0.97);
+  --control-bg: rgba(255, 253, 247, 0.94);
+  --control-border: #cdbb9d;
+  --surface-subtle: #fbf3e5;
+  --surface-hover: #f6e8d7;
+  --surface-selected: #f6dfcc;
+  --surface-success: #e8f0e5;
+  --surface-success-strong: #dfead9;
+  --surface-warning: #f8e9ce;
+  --surface-danger: #f9e4dc;
+  --surface-sand: #f8e5c7;
+  --surface-muted: #ece3d4;
+  --success-border: #b5c9b2;
+  --warning-border: #d8b978;
+  --danger-border: #d6a692;
+  --danger-ink: #723722;
+  --warm-ink: #74472d;
+  --apricot-ink: #74351f;
+  --lilac-ink: #344f61;
+  --popover-shadow: 0 18px 45px rgba(55, 37, 19, 0.2);
   --radius-card: 15px;
 }
 
@@ -6372,5 +6372,207 @@ button.price-point:hover {
     min-width: 56px;
     margin-right: 8px;
     padding-inline: 8px;
+  }
+}
+
+/* The Warm theme carries the illustrated, household-editorial direction from
+   BasketSense's visual concept into the working product. */
+:root[data-theme="warm"] .brand strong,
+:root[data-theme="warm"] .page-heading h1 {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+:root[data-theme="warm"] .brand strong {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+:root[data-theme="warm"] .brand-mark {
+  background: var(--apricot);
+  box-shadow: 0 3px 6px rgba(18, 38, 28, 0.24);
+}
+
+:root[data-theme="warm"] .desktop-nav button.active {
+  background: var(--apricot);
+  color: var(--forest-dark);
+}
+
+:root[data-theme="warm"] .desktop-nav button.active .nav-glyph {
+  color: var(--forest-dark);
+}
+
+:root[data-theme="warm"] .mobile-nav button.active {
+  color: var(--apricot-ink);
+}
+
+:root[data-theme="warm"] .page-heading h1 {
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+:root[data-theme="warm"] .section-label {
+  color: var(--apricot-ink);
+}
+
+:root[data-theme="warm"] .week-page > .page-heading.with-controls {
+  position: relative;
+  isolation: isolate;
+  min-height: 190px;
+  align-items: center;
+  overflow: hidden;
+  margin-bottom: 26px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--paper-strong);
+  padding: 28px 296px 28px 30px;
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-theme="warm"] .week-page > .page-heading.with-controls::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 280px;
+  border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  background-image: url("/basketsense-social-card.png");
+  background-repeat: no-repeat;
+  background-position: 90% bottom;
+  background-size: 700px auto;
+  pointer-events: none;
+}
+
+:root[data-theme="warm"] .week-page > .page-heading .heading-actions {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-theme="warm"] .trip-phases li.complete span,
+:root[data-theme="warm"] .trip-phases li.active span {
+  background: var(--apricot-soft);
+  color: var(--apricot-ink);
+}
+
+:root[data-theme="warm"] .device-notice {
+  border: 1px solid var(--success-border);
+  border-radius: 12px;
+  background: var(--surface-success);
+}
+
+:root[data-theme="warm"] .quick-add {
+  border-color: var(--control-border);
+  background: var(--paper-strong);
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-theme="warm"] .week-summary {
+  border-color: var(--control-border);
+  background: var(--line);
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-theme="warm"] .week-summary > div:first-child {
+  background: var(--apricot-soft);
+}
+
+:root[data-theme="warm"] .week-summary .estimate-summary {
+  background: var(--surface-success-strong);
+}
+
+:root[data-theme="warm"] .week-summary > div:last-child {
+  background: var(--lilac-soft);
+}
+
+:root[data-theme="warm"] .why-card {
+  border-color: var(--warning-border);
+  background: var(--surface-sand);
+}
+
+:root[data-theme="warm"] .share-card {
+  border-color: var(--forest);
+  background: var(--forest);
+  color: var(--on-forest);
+  box-shadow: none;
+}
+
+:root[data-theme="warm"] .share-card p {
+  color: color-mix(in srgb, var(--on-forest) 78%, transparent);
+}
+
+:root[data-theme="warm"] .share-card .secondary-button {
+  border-color: var(--paper-strong);
+  background: var(--paper-strong);
+  color: var(--forest-dark);
+}
+
+:root[data-theme="warm"] .list-card,
+:root[data-theme="warm"] .product-list,
+:root[data-theme="warm"] .product-detail {
+  border-color: var(--control-border);
+}
+
+@media (max-width: 1180px) {
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls {
+    min-height: 190px;
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    padding: 24px 340px 24px 24px;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls::after {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: 320px;
+    height: auto;
+    border-top: 0;
+    border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+    background-position: right bottom;
+    background-size: 700px auto;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading .heading-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 1050px) {
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls {
+    min-height: 0;
+    justify-content: flex-start;
+    padding: 24px 24px 154px;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls::after {
+    top: auto;
+    left: 0;
+    width: 100%;
+    height: 130px;
+    border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+    border-left: 0;
+    background-position: right bottom;
+    background-size: 1150px auto;
+  }
+}
+
+@media (max-width: 760px) {
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls {
+    padding: 21px 20px 136px;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls::after {
+    top: auto;
+    left: 0;
+    width: 100%;
+    height: 112px;
+    border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+    border-left: 0;
+    background-position: right bottom;
+    background-size: 620px auto;
   }
 }
