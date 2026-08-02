@@ -2196,7 +2196,8 @@ function ThisWeekTab({
                           <div className="list-row-copy-body">
                             <strong>{item.label}</strong>
                             {!shoppingStarted ? (
-                              <>
+                              <details className="item-evidence">
+                                <summary>Why this is here</summary>
                                 <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
                                 <small>
                                   {[
@@ -2206,7 +2207,7 @@ function ThisWeekTab({
                                     .filter(Boolean)
                                     .join(" · ") || sourceLabel(item.source)}
                                 </small>
-                              </>
+                              </details>
                             ) : (
                               <details className="item-evidence">
                                 <summary>Why it is here</summary>
