@@ -138,6 +138,23 @@ const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
   "1608541": { imageUrl: "/product-illustrations/1608541.jpg", alt: "Illustration of a children’s pajama set" },
   "1611893": { imageUrl: "/product-illustrations/1611893.jpg", alt: "Illustration of low-carb keto bread" },
   "1618629": { imageUrl: "/product-illustrations/1618629.jpg", alt: "Illustration of a snack variety pack" },
+  "1638461": { imageUrl: "/product-illustrations/1638461.jpg", alt: "Illustration of organic smoothie pouches" },
+  "1656611": { imageUrl: "/product-illustrations/1656611.jpg", alt: "Illustration of cream cheese" },
+  "1664090": { imageUrl: "/product-illustrations/1664090.jpg", alt: "Illustration of a children’s T-shirt four-pack" },
+  "1673236": { imageUrl: "/product-illustrations/1673236.jpg", alt: "Illustration of slim-fit denim jeans" },
+  "1689295": { imageUrl: "/product-illustrations/1689295.jpg", alt: "Illustration of a toothbrush multipack" },
+  "1699717": { imageUrl: "/product-illustrations/1699717.jpg", alt: "Illustration of fruit strips" },
+  "1723798": { imageUrl: "/product-illustrations/1723798.jpg", alt: "Illustration of a children’s athletic clothing set" },
+  "1737189": { imageUrl: "/product-illustrations/1737189.jpg", alt: "Illustration of hydrating facial moisturizer" },
+  "1739998": { imageUrl: "/product-illustrations/1739998.jpg", alt: "Illustration of kitchen food-wrap rolls" },
+  "1741596": { imageUrl: "/product-illustrations/1741596.jpg", alt: "Illustration of men’s denim jeans" },
+  "1748375": { imageUrl: "/product-illustrations/1748375.jpg", alt: "Illustration of a children’s tutu outfit set" },
+  "1768123": { imageUrl: "/product-illustrations/1768123.jpg", alt: "Illustration of a children’s four-piece clothing set" },
+  "1780375": { imageUrl: "/product-illustrations/1780375.jpg", alt: "Illustration of whey protein powder" },
+  "1784848": { imageUrl: "/product-illustrations/1784848.jpg", alt: "Illustration of a foam water blaster toy" },
+  "1788968": { imageUrl: "/product-illustrations/1788968.jpg", alt: "Illustration of a protein bar variety pack" },
+  "1789247": { imageUrl: "/product-illustrations/1789247.jpg", alt: "Illustration of olive oil" },
+  "1796258": { imageUrl: "/product-illustrations/1796258.jpg", alt: "Illustration of a plush twin blanket" },
 };
 
 export function generatedProductIllustration(
