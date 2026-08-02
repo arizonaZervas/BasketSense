@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CSSProperties,
   ChangeEvent,
   useEffect,
   useMemo,
@@ -12,6 +13,28 @@ import {
   PRODUCT_CATEGORY_PRESENTATION,
   type ProductCategoryKey,
 } from "./product-categories";
+
+function receiptCelebrationConfettiStyle(index: number): CSSProperties {
+  const startX = ((index * 47) % 126) - 13;
+  const driftX = ((index * 31) % 34) - 17;
+  const swayX = ((index * 23) % 26) - 13;
+  const spin = (index % 2 === 0 ? 1 : -1) * (560 + (index % 6) * 120);
+  const size = 7 + (index % 5) * 1.25;
+  return {
+    "--confetti-start-x": `${startX}vw`,
+    "--confetti-sway-a": `${swayX}vw`,
+    "--confetti-sway-b": `${swayX * -0.62}vw`,
+    "--confetti-drift-x": `${driftX}vw`,
+    "--confetti-fall": `${112 + (index % 4) * 6}dvh`,
+    "--confetti-size": `${size}px`,
+    "--confetti-height": `${size * (index % 4 === 0 ? 1 : 1.65)}px`,
+    "--confetti-delay": `${(index % 24) * 15 + Math.floor(index / 24) * 30}ms`,
+    "--confetti-duration": `${3600 + (index % 7) * 150}ms`,
+    "--confetti-spin-a": `${spin * 0.3}deg`,
+    "--confetti-spin-b": `${spin * 0.68}deg`,
+    "--confetti-spin-c": `${spin}deg`,
+  } as CSSProperties;
+}
 
 export type ClosedLoopReceipt = {
   id: string;
@@ -584,30 +607,87 @@ export function ReceiptNextStepCard({
 }) {
   const hasReceipt = Boolean(closedLoop?.receipt);
   const provisional = closedLoop?.comparison?.isProvisional;
+  const receiptId = closedLoop?.receipt?.id ?? null;
+  const frozenEstimateCents = closedLoop?.comparison?.frozenEstimateCents ?? null;
+  const actualTotalCents =
+    closedLoop?.comparison?.actualTotalCents ?? closedLoop?.receipt?.totalCents ?? null;
+  const isCelebrationEligible =
+    !provisional &&
+    frozenEstimateCents !== null &&
+    frozenEstimateCents > 0 &&
+    actualTotalCents !== null &&
+    actualTotalCents <= frozenEstimateCents * 1.2;
+  const [showBudgetCelebration, setShowBudgetCelebration] = useState(false);
+
+  useEffect(() => {
+    if (!receiptId || !isCelebrationEligible) {
+      setShowBudgetCelebration(false);
+      return;
+    }
+    const dismissalKey = `basket-sense-receipt-celebration:${receiptId}`;
+    setShowBudgetCelebration(window.sessionStorage.getItem(dismissalKey) !== "dismissed");
+  }, [isCelebrationEligible, receiptId]);
 
   if (hasReceipt) {
     return (
-      <section className="receipt-next-step card" aria-labelledby="receipt-next-title">
-        <span className="receipt-step-mark" aria-hidden="true">✓</span>
-        <div>
-          <p className="section-label">Trip receipt</p>
-          <h2 id="receipt-next-title">
-            {provisional ? "One quick check remains" : "Receipt linked to this trip"}
-          </h2>
-          <p>
-            {provisional
-              ? "The comparison stays provisional until the unresolved amount is checked."
-              : "Open the expected-to-actual bridge and the evidence-triggered review."}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => onOpen(provisional ? "check" : "bridge")}
-        >
-          {provisional ? "Check receipt" : "View comparison"}
-        </button>
-      </section>
+      <>
+        {showBudgetCelebration ? (
+          <section className="shopping-complete receipt-celebration" role="status" aria-live="polite">
+            <div className="shopping-complete-confetti" aria-hidden="true">
+              {Array.from({ length: 120 }, (_, index) => (
+                <span key={index} style={receiptCelebrationConfettiStyle(index)} />
+              ))}
+            </div>
+            <span className="shopping-complete-mark" aria-hidden="true">✦</span>
+            <div>
+              <strong>
+                {actualTotalCents !== null && frozenEstimateCents !== null && actualTotalCents <= frozenEstimateCents
+                  ? "Under plan — great cart day."
+                  : "Close to plan — great cart day."}
+              </strong>
+              <p>
+                Checkout was {currency.format((actualTotalCents ?? 0) / 100)} against a saved estimate of {currency.format((frozenEstimateCents ?? 0) / 100)}. Room for the fun finds included.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                if (receiptId) {
+                  window.sessionStorage.setItem(
+                    `basket-sense-receipt-celebration:${receiptId}`,
+                    "dismissed",
+                  );
+                }
+                setShowBudgetCelebration(false);
+              }}
+            >
+              Nice
+            </button>
+          </section>
+        ) : null}
+        <section className="receipt-next-step card" aria-labelledby="receipt-next-title">
+          <span className="receipt-step-mark" aria-hidden="true">✓</span>
+          <div>
+            <p className="section-label">Trip receipt</p>
+            <h2 id="receipt-next-title">
+              {provisional ? "One quick check remains" : "Receipt linked to this trip"}
+            </h2>
+            <p>
+              {provisional
+                ? "The comparison stays provisional until the unresolved amount is checked."
+                : "Open the expected-to-actual bridge and the evidence-triggered review."}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => onOpen(provisional ? "check" : "bridge")}
+          >
+            {provisional ? "Check receipt" : "View comparison"}
+          </button>
+        </section>
+      </>
     );
   }
 
