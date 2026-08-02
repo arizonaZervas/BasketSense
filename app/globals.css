@@ -6668,6 +6668,7 @@ button.price-point:hover {
 }
 
 :root[data-theme="warm"] .week-page > .page-heading.with-controls {
+  --week-hero-art-width: clamp(340px, 36%, 400px);
   position: relative;
   isolation: isolate;
   min-height: 190px;
@@ -6677,7 +6678,7 @@ button.price-point:hover {
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
   background: var(--paper-strong);
-  padding: 28px 296px 28px 30px;
+  padding: 28px calc(var(--week-hero-art-width) + 16px) 28px 30px;
   box-shadow: var(--card-shadow);
 }
 
@@ -6688,7 +6689,7 @@ button.price-point:hover {
   top: 0;
   right: 0;
   bottom: 0;
-  width: 280px;
+  width: var(--week-hero-art-width);
   border-left: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
   background-image: url("/basketsense-social-card.png");
   background-repeat: no-repeat;
