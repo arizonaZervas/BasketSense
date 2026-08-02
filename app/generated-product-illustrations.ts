@@ -128,6 +128,11 @@ const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
   "1494546": { imageUrl: "/product-illustrations/1494546.jpg", alt: "Illustration of a men’s golf polo" },
   "1518783": { imageUrl: "/product-illustrations/1518783.jpg", alt: "Illustration of a coconut water multipack" },
   "1536795": { imageUrl: "/product-illustrations/1536795.jpg", alt: "Illustration of a charcoal hoodie" },
+  "1537922": { imageUrl: "/product-illustrations/1537922.jpg", alt: "Illustration of toddler fruit melts" },
+  "1552971": { imageUrl: "/product-illustrations/1552971.jpg", alt: "Illustration of oat-and-nut bread" },
+  "1560758": { imageUrl: "/product-illustrations/1560758.jpg", alt: "Illustration of dinosaur-shaped chicken nuggets" },
+  "1573805": { imageUrl: "/product-illustrations/1573805.jpg", alt: "Illustration of a casual shirt" },
+  "1589403": { imageUrl: "/product-illustrations/1589403.jpg", alt: "Illustration of a premium casual T-shirt" },
 };
 
 export function generatedProductIllustration(
