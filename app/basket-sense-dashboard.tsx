@@ -2616,11 +2616,16 @@ function SuggestionShelf({
                           disabled={pending}
                           aria-label={`Add ${item.label} to the Active List`}
                         >
-                          {pending
-                            ? "Adding…"
-                            : shoppingStarted
-                              ? "Add during trip"
-                              : "Add to list"}
+                          <span className="suggestion-add-label-full">
+                            {pending
+                              ? "Adding…"
+                              : shoppingStarted
+                                ? "Add during trip"
+                                : "Add to list"}
+                          </span>
+                          <span className="suggestion-add-label-compact" aria-hidden="true">
+                            {pending ? "Adding…" : "Add"}
+                          </span>
                         </button>
                         <InlineWriteError
                           failure={failedWrites[key]}
