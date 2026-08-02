@@ -1,6 +1,6 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element -- product photos use authenticated R2 and licensed-source proxy URLs that are not compatible with next/image */
+/* eslint-disable @next/next/no-img-element -- household product photos use authenticated R2 URLs that are not compatible with next/image */
 
 import {
   CSSProperties,
@@ -21,7 +21,6 @@ import type {
 } from "./dashboard-types";
 import type {
   HouseholdListResponse,
-  ProductImageSummary,
   ProductPrimaryImageSummary,
 } from "./api/household/types";
 import { DataHealthExplorer } from "./data-health-explorer";
@@ -113,7 +112,6 @@ type SharedProduct = HouseholdCatalogProductMetadata & {
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
   image: ProductPrimaryImageSummary | null;
-  imageCandidateCount: number;
   updatedAt: string;
 };
 
@@ -3428,79 +3426,8 @@ function ProductImageStudio({
   onImagesUpdated: () => Promise<void>;
 }) {
   const uploadInput = useRef<HTMLInputElement | null>(null);
-  const [images, setImages] = useState<ProductImageSummary[]>([]);
-  const [loading, setLoading] = useState<"list" | "discover" | "upload" | string | null>(
-    "list",
-  );
+  const [loading, setLoading] = useState<"upload" | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    void fetch(`/api/product-images?productId=${encodeURIComponent(product.id)}`, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        const body = (await response.json().catch(() => null)) as
-          | { images?: ProductImageSummary[] }
-          | null;
-        if (!response.ok) {
-          throw new Error(apiErrorMessage(body, "Product photos could not be loaded."));
-        }
-        if (active) setImages(Array.isArray(body?.images) ? body.images : []);
-      })
-      .catch((loadError: unknown) => {
-        if (!active) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Product photos could not be loaded.",
-        );
-      })
-      .finally(() => {
-        if (active) setLoading(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [product.id]);
-
-  async function runJsonAction(
-    action: "discover" | "approve" | "reject",
-    imageId?: string,
-  ) {
-    const loadingKey = imageId ? `${action}-${imageId}` : action;
-    setLoading(loadingKey);
-    setError(null);
-    try {
-      const response = await fetch("/api/product-images", {
-        method: "POST",
-        headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          productId: product.id,
-          imageId,
-          force: action === "discover" && images.some((image) => image.status === "candidate"),
-        }),
-      });
-      const body = (await response.json().catch(() => null)) as
-        | { images?: ProductImageSummary[] }
-        | null;
-      if (!response.ok) {
-        throw new Error(apiErrorMessage(body, "The product photo was not updated."));
-      }
-      setImages(Array.isArray(body?.images) ? body.images : []);
-      if (action !== "discover") await onImagesUpdated();
-    } catch (actionError) {
-      setError(
-        actionError instanceof Error
-          ? actionError.message
-          : "The product photo was not updated.",
-      );
-    } finally {
-      setLoading(null);
-    }
-  }
 
   async function uploadPhoto(file: File) {
     setLoading("upload");
@@ -3514,13 +3441,10 @@ function ProductImageStudio({
         headers: { Accept: "application/json" },
         body: form,
       });
-      const body = (await response.json().catch(() => null)) as
-        | { images?: ProductImageSummary[] }
-        | null;
+      const body = (await response.json().catch(() => null)) as unknown;
       if (!response.ok) {
         throw new Error(apiErrorMessage(body, "The product photo was not uploaded."));
       }
-      setImages(Array.isArray(body?.images) ? body.images : []);
       await onImagesUpdated();
     } catch (uploadError) {
       setError(
@@ -3534,7 +3458,6 @@ function ProductImageStudio({
     }
   }
 
-  const candidates = images.filter((image) => image.status === "candidate");
   const busy = loading !== null;
 
   return (
@@ -3542,9 +3465,7 @@ function ProductImageStudio({
       <div className="product-image-studio-heading">
         <div>
           <h3>Product photo</h3>
-          <p>
-            Add your own package photo or review licensed Open Food Facts matches.
-          </p>
+          <p>Add a package photo to replace this illustration for your household.</p>
         </div>
         <div className="product-image-actions">
           <button
@@ -3565,18 +3486,6 @@ function ProductImageStudio({
               if (file) void uploadPhoto(file);
             }}
           />
-          <button
-            type="button"
-            className="text-button"
-            disabled={busy}
-            onClick={() => void runJsonAction("discover")}
-          >
-            {loading === "discover"
-              ? "Searching…"
-              : candidates.length
-                ? "Refresh matches"
-                : "Find licensed photos"}
-          </button>
         </div>
       </div>
 
@@ -3586,62 +3495,6 @@ function ProductImageStudio({
         </p>
       ) : null}
 
-      {loading === "list" ? (
-        <p className="product-image-empty">Loading photo options…</p>
-      ) : candidates.length ? (
-        <div className="product-image-candidates">
-          {candidates.map((image) => {
-            const approving = loading === `approve-${image.id}`;
-            const rejecting = loading === `reject-${image.id}`;
-            return (
-              <article className="product-image-candidate" key={image.id}>
-                <img src={image.imageUrl} alt="" loading="lazy" />
-                <div>
-                  <strong>{image.productName ?? "Possible product match"}</strong>
-                  <span>
-                    {[image.brand, image.quantity].filter(Boolean).join(" · ") ||
-                      "Package details unavailable"}
-                  </span>
-                  <small>
-                    {image.confidenceBps === null
-                      ? "Name match not scored"
-                      : `${Math.round(image.confidenceBps / 100)}% name match`}
-                    {" · "}
-                    <a href={image.sourcePageUrl ?? undefined} target="_blank" rel="noreferrer">
-                      Open Food Facts
-                    </a>
-                  </small>
-                </div>
-                <div className="product-image-candidate-actions">
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={busy}
-                    onClick={() => void runJsonAction("approve", image.id)}
-                  >
-                    {approving ? "Saving…" : "Use photo"}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    disabled={busy}
-                    onClick={() => void runJsonAction("reject", image.id)}
-                  >
-                    {rejecting ? "Removing…" : "Not this item"}
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="product-image-empty">
-          No photo options yet. Your own front-of-package photo is the most reliable match.
-        </p>
-      )}
-      <small className="product-image-license">
-        Open Food Facts photos are shown under CC BY-SA 3.0 with source attribution.
-      </small>
     </section>
   );
 }
@@ -3924,11 +3777,6 @@ function ProductsTab({
                       {sort === "rank" ? `Rank ${index + 1} · ` : ""}
                       {product.categoryLabel} · {product.purchaseCount}{" "}
                       {product.purchaseCount === 1 ? "purchase" : "purchases"}
-                      {rowCatalogProduct?.imageCandidateCount
-                        ? ` · ${rowCatalogProduct.imageCandidateCount} photo ${
-                            rowCatalogProduct.imageCandidateCount === 1 ? "match" : "matches"
-                          }`
-                        : ""}
                     </small>
                   </span>
                   <span className="product-meta">

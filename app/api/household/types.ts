@@ -232,7 +232,6 @@ export interface ProductSummary {
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
   image: ProductPrimaryImageSummary | null;
-  imageCandidateCount: number;
   brand: string | null;
   unitDescription: string | null;
   active: boolean;

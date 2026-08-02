@@ -646,7 +646,6 @@ interface ProductRow {
   image_attribution_text?: string | null;
   image_license_code?: string | null;
   image_updated_at?: string | null;
-  image_candidate_count?: number | null;
 }
 
 interface ReceiptTransactionRow {
@@ -1637,7 +1636,6 @@ function productSummary(row: ProductRow): ProductSummary {
           updatedAt: row.image_updated_at ?? row.updated_at,
         }
       : null,
-    imageCandidateCount: row.image_candidate_count ?? 0,
     brand: row.brand,
     unitDescription: row.unit_description,
     active: Boolean(row.active),
@@ -1720,7 +1718,6 @@ async function readHouseholdState(
                 primary_image.attribution_text AS image_attribution_text,
                 primary_image.license_code AS image_license_code,
                 primary_image.updated_at AS image_updated_at,
-                COALESCE(image_candidates.candidate_count, 0) AS image_candidate_count,
                 latest.raw_description AS latest_raw_description,
                 latest.purchased_at AS latest_purchased_at,
                 latest.regular_unit_price_cents AS latest_regular_unit_price_cents,
@@ -1734,12 +1731,7 @@ async function readHouseholdState(
            ON primary_image.product_id = products.id
           AND primary_image.status = 'approved'
           AND primary_image.is_primary = 1
-         LEFT JOIN (
-           SELECT product_id, COUNT(*) AS candidate_count
-           FROM product_images
-           WHERE status = 'candidate'
-           GROUP BY product_id
-         ) AS image_candidates ON image_candidates.product_id = products.id
+          AND primary_image.source_type = 'household_upload'
          LEFT JOIN (
            SELECT ranked.* FROM (
              SELECT receipt_items.product_id,

@@ -1,9 +1,3 @@
-import {
-  isTrustedOpenFoodFactsImageUrl,
-  licensedOpenFoodFactsCandidates,
-  type OpenFoodFactsProduct,
-} from "../../product-image-matching";
-
 export const dynamic = "force-dynamic";
 
 const MAX_PRODUCT_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -182,6 +176,7 @@ async function authorizedImage(db: D1Database, email: string, imageId: string) {
        INNER JOIN household_members
          ON household_members.household_id = product_images.household_id
        WHERE product_images.id = ?
+         AND product_images.source_type = 'household_upload'
          AND lower(household_members.user_email) = ?
        LIMIT 1`,
     )
@@ -218,7 +213,9 @@ async function listProductImages(db: D1Database, productId: string) {
   const result = await db
     .prepare(
       `SELECT * FROM product_images
-       WHERE product_id = ? AND status != 'rejected'
+       WHERE product_id = ?
+         AND source_type = 'household_upload'
+         AND status != 'rejected'
        ORDER BY is_primary DESC, status = 'approved' DESC,
                 confidence_bps DESC, updated_at DESC`,
     )
@@ -227,159 +224,10 @@ async function listProductImages(db: D1Database, productId: string) {
   return result.results.map(imageSummary);
 }
 
-async function readJsonBody(request: Request) {
-  try {
-    const value = await request.json();
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("invalid");
-    }
-    return value as Record<string, unknown>;
-  } catch {
-    throw new ProductImageApiError(400, "A JSON request body is required");
-  }
-}
-
-async function discoverCandidates(
-  db: D1Database,
-  product: AuthorizedProductRow,
-  fetchImpl: typeof fetch,
-  force = false,
-) {
-  const existing = await listProductImages(db, product.id);
-  if (!force && existing.some((image) => image.status === "candidate")) return existing;
-
-  const url = new URL("https://search.openfoodfacts.org/search");
-  const query = `${product.brand ?? ""} ${product.canonical_name}`.trim();
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "User-Agent":
-          "BasketSense/0.1 (https://basket-sense-household.nysha-enterp-3913.chatgpt.site)",
-      },
-      body: JSON.stringify({
-        q: query,
-        page_size: 8,
-        langs: ["en"],
-        boost_phrase: true,
-        fields: [
-          "code",
-          "product_name",
-          "brands",
-          "quantity",
-          "image_front_url",
-          "image_front_small_url",
-          "image_front_width",
-          "image_front_height",
-        ],
-      }),
-      signal: controller.signal,
-    });
-  } catch {
-    throw new ProductImageApiError(502, "Licensed image search is temporarily unavailable");
-  } finally {
-    clearTimeout(timeout);
-  }
-  if (!response.ok) {
-    throw new ProductImageApiError(502, "Licensed image search is temporarily unavailable");
-  }
-  const payload = (await response.json().catch(() => null)) as {
-    hits?: OpenFoodFactsProduct[];
-  } | null;
-  const candidates = licensedOpenFoodFactsCandidates({
-    canonicalName: product.canonical_name,
-    brand: product.brand,
-    products: Array.isArray(payload?.hits) ? payload.hits : [],
-  });
-  if (!candidates.length) return existing;
-
-  const now = new Date().toISOString();
-  await db.batch(
-    candidates.map((candidate) =>
-      db
-        .prepare(
-          `INSERT INTO product_images (
-             id, household_id, product_id, source_type, source_page_url,
-             source_image_url, source_external_id, source_product_name,
-             source_brand, source_quantity, attribution_text, license_code,
-             confidence_bps, status, is_primary, width_px, height_px,
-             created_by_member_id, created_at, updated_at
-           ) VALUES (?, ?, ?, 'open_food_facts', ?, ?, ?, ?, ?, ?,
-                     'Open Food Facts contributors', 'CC BY-SA 3.0', ?,
-                     'candidate', 0, ?, ?, ?, ?, ?)
-           ON CONFLICT(product_id, source_image_url) DO UPDATE SET
-             source_page_url = excluded.source_page_url,
-             source_product_name = excluded.source_product_name,
-             source_brand = excluded.source_brand,
-             source_quantity = excluded.source_quantity,
-             confidence_bps = excluded.confidence_bps,
-             width_px = excluded.width_px,
-             height_px = excluded.height_px,
-             updated_at = excluded.updated_at`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          product.household_id,
-          product.id,
-          candidate.sourcePageUrl,
-          candidate.sourceImageUrl,
-          candidate.externalId,
-          candidate.productName,
-          candidate.brand,
-          candidate.quantity,
-          candidate.confidenceBps,
-          candidate.widthPx,
-          candidate.heightPx,
-          product.member_id,
-          now,
-          now,
-        ),
-    ),
-  );
-  return await listProductImages(db, product.id);
-}
-
 function extensionForContentType(contentType: string) {
   if (contentType === "image/png") return "png";
   if (contentType === "image/webp") return "webp";
   return "jpg";
-}
-
-async function downloadImage(fetchImpl: typeof fetch, sourceUrl: string) {
-  if (!isTrustedOpenFoodFactsImageUrl(sourceUrl)) {
-    throw new ProductImageApiError(400, "That image source is not approved");
-  }
-  const response = await fetchImpl(sourceUrl, {
-    headers: {
-      Accept: "image/avif,image/webp,image/png,image/jpeg",
-      "User-Agent": "BasketSense/0.1 private-household-product-imagery",
-    },
-  });
-  if (!response.ok) {
-    throw new ProductImageApiError(502, "The selected image could not be downloaded");
-  }
-  const contentType = (response.headers.get("content-type") ?? "")
-    .split(";", 1)[0]
-    .trim()
-    .toLocaleLowerCase("en-US");
-  if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
-    throw new ProductImageApiError(415, "The selected source is not a supported image");
-  }
-  const declaredSize = Number(response.headers.get("content-length") ?? 0);
-  if (declaredSize > MAX_PRODUCT_IMAGE_BYTES) {
-    throw new ProductImageApiError(413, "The selected image is larger than 10 MB");
-  }
-  const bytes = await response.arrayBuffer();
-  if (!bytes.byteLength || bytes.byteLength > MAX_PRODUCT_IMAGE_BYTES) {
-    throw new ProductImageApiError(413, "The selected image is larger than 10 MB");
-  }
-  return { bytes, contentType };
 }
 
 async function sha256Hex(bytes: ArrayBuffer) {
@@ -387,83 +235,6 @@ async function sha256Hex(bytes: ArrayBuffer) {
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
-}
-
-async function approveCandidate({
-  db,
-  bucket,
-  image,
-  memberId,
-  fetchImpl,
-}: {
-  db: D1Database;
-  bucket: R2Bucket;
-  image: ProductImageRow;
-  memberId: string;
-  fetchImpl: typeof fetch;
-}) {
-  let storageKey = image.storage_key;
-  let uploadedStorageKey: string | null = null;
-  let contentType = image.content_type;
-  let byteSize = image.byte_size;
-  let contentSha256 = image.content_sha256;
-
-  if (!storageKey) {
-    if (!image.source_image_url) {
-      throw new ProductImageApiError(400, "This candidate has no source image");
-    }
-    const downloaded = await downloadImage(fetchImpl, image.source_image_url);
-    contentType = downloaded.contentType;
-    byteSize = downloaded.bytes.byteLength;
-    contentSha256 = await sha256Hex(downloaded.bytes);
-    storageKey = `households/${image.household_id}/product-images/${image.product_id}/${crypto.randomUUID()}.${extensionForContentType(contentType)}`;
-    await bucket.put(storageKey, downloaded.bytes, {
-      httpMetadata: {
-        contentType,
-        cacheControl: "private, max-age=86400",
-      },
-      customMetadata: {
-        householdId: image.household_id,
-        productId: image.product_id,
-        source: image.source_type,
-      },
-    });
-    uploadedStorageKey = storageKey;
-  }
-
-  const now = new Date().toISOString();
-  try {
-    await db.batch([
-      db
-        .prepare(
-          `UPDATE product_images SET is_primary = 0, updated_at = ?
-           WHERE product_id = ? AND is_primary = 1`,
-        )
-        .bind(now, image.product_id),
-      db
-        .prepare(
-          `UPDATE product_images
-           SET status = 'approved', is_primary = 1, storage_key = ?,
-               content_type = ?, byte_size = ?, content_sha256 = ?,
-               reviewed_by_member_id = ?, reviewed_at = ?, updated_at = ?
-           WHERE id = ? AND household_id = ?`,
-        )
-        .bind(
-          storageKey,
-          contentType,
-          byteSize,
-          contentSha256,
-          memberId,
-          now,
-          now,
-          image.id,
-          image.household_id,
-        ),
-    ]);
-  } catch (error) {
-    if (uploadedStorageKey) await bucket.delete(uploadedStorageKey);
-    throw error;
-  }
 }
 
 async function uploadHouseholdImage({
@@ -557,7 +328,6 @@ export async function handleProductImagesGet(
   request: Request,
   db: D1Database,
   bucket: R2Bucket,
-  fetchImpl: typeof fetch = fetch,
 ) {
   try {
     const email = authenticatedEmail(request);
@@ -578,19 +348,7 @@ export async function handleProductImagesGet(
         if (object.httpEtag) headers.set("ETag", object.httpEtag);
         return new Response(object.body, { status: 200, headers });
       }
-      if (!image.source_image_url) {
-        throw new ProductImageApiError(404, "Product image not found");
-      }
-      const remote = await downloadImage(fetchImpl, image.source_image_url);
-      return new Response(remote.bytes, {
-        status: 200,
-        headers: {
-          "Cache-Control": "private, max-age=300",
-          "Content-Type": remote.contentType,
-          "Content-Length": String(remote.bytes.byteLength),
-          "X-Content-Type-Options": "nosniff",
-        },
-      });
+      throw new ProductImageApiError(404, "Product image not found");
     }
 
     const productId = requiredId(url.searchParams.get("productId"), "productId");
@@ -605,7 +363,6 @@ export async function handleProductImagesPost(
   request: Request,
   db: D1Database,
   bucket: R2Bucket,
-  fetchImpl: typeof fetch = fetch,
 ) {
   try {
     const email = authenticatedEmail(request);
@@ -618,46 +375,10 @@ export async function handleProductImagesPost(
       );
     }
 
-    const body = await readJsonBody(request);
-    const action = requiredId(body.action, "action");
-    if (action === "discover") {
-      const productId = requiredId(body.productId, "productId");
-      const product = await authorizedProduct(db, email, productId);
-      const images = await discoverCandidates(db, product, fetchImpl, body.force === true);
-      return responseJson({ images });
-    }
-    if (action === "approve" || action === "reject") {
-      const imageId = requiredId(body.imageId, "imageId");
-      const image = await authorizedImage(db, email, imageId);
-      const product = await authorizedProduct(db, email, image.product_id);
-      if (action === "approve") {
-        await approveCandidate({
-          db,
-          bucket,
-          image,
-          memberId: product.member_id,
-          fetchImpl,
-        });
-      } else {
-        await db
-          .prepare(
-            `UPDATE product_images
-             SET status = 'rejected', is_primary = 0,
-                 reviewed_by_member_id = ?, reviewed_at = ?, updated_at = ?
-             WHERE id = ? AND household_id = ?`,
-          )
-          .bind(
-            product.member_id,
-            new Date().toISOString(),
-            new Date().toISOString(),
-            image.id,
-            image.household_id,
-          )
-          .run();
-      }
-      return responseJson({ images: await listProductImages(db, image.product_id) });
-    }
-    throw new ProductImageApiError(400, "Unsupported product image action");
+    throw new ProductImageApiError(
+      400,
+      "Suggested product photos are no longer supported. Upload a household photo instead.",
+    );
   } catch (error) {
     return handleError(error);
   }

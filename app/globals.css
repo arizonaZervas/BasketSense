@@ -1882,74 +1882,6 @@ td small {
   color: var(--danger-ink) !important;
 }
 
-.product-image-empty,
-.product-image-license {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.product-image-candidates {
-  display: grid;
-  gap: 9px;
-}
-
-.product-image-candidate {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  min-height: 92px;
-  border-bottom: 1px solid var(--line);
-  padding: 8px 0 12px;
-}
-
-.product-image-candidate:last-child {
-  border-bottom: 0;
-}
-
-.product-image-candidate > img {
-  width: 76px;
-  height: 76px;
-  border-radius: 10px;
-  background: var(--surface-subtle);
-  object-fit: contain;
-}
-
-.product-image-candidate > div:nth-child(2) {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.product-image-candidate strong {
-  overflow: hidden;
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.product-image-candidate span,
-.product-image-candidate small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.product-image-candidate a {
-  color: var(--forest);
-}
-
-.product-image-candidate-actions {
-  display: grid;
-  justify-items: stretch;
-  gap: 5px;
-}
-
-.product-image-candidate-actions button {
-  min-height: 34px;
-  white-space: nowrap;
-}
-
 .product-review-form {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(180px, 0.75fr);
@@ -4370,21 +4302,6 @@ button.price-point:hover {
 
   .product-image-actions {
     justify-content: flex-start;
-  }
-
-  .product-image-candidate {
-    grid-template-columns: 68px minmax(0, 1fr);
-  }
-
-  .product-image-candidate > img {
-    width: 68px;
-    height: 68px;
-  }
-
-  .product-image-candidate-actions {
-    grid-column: 1 / -1;
-    display: flex;
-    justify-content: flex-end;
   }
 
   .product-review-form {
