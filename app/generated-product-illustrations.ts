@@ -133,6 +133,11 @@ const GENERATED_PRODUCT_ILLUSTRATIONS: Readonly<
   "1560758": { imageUrl: "/product-illustrations/1560758.jpg", alt: "Illustration of dinosaur-shaped chicken nuggets" },
   "1573805": { imageUrl: "/product-illustrations/1573805.jpg", alt: "Illustration of a casual shirt" },
   "1589403": { imageUrl: "/product-illustrations/1589403.jpg", alt: "Illustration of a premium casual T-shirt" },
+  "1589467": { imageUrl: "/product-illustrations/1589467.jpg", alt: "Illustration of dosa batter" },
+  "1600273": { imageUrl: "/product-illustrations/1600273.jpg", alt: "Illustration of a microfiber bath mat" },
+  "1608541": { imageUrl: "/product-illustrations/1608541.jpg", alt: "Illustration of a children’s pajama set" },
+  "1611893": { imageUrl: "/product-illustrations/1611893.jpg", alt: "Illustration of low-carb keto bread" },
+  "1618629": { imageUrl: "/product-illustrations/1618629.jpg", alt: "Illustration of a snack variety pack" },
 };
 
 export function generatedProductIllustration(
