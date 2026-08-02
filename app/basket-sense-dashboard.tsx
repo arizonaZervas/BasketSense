@@ -1812,13 +1812,13 @@ function ThisWeekTab({
           </p>
         </div>
         <div className="heading-actions">
-          <button className="secondary-button" onClick={onCopy}>
+          <button className="secondary-button copy-list-button" onClick={onCopy}>
             Copy list
           </button>
           {!shoppingStarted ? (
             <button
               ref={startShoppingRef}
-              className="primary-button"
+              className="primary-button start-shopping-button"
               onClick={onFreeze}
               disabled={!household || !included.length || pendingWrites.has("freeze-trip")}
             >
