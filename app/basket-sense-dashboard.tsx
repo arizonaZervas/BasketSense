@@ -3644,12 +3644,6 @@ function ProductsTab({
   >("");
   const [reviewSaving, setReviewSaving] = useState(false);
   const [addingProductId, setAddingProductId] = useState<string | null>(null);
-  const [imageBatch, setImageBatch] = useState<{
-    done: number;
-    total: number;
-    found: number;
-  } | null>(null);
-  const [imageBatchError, setImageBatchError] = useState<string | null>(null);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matching = products.filter((product) => {
@@ -3743,66 +3737,7 @@ function ProductsTab({
     }
   }
 
-  async function findNextLicensedImages() {
-    const queue = catalogProducts
-      .filter((product) => !product.image && product.imageCandidateCount === 0)
-      .sort(
-        (left, right) =>
-          right.purchaseCount - left.purchaseCount ||
-          left.canonicalName.localeCompare(right.canonicalName),
-      )
-      .slice(0, 10);
-    if (!queue.length) return;
-
-    setImageBatch({ done: 0, total: queue.length, found: 0 });
-    setImageBatchError(null);
-    let found = 0;
-    for (let index = 0; index < queue.length; index += 1) {
-      const product = queue[index];
-      try {
-        const response = await fetch("/api/product-images", {
-          method: "POST",
-          headers: { Accept: "application/json", "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "discover", productId: product.id }),
-        });
-        const body = (await response.json().catch(() => null)) as
-          | { images?: ProductImageSummary[] }
-          | null;
-        if (!response.ok) {
-          throw new Error(apiErrorMessage(body, "Licensed image search paused."));
-        }
-        if (body?.images?.some((image) => image.status === "candidate")) found += 1;
-      } catch (batchError) {
-        setImageBatchError(
-          batchError instanceof Error
-            ? batchError.message
-            : "Licensed image search paused.",
-        );
-        break;
-      }
-      setImageBatch({ done: index + 1, total: queue.length, found });
-      if (index < queue.length - 1) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 6_500));
-      }
-    }
-    await onImagesUpdated();
-    setImageBatch(null);
-  }
-
   if (!selected) return null;
-
-  const picturedProductCount = catalogProducts.filter((product) => product.image).length;
-  const illustratedProductCount = products.filter((product) => {
-    const approvedPhoto = catalogProducts.find(
-      (candidate) => candidate.costcoItemNumber === product.itemNumber,
-    )?.image;
-    return Boolean(
-      !approvedPhoto && generatedProductIllustration(product.itemNumber),
-    );
-  }).length;
-  const candidateProductCount = catalogProducts.filter(
-    (product) => !product.image && product.imageCandidateCount > 0,
-  ).length;
 
   return (
     <div className="page products-page">
@@ -3860,72 +3795,6 @@ function ProductsTab({
             </select>
           </label>
         </div>
-      </section>
-
-      <section className="notice-card gentle">
-        <span className="notice-mark" aria-hidden="true">
-          i
-        </span>
-        <p>
-          Names are conservative household-friendly normalizations of Costco receipt
-          abbreviations. Exact item number is the matching anchor; ambiguous names stay
-          visible as raw receipt text.
-        </p>
-      </section>
-
-      <section className="product-image-library" aria-label="Product image library progress">
-        <div className="product-image-library-copy">
-          <strong>Image library</strong>
-          <span>
-            {picturedProductCount} verified photos · {illustratedProductCount} AI illustrations
-            {candidateProductCount > 0
-              ? ` · ${candidateProductCount} ready to review`
-              : ""}
-          </span>
-          <div
-            className="product-image-progress"
-            role="progressbar"
-            aria-label="Products with an approved photo"
-            aria-valuemin={0}
-            aria-valuemax={Math.max(catalogProducts.length, 1)}
-            aria-valuenow={picturedProductCount}
-          >
-            <span
-              style={{
-                width: `${catalogProducts.length ? (picturedProductCount / catalogProducts.length) * 100 : 0}%`,
-              }}
-            />
-          </div>
-          {imageBatch ? (
-            <small aria-live="polite">
-              Searching {Math.min(imageBatch.done + 1, imageBatch.total)} of{" "}
-              {imageBatch.total} · matches found for{" "}
-              {imageBatch.found} products
-            </small>
-          ) : imageBatchError ? (
-            <small className="product-image-error" role="alert">
-              {imageBatchError}
-            </small>
-          ) : (
-            <small>
-              Verified photos take priority. AI illustrations are decorative and the
-              package may differ.
-            </small>
-          )}
-        </div>
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={
-            imageBatch !== null ||
-            !catalogProducts.some(
-              (product) => !product.image && product.imageCandidateCount === 0,
-            )
-          }
-          onClick={() => void findNextLicensedImages()}
-        >
-          {imageBatch ? "Building library…" : "Find next 10"}
-        </button>
       </section>
 
       <section className={`product-layout ${detailOpen ? "detail-open" : ""}`}>
@@ -4319,12 +4188,9 @@ function ReviewTab({
   return (
     <div className="page review-page">
       <section className="page-heading">
-        <p className="section-label">Latest trip recap</p>
-        <h1>Your Costco story</h1>
-        <p>
-          See how the saved list became the checkout receipt, what changed along the way,
-          and the evidence behind each difference.
-        </p>
+        <p className="section-label">Latest trip</p>
+        <h1>Receipt recap</h1>
+        <p>See the saved list alongside the receipt.</p>
       </section>
       <ClosedLoopReview
         closedLoop={closedLoop}

@@ -1697,85 +1697,9 @@ export function ExpectedActualBridge({
   const totalDifferenceCents = actualCents - expectedCents;
   const hasSavedEstimate = comparison.frozenEstimateCents !== null && comparison.frozenEstimateCents !== undefined;
   const differenceDirection = totalDifferenceCents > 5 ? "above" : totalDifferenceCents < -5 ? "below" : "in line with";
-  const drivers = [
-    {
-      key: "price-shifts",
-      amountCents: comparison.matchedVarianceCents,
-      label: "Prices or quantities shifted",
-      detail: "The receipt did not match the saved estimates exactly.",
-    },
-    {
-      key: "unpriced-planned",
-      amountCents: comparison.unpricedPlannedActualCents,
-      label: "Planned items without an estimate",
-      detail: "These saved-list items could not be included in the original estimate.",
-    },
-    {
-      key: "added",
-      amountCents: comparison.additionsCents,
-      label: "Picked up beyond the saved list",
-      detail: "These receipt lines were not matched to a saved-list item.",
-    },
-    {
-      key: "skipped",
-      amountCents:
-        comparison.skippedEstimateCents === null || comparison.skippedEstimateCents === undefined
-          ? null
-          : -Math.abs(comparison.skippedEstimateCents),
-      label: "Left for another trip",
-      detail: "These saved-list items do not appear on this receipt.",
-    },
-    {
-      key: "discounts",
-      amountCents:
-        comparison.discountsCents === null || comparison.discountsCents === undefined
-          ? null
-          : -Math.abs(comparison.discountsCents),
-      label: "Costco discounts",
-      detail: "Savings shown on the receipt reduced the checkout total.",
-    },
-    {
-      key: "tax",
-      amountCents: comparison.taxCents,
-      label: "Sales tax",
-      detail: "Tax is part of checkout but not the saved-list estimate.",
-    },
-  ].filter(
-    (driver): driver is { key: string; amountCents: number; label: string; detail: string } =>
-      driver.amountCents !== null && driver.amountCents !== undefined && driver.amountCents !== 0,
-  );
   const visibleBuckets: SpotlightBucket[] = buckets.filter(
     (bucket) => bucket.itemCount > 0 || bucket.items.length > 0 || bucket.amountCents !== 0,
   );
-  const discountedItems = receiptItems
-    .filter((item) => (item.discountCents ?? 0) > 0)
-    .map((item) => {
-      const discountCents = Math.abs(item.discountCents ?? 0);
-      const netAmountCents = item.netAmountCents ?? item.lineSubtotalCents ?? null;
-      return {
-        label: item.canonicalName ?? item.rawDescription ?? item.description ?? "Receipt item",
-        amountCents: -discountCents,
-        note:
-          netAmountCents === null
-            ? undefined
-            : `Paid ${money.format(netAmountCents / 100)} after savings`,
-      } satisfies SpotlightItem;
-    });
-  const discountSpotlight: SpotlightBucket | null = discountedItems.length
-    ? {
-        key: "discounts",
-        label: "Costco discounts",
-        amountCents: -discountedItems.reduce(
-          (sum, item) => sum + Math.abs(item.amountCents ?? 0),
-          0,
-        ),
-        itemCount: discountedItems.length,
-        items: discountedItems,
-      }
-    : null;
-  const spotlightBuckets = discountSpotlight
-    ? [...visibleBuckets, discountSpotlight]
-    : visibleBuckets;
   const [spotlightBucket, setSpotlightBucket] = useState<SpotlightBucket | null>(null);
   const [spotlightIndex, setSpotlightIndex] = useState(0);
   const spotlightRef = useRef<HTMLDialogElement>(null);
@@ -1809,32 +1733,20 @@ export function ExpectedActualBridge({
     setSpotlightIndex((current) => (current + direction + spotlightItemCount) % spotlightItemCount);
   }
 
-  function spotlightForDriver(key: string) {
-    if (key === "discounts") return discountSpotlight;
-    const bucketKeys: Record<string, string[]> = {
-      "price-shifts": ["matched", "planned_and_purchased"],
-      "unpriced-planned": ["unpricedplanned"],
-      added: ["in_store", "added_during_trip", "receipt_only", "receiptonly", "unplanned"],
-      skipped: ["missing", "planned_not_purchased", "skippedplanned"],
-    };
-    const keys = bucketKeys[key] ?? [];
-    return spotlightBuckets.find((bucket) => keys.includes(bucket.key.toLowerCase())) ?? null;
-  }
-
   return (
     <div className="expected-actual trip-story">
       <header className="trip-story-intro">
         <div>
-          <p className="section-label">Cart replay</p>
+          <p className="section-label">Receipt evidence</p>
           <h3>
             {hasSavedEstimate
-              ? `Checkout landed ${differenceDirection} your plan.`
-              : "Your checkout story starts here."}
+              ? `Checkout was ${differenceDirection} the saved list.`
+              : "Receipt total recorded."}
           </h3>
           <p>
             {hasSavedEstimate
-              ? `${signedMoney(totalDifferenceCents)} from the saved estimate. The steps below show where that difference came from.`
-              : "The receipt total is recorded. Add saved-list estimates to see how the plan and checkout compare."}
+              ? `${signedMoney(totalDifferenceCents)} from the saved estimate.`
+              : "Add saved-list estimates to compare a future checkout."}
           </p>
         </div>
         <span className={`comparison-status ${provisional ? "provisional" : "trusted"}`}>
@@ -1867,65 +1779,18 @@ export function ExpectedActualBridge({
             lines later to unlock planned-versus-actual item insights.
           </p>
         </div>
-      ) : (
-        <section className="trip-story-drivers" aria-labelledby="story-drivers-title">
-          <div className="trip-story-section-heading">
-            <div>
-              <p className="section-label">The why</p>
-              <h4 id="story-drivers-title">What moved the total</h4>
-            </div>
-            <p>Each movement is tied to the saved list or a line on the receipt.</p>
-          </div>
-          {drivers.length ? (
-            <ol>
-              {drivers.map((driver) => {
-                const bucket = spotlightForDriver(driver.key);
-                const contents = <>
-                  <span className="trip-story-driver-mark" aria-hidden="true">
-                    {driver.amountCents < 0 ? "↓" : "↑"}
-                  </span>
-                  <span className="trip-story-driver-copy">
-                    <strong>{driver.label}</strong>
-                    <small>{bucket ? "Tap to see the receipt items" : driver.detail}</small>
-                  </span>
-                  <span className="trip-story-driver-amount">{signedMoney(driver.amountCents)}</span>
-                </>;
-                return (
-                  <li key={driver.key} className={driver.amountCents < 0 ? "saving" : "added"}>
-                    {bucket ? (
-                      <button
-                        type="button"
-                        className="trip-story-driver-trigger"
-                        onClick={() => openSpotlight(bucket)}
-                        aria-haspopup="dialog"
-                        aria-label={`Open receipt items for ${driver.label}`}
-                      >
-                        {contents}
-                      </button>
-                    ) : (
-                      <div className="trip-story-driver-static">{contents}</div>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
-          ) : (
-            <p className="trip-story-quiet">Nothing materially moved the recorded total away from the saved estimate.</p>
-          )}
-        </section>
-      )}
+      ) : null}
 
-      {!totalsOnly && spotlightBuckets.length ? (
+      {!totalsOnly && visibleBuckets.length ? (
         <section className="comparison-buckets trip-story-buckets" aria-labelledby="item-comparison-title">
           <div className="trip-story-section-heading">
             <div>
-              <p className="section-label">The evidence</p>
-              <h4 id="item-comparison-title">See the cart take shape</h4>
+              <h4 id="item-comparison-title">What changed</h4>
             </div>
-            <p>Open any chapter to see the receipt lines behind it.</p>
+            <p>Open a group to see the receipt lines.</p>
           </div>
           <div className="trip-story-bucket-list">
-          {spotlightBuckets.map((bucket) => (
+          {visibleBuckets.map((bucket) => (
             <div key={bucket.key} className="comparison-bucket">
               <button
                 type="button"
@@ -2078,7 +1943,6 @@ export function ClosedLoopReview({
         question.status ?? "open",
       ),
   );
-  const resolvedQuestions = questions.filter((question) => !openQuestions.includes(question));
   const provisional = closedLoop?.comparison?.isProvisional;
   const uploadStored = ["stored", "uploaded", "complete"].includes(
     closedLoop?.upload?.status ?? "",
@@ -2138,11 +2002,8 @@ export function ClosedLoopReview({
     <div className="closed-loop-review">
       <section className="review-section" aria-labelledby="receipt-check-title">
         <div className="review-section-heading">
-          <span className="review-section-number" aria-hidden="true">1</span>
           <div>
-            <p className="section-label">Data correctness</p>
             <h2 id="receipt-check-title">Receipt check</h2>
-            <p>First confirm what the receipt says. Household meaning comes after.</p>
           </div>
         </div>
 
@@ -2178,14 +2039,7 @@ export function ClosedLoopReview({
       </section>
 
       {closedLoop?.comparison ? (
-        <section className="review-section" aria-labelledby="comparison-title">
-          <div className="review-section-heading story-section-heading">
-            <div>
-              <p className="section-label">Latest trip story</p>
-              <h2 id="comparison-title">From plan to checkout</h2>
-              <p>Your saved intent and receipt facts, turned into a short replay—not a score for the trip.</p>
-            </div>
-          </div>
+        <section className="review-section" aria-label="Receipt evidence">
           <article className="card review-bridge-card trip-story-card">
             <ExpectedActualBridge
               comparison={closedLoop.comparison}
@@ -2196,23 +2050,14 @@ export function ClosedLoopReview({
         </section>
       ) : null}
 
-      <section className="review-section" aria-labelledby="trip-review-title">
+      {openQuestions.length ? <section className="review-section" aria-labelledby="trip-review-title">
         <div className="review-section-heading">
-          <span className="review-section-number" aria-hidden="true">3</span>
           <div>
-            <p className="section-label">Only useful follow-ups</p>
             <h2 id="trip-review-title">Questions for this trip</h2>
-            <p>Up to three questions, only when an answer improves this recap, an insight, or a future list.</p>
           </div>
         </div>
 
-        {!receipt ? (
-          <div className="receipt-flow-note">
-            <strong>Receipt check comes first</strong>
-            <p>Evidence-triggered questions appear after a receipt is linked to this trip.</p>
-          </div>
-        ) : openQuestions.length ? (
-          <div className="evidence-questions">
+        <div className="evidence-questions">
             {openQuestions.map((question, index) => (
               <article className="evidence-question card" key={question.id}>
                 <div className="question-heading">
@@ -2341,54 +2186,9 @@ export function ClosedLoopReview({
                 )}
               </article>
             ))}
-          </div>
-        ) : (
-          <div className="review-complete-card card" role="status">
-            <span aria-hidden="true">✓</span>
-            <div>
-              <strong>No useful weekly questions right now</strong>
-              <p>Silence is intentional—BasketSense asks only when your answer has somewhere to go.</p>
-            </div>
-          </div>
-        )}
+        </div>
         {answerError ? <div className="receipt-flow-error" role="alert">{answerError}</div> : null}
-
-        {resolvedQuestions.length ? (
-          <div className="resolved-review-answers">
-            <h3>What your answers changed</h3>
-            {resolvedQuestions.map((question) => {
-              const selected = question.options.find(
-                (option) => option.value === question.selectedValue,
-              );
-              return (
-                <div key={question.id}>
-                  <span aria-hidden="true">✓</span>
-                  <p>
-                    <strong>
-                      {selected?.label ??
-                        (["skipped", "dismissed"].includes(question.status ?? "")
-                          ? "Skipped"
-                          : "Answered")}
-                    </strong>
-                    <small>
-                      {selected?.effect
-                        ? `Changed: ${selected.effect}`
-                        : question.effectTarget
-                          ? `Updated ${question.effectTarget}`
-                          : "The answer is stored with this trip."}
-                    </small>
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        ) : null}
-      </section>
-
-      <aside className="ritual-guardrail">
-        <strong>Monthly ritual check, not a weekly chore</strong>
-        <p>Once a month, BasketSense can ask whether Costco still feels enjoyable and easy. It does not use that answer to judge a single cart.</p>
-      </aside>
+      </section> : null}
     </div>
   );
 }
