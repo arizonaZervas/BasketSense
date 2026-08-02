@@ -57,7 +57,7 @@ TOTAL 6,49
   );
 });
 
-test("parses coupon lines and returns as distinct negative evidence", () => {
+test("attaches Costco instant savings to the preceding product paid price", () => {
   const draft = parseCostcoOcrText(`
 1234567 KS ORG 2% MK 13.99
 INSTANT SAVINGS 2.00-
@@ -67,11 +67,14 @@ TAX 0.00
 TOTAL 2.00
   `);
 
-  const discount = draft.items.find((item) => item.kind === "discount");
+  const discountedMilk = draft.items.find(
+    (item) => item.costcoItemNumber === "1234567",
+  );
   const returnedItem = draft.items.find((item) => item.isReturn);
-  assert.ok(discount);
-  assert.equal(discount.discountCents, 200);
-  assert.equal(discount.netAmountCents, -200);
+  assert.ok(discountedMilk);
+  assert.equal(discountedMilk.lineSubtotalCents, 1399);
+  assert.equal(discountedMilk.discountCents, 200);
+  assert.equal(discountedMilk.netAmountCents, 1199);
   assert.ok(returnedItem);
   assert.equal(returnedItem.rawDescription, "SHIRT");
   assert.equal(returnedItem.netAmountCents, -999);
@@ -86,6 +89,21 @@ TOTAL 2.00
   });
   assert.equal(reconciliation.itemNetCents, 200);
   assert.equal(reconciliation.isReconciled, true);
+});
+
+test("keeps a receipt-level reward separate from the preceding product", () => {
+  const draft = parseCostcoOcrText(`
+1234567 KS ORG 2% MK 13.99
+EXECUTIVE REWARD 2.00-
+SUBTOTAL 11.99
+TAX 0.00
+TOTAL 11.99
+  `);
+
+  assert.equal(draft.items.length, 2);
+  assert.equal(draft.items[0].discountCents, 0);
+  assert.equal(draft.items[1].kind, "discount");
+  assert.equal(draft.items[1].discountCents, 200);
 });
 
 test("parses explicit quantity and validates the printed line total", () => {

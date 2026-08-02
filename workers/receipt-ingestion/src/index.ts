@@ -279,10 +279,16 @@ async function loadTripReport(db: D1Database, outbox: OutboxRow) {
                  ON trip_item_matches.receipt_item_id = receipt_items.id
                WHERE receipt_items.receipt_transaction_id = receipt_transactions.id
                  AND receipt_items.is_return = 0
+                 AND NOT (
+                   receipt_items.discount_cents > 0
+                   AND receipt_items.line_subtotal_cents <= 0
+                   AND receipt_items.net_amount_cents < 0
+                 )
                  AND trip_item_matches.id IS NULL) AS extra_item_count,
               (SELECT COUNT(*) FROM receipt_items
                WHERE receipt_items.receipt_transaction_id = receipt_transactions.id
-                 AND receipt_items.discount_cents > 0) AS discounted_item_count,
+                 AND receipt_items.discount_cents > 0
+                 AND receipt_items.line_subtotal_cents > 0) AS discounted_item_count,
               household_members.user_email AS recipient_email,
               household_members.display_name AS recipient_name
        FROM trips

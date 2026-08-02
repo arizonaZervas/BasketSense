@@ -57,6 +57,7 @@ export interface ClosedLoopReceiptItem {
   lineSubtotalCents: number;
   discountCents: number;
   netAmountCents: number;
+  kind: "item" | "discount";
   taxStatus: "taxable" | "non_taxable" | "unknown";
   matchConfidenceBps: number | null;
 }

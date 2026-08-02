@@ -59,6 +59,45 @@ test("attached Costco discount lines fold into the preceding matching product", 
   assert.match(parsed.warnings.at(-1), /Applied 1 Costco instant discount line/);
 });
 
+test("adjacent instant savings fold even when the reader omits the repeated item number", () => {
+  const draft = validDraft();
+  draft.lines.push({
+    itemNumber: null,
+    rawDescription: "INSTANT SAVINGS",
+    quantityMilli: 1000,
+    lineSubtotalCents: 0,
+    discountCents: 300,
+    netAmountCents: -300,
+    taxStatus: "non_taxable",
+    confidenceBps: 9300,
+    needsReview: false,
+  });
+  const parsed = parseExtractedReceiptDraft(draft);
+  assert.equal(parsed.lines.length, 1);
+  assert.equal(parsed.lines[0].lineSubtotalCents, 1499);
+  assert.equal(parsed.lines[0].discountCents, 300);
+  assert.equal(parsed.lines[0].netAmountCents, 1199);
+});
+
+test("receipt-level rewards remain separate discount evidence", () => {
+  const draft = validDraft();
+  draft.lines.push({
+    itemNumber: null,
+    rawDescription: "EXECUTIVE REWARD",
+    quantityMilli: 1000,
+    lineSubtotalCents: 0,
+    discountCents: 200,
+    netAmountCents: -200,
+    taxStatus: "non_taxable",
+    confidenceBps: 9300,
+    needsReview: false,
+  });
+  const parsed = parseExtractedReceiptDraft(draft);
+  assert.equal(parsed.lines.length, 2);
+  assert.equal(parsed.lines[1].discountCents, 200);
+  assert.equal(parsed.lines[1].netAmountCents, -200);
+});
+
 test("Gemini request uses inline document data and a strict JSON field contract", () => {
   const request = buildGeminiGenerateContentRequest({
     contentType: "application/pdf",

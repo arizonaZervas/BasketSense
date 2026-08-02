@@ -57,7 +57,8 @@ interface ParsedMoney {
 
 const SUMMARY_LABELS = /^(SUB\s*TOTAL|TAX|GRAND\s+TOTAL|TOTAL|DISCOUNTS?|COUPONS?)\b/i;
 const NON_ITEM_LABELS = /^(?:VISA|MASTERCARD|AMEX|CASH|CHANGE|TENDER|APPROVED|BALANCE|PAYMENT|MEMBER|ITEMS?\s+SOLD|NUMBER\s+OF\s+ITEMS|THANK\s+YOU)\b/i;
-const DISCOUNT_LABELS = /\b(?:COUPON|DISCOUNT|INSTANT\s+SAVINGS|REBATE|MFR)\b/i;
+const DISCOUNT_LABELS = /\b(?:COUPON|DISCOUNT|INSTANT\s+SAVINGS|REBATE|MFR|REWARD)\b/i;
+const ATTACHED_DISCOUNT_LABELS = /\b(?:COUPON|DISCOUNT|INSTANT\s+SAVINGS|REBATE|MFR)\b/i;
 const TRAILING_MONEY = /(?:^|\s)(\(?-?\$?\d[\d,]*(?:[.,]\d{2})\)?-?)(?:\s*([A-Za-z*]+))?\s*$/;
 
 export function normalizeReceiptDescription(value: string): string {
@@ -185,6 +186,55 @@ function parseQuantity(
     unitPriceCents: unitPrice.cents,
     mismatch: Math.abs(calculatedTotal - Math.abs(totalCents)) > 5,
   };
+}
+
+function parsedDiscountAppliesToPrevious(
+  previous: ParsedReceiptItem | undefined,
+  current: ParsedReceiptItem,
+) {
+  if (
+    !previous ||
+    previous.kind !== "item" ||
+    previous.lineSubtotalCents <= 0 ||
+    current.kind !== "discount" ||
+    current.discountCents <= 0 ||
+    current.netAmountCents >= 0
+  ) {
+    return false;
+  }
+
+  if (current.costcoItemNumber) {
+    return (
+      current.costcoItemNumber === previous.costcoItemNumber ||
+      Boolean(
+        previous.costcoItemNumber &&
+          current.rawDescription.includes(previous.costcoItemNumber),
+      )
+    );
+  }
+
+  return (
+    ATTACHED_DISCOUNT_LABELS.test(current.rawDescription) ||
+    /^\d+\s*\/\s*\d+$/.test(current.rawDescription)
+  );
+}
+
+function foldParsedCostcoDiscountLines(items: ParsedReceiptItem[]) {
+  const folded: ParsedReceiptItem[] = [];
+  for (const item of items) {
+    const previous = folded.at(-1);
+    if (parsedDiscountAppliesToPrevious(previous, item) && previous) {
+      previous.discountCents += item.discountCents;
+      previous.netAmountCents = previous.lineSubtotalCents - previous.discountCents;
+      previous.parseConfidenceBps = Math.min(
+        previous.parseConfidenceBps,
+        item.parseConfidenceBps,
+      );
+      continue;
+    }
+    folded.push(item);
+  }
+  return folded;
 }
 
 export function parseCostcoOcrText(text: string): ParsedCostcoReceiptDraft {
@@ -324,8 +374,9 @@ export function parseCostcoOcrText(text: string): ParsedCostcoReceiptDraft {
     });
   });
 
-  const explicitDiscountCents = items.reduce(
-    (sum, item) => sum + (item.kind === "discount" ? item.discountCents : 0),
+  const foldedItems = foldParsedCostcoDiscountLines(items);
+  const explicitDiscountCents = foldedItems.reduce(
+    (sum, item) => sum + item.discountCents,
     0,
   );
   const candidateDiscount = resolveSummaryCandidate(
@@ -335,7 +386,7 @@ export function parseCostcoOcrText(text: string): ParsedCostcoReceiptDraft {
   );
 
   return {
-    items,
+    items: foldedItems,
     subtotalCents: resolveSummaryCandidate("subtotal", candidates.subtotal, warnings),
     taxCents: resolveSummaryCandidate("tax", candidates.tax, warnings),
     totalCents: resolveSummaryCandidate("total", candidates.total, warnings),

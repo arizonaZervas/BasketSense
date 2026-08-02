@@ -38,6 +38,7 @@ export type ClosedLoopReceiptItem = {
   lineSubtotalCents?: number | null;
   discountCents?: number | null;
   netAmountCents?: number | null;
+  kind?: "item" | "discount";
   taxStatus?: "taxable" | "non_taxable" | "unknown" | null;
   productId?: string | null;
   canonicalName?: string | null;
@@ -122,13 +123,14 @@ export type ClosedLoopSnapshot = {
   } | null;
 };
 
-type ReceiptDraftLine = {
+export type ReceiptDraftLine = {
   clientId: string;
   itemNumber: string;
   description: string;
   amount: string;
   quantityMilli: number;
   unitPriceCents: number | null;
+  discountCents: number;
   kind: "item" | "discount";
   taxStatus: "taxable" | "non_taxable" | "unknown";
 };
@@ -290,6 +292,7 @@ function blankLine(): ReceiptDraftLine {
     amount: "",
     quantityMilli: 1000,
     unitPriceCents: null,
+    discountCents: 0,
     kind: "item",
     taxStatus: "unknown",
   };
@@ -326,17 +329,21 @@ function draftFromClosedLoop(closedLoop: ClosedLoopSnapshot | null | undefined) 
           amount: centsToInput(item.netAmountCents ?? item.lineSubtotalCents),
           quantityMilli: item.quantityMilli ?? 1000,
           unitPriceCents: item.unitPriceCents ?? null,
+          discountCents: Math.max(0, item.discountCents ?? 0),
           kind:
-            (item.discountCents ?? 0) > 0 && (item.lineSubtotalCents ?? 0) === 0
+            item.kind ??
+            ((item.discountCents ?? 0) > 0 &&
+            (item.lineSubtotalCents ?? 0) <= 0 &&
+            (item.netAmountCents ?? 0) < 0
               ? "discount"
-              : "item",
+              : "item"),
           taxStatus: item.taxStatus ?? "unknown",
         }))
       : [blankLine()],
   } satisfies ReceiptDraft;
 }
 
-function draftFromParser(value: unknown): ReceiptDraft {
+export function draftFromParser(value: unknown): ReceiptDraft {
   const parsed = (value ?? {}) as {
     purchasedAt?: string | null;
     purchasedOn?: string | null;
@@ -373,7 +380,14 @@ function draftFromParser(value: unknown): ReceiptDraft {
         ? 1000
         : Math.round(item.quantity * 1000)),
     unitPriceCents: item.unitPriceCents ?? null,
-    kind: item.kind ?? ((item.discountCents ?? 0) > 0 ? "discount" : "item"),
+    discountCents: Math.max(0, item.discountCents ?? 0),
+    kind:
+      item.kind ??
+      ((item.discountCents ?? 0) > 0 &&
+      (item.lineSubtotalCents ?? 0) <= 0 &&
+      (item.netAmountCents ?? item.lineSubtotalCents ?? 0) < 0
+        ? "discount"
+        : "item"),
     taxStatus: item.taxStatus ?? "unknown",
   }));
   return {
@@ -386,6 +400,31 @@ function draftFromParser(value: unknown): ReceiptDraft {
     total: centsToInput(parsed.totalCents),
     discount: centsToInput(parsed.discountCents),
     items: items.length ? items : [blankLine()],
+  };
+}
+
+export function receiptDraftLineValue(item: ReceiptDraftLine, index: number) {
+  const amountCents = inputToCents(item.amount);
+  const looksLikeDiscount =
+    item.kind === "discount" ||
+    (amountCents < 0 &&
+      /coupon|discount|rebate|savings|instant|^\s*\d+\s*\/\s*\d+\s*$/i.test(
+        item.description,
+      ));
+  const discountCents = looksLikeDiscount
+    ? Math.abs(amountCents)
+    : Math.max(0, item.discountCents);
+  return {
+    sourceLineNumber: index + 1,
+    costcoItemNumber: item.itemNumber.trim() || undefined,
+    rawDescription: item.description.trim() || "Unlabeled receipt line",
+    quantityMilli: item.quantityMilli,
+    unitPriceCents: item.unitPriceCents,
+    lineSubtotalCents: looksLikeDiscount ? 0 : amountCents + discountCents,
+    netAmountCents: looksLikeDiscount ? -discountCents : amountCents,
+    discountCents,
+    taxStatus: item.taxStatus,
+    kind: looksLikeDiscount ? ("discount" as const) : ("item" as const),
   };
 }
 
@@ -769,28 +808,7 @@ export function ReceiptFlowDialog({
     () => ({
       items: draft.items
         .filter((item) => item.description.trim() || item.amount.trim())
-        .map((item, index) => {
-          const amountCents = inputToCents(item.amount);
-          const looksLikeDiscount =
-            item.kind === "discount" ||
-            (amountCents < 0 &&
-              /coupon|discount|rebate|savings|instant|^\s*\d+\s*\/\s*\d+\s*$/i.test(
-                item.description,
-              ));
-          const discountCents = looksLikeDiscount ? Math.abs(amountCents) : 0;
-          return {
-            sourceLineNumber: index + 1,
-            costcoItemNumber: item.itemNumber.trim() || undefined,
-            rawDescription: item.description.trim() || "Unlabeled receipt line",
-            quantityMilli: item.quantityMilli,
-            unitPriceCents: item.unitPriceCents,
-            lineSubtotalCents: looksLikeDiscount ? 0 : amountCents,
-            netAmountCents: looksLikeDiscount ? -discountCents : amountCents,
-            discountCents,
-            taxStatus: item.taxStatus,
-            kind: looksLikeDiscount ? ("discount" as const) : ("item" as const),
-          };
-        }),
+        .map(receiptDraftLineValue),
       subtotalCents: inputToCents(draft.subtotal),
       taxCents: inputToCents(draft.tax),
       totalCents: inputToCents(draft.total),
@@ -986,7 +1004,7 @@ export function ReceiptFlowDialog({
     setDraft((current) => ({
       ...current,
       items: current.items.map((item) =>
-        item.clientId === id ? { ...item, kind } : item,
+        item.clientId === id ? { ...item, kind, discountCents: 0 } : item,
       ),
     }));
   }
@@ -1449,7 +1467,13 @@ export function ReceiptFlowDialog({
                     </select>
                   </label>
                   <label className="draft-amount">
-                    <span>{item.kind === "discount" ? "Savings" : "Amount"}</span>
+                    <span>
+                      {item.kind === "discount"
+                        ? "Savings"
+                        : item.discountCents > 0
+                          ? `Paid (after ${money.format(item.discountCents / 100)} off)`
+                          : "Amount"}
+                    </span>
                     <span className="money-input">
                       <span aria-hidden="true">$</span>
                       <input

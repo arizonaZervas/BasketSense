@@ -2010,7 +2010,7 @@ function productForListItem(state, listItem) {
   return product;
 }
 
-test("receipt-only recap totals use the discounted amount actually paid", async () => {
+test("receipt discounts fold into the product paid price and stay out of additions", async () => {
   const db = new D1DatabaseAdapter();
   try {
     const initial = await responseJson(
@@ -2046,16 +2046,24 @@ test("receipt-only recap totals use the discounted amount actually paid", async 
         totalCents: 6800,
         discountCents: 1200,
         items: [
+          receiptDraftLine({
+            sourceLineNumber: 1,
+            costcoItemNumber: apparelProduct.costcoItemNumber,
+            rawDescription: "3 DOT PANT",
+            unitPriceCents: 8000,
+            lineSubtotalCents: 8000,
+          }),
           {
-            ...receiptDraftLine({
-              sourceLineNumber: 1,
-              costcoItemNumber: apparelProduct.costcoItemNumber,
-              rawDescription: "3 DOT PANT",
-              unitPriceCents: 8000,
-              lineSubtotalCents: 8000,
-            }),
+            sourceLineNumber: 2,
+            costcoItemNumber: null,
+            rawDescription: "INSTANT SAVINGS",
+            quantityMilli: 1000,
+            unitPriceCents: null,
+            lineSubtotalCents: 0,
             discountCents: 1200,
-            netAmountCents: 6800,
+            netAmountCents: -1200,
+            kind: "discount",
+            taxStatus: "non_taxable",
           },
         ],
       }),
@@ -2065,6 +2073,34 @@ test("receipt-only recap totals use the discounted amount actually paid", async 
     const ingested = await responseJson(response);
     assert.equal(ingested.comparison.additionsCents, 6800);
     assert.equal(ingested.closedLoop.comparison.buckets.receiptOnly.length, 1);
+    assert.equal(ingested.closedLoop.items.length, 1);
+    assert.equal(ingested.closedLoop.items[0].kind, "item");
+    assert.equal(ingested.closedLoop.items[0].lineSubtotalCents, 8000);
+    assert.equal(ingested.closedLoop.items[0].discountCents, 1200);
+    assert.equal(ingested.closedLoop.items[0].netAmountCents, 6800);
+    assert.equal(
+      ingested.questions.some((question) => /instant savings/i.test(question.prompt)),
+      false,
+    );
+
+    const finalizedResponse = await handleHouseholdPatch(
+      householdRequest("discounted-recap@example.test", "PATCH", {
+        action: "finalize_receipt",
+        receiptId: ingested.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedResponse.status, 200);
+
+    const after = await responseJson(
+      await handleHouseholdGet(householdRequest("discounted-recap@example.test"), db),
+    );
+    const updatedApparel = after.products.find(
+      (product) => product.id === apparelProduct.id,
+    );
+    assert.equal(updatedApparel.latestRegularUnitPriceCents, 8000);
+    assert.equal(updatedApparel.latestPaidUnitPriceCents, 6800);
+    assert.equal(updatedApparel.latestDiscountUnitCents, 1200);
   } finally {
     db.close();
   }

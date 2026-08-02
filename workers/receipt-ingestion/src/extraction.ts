@@ -85,7 +85,7 @@ const receiptDraftSchema = {
 } as const;
 
 const instructions = `You extract Costco warehouse receipts for a private household app.
-Return only information visibly supported by the supplied receipt. Use integer cents, never dollar strings or floating point. Preserve the abbreviated printed label exactly in rawDescription; do not invent a catalog name. Use null for unreadable totals or dates. A line with ambiguous text, amount, quantity, tax treatment, discount, or item number must have needsReview true and a conservative confidenceBps. Identify every visible coupon, instant saving, and discount: set its discountCents to the positive saved amount and netAmountCents to its negative effect. When an item has an attached discount, preserve its pre-discount lineSubtotalCents, record its positive discountCents, and make netAmountCents equal the paid amount. Do not silently turn discounts into purchases or omit them from the receipt-level discountCents total. This is an advisory draft only: do not decide household value, planned status, categories, or accounting outcomes.`;
+Return only information visibly supported by the supplied receipt. Use integer cents, never dollar strings or floating point. Preserve the abbreviated printed label exactly in rawDescription; do not invent a catalog name. Use null for unreadable totals or dates. A line with ambiguous text, amount, quantity, tax treatment, discount, or item number must have needsReview true and a conservative confidenceBps. Identify every visible coupon, instant saving, and discount: set its discountCents to the positive saved amount and netAmountCents to its negative effect. When an item has an attached discount, preserve its pre-discount lineSubtotalCents, record its positive discountCents, and make netAmountCents equal the paid amount. Attach savings only when the receipt visibly pairs them with a product; keep receipt-level rewards separate. Do not silently turn discounts into purchases or omit them from the receipt-level discountCents total. This is an advisory draft only: do not decide household value, planned status, categories, or accounting outcomes.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -115,14 +115,24 @@ function isAttachedCostcoDiscountLine(
   previous: ExtractedReceiptLine | undefined,
   current: ExtractedReceiptLine
 ) {
+  const descriptionLooksAttached =
+    /^\d+\s*\/\s*\d+$/.test(current.rawDescription) ||
+    /\b(?:coupon|discount|instant\s+savings|rebate|mfr)\b/i.test(
+      current.rawDescription
+    );
+  const itemNumberLinksToPrevious = Boolean(
+    previous?.itemNumber &&
+      (current.itemNumber === previous.itemNumber ||
+        current.rawDescription.includes(previous.itemNumber))
+  );
   return Boolean(
     previous &&
-      previous.itemNumber &&
-      current.itemNumber === previous.itemNumber &&
-      current.lineSubtotalCents < 0 &&
+      previous.lineSubtotalCents > 0 &&
+      current.lineSubtotalCents <= 0 &&
       current.netAmountCents < 0 &&
       current.discountCents > 0 &&
-      /^\d+\s*\/\s*\d+$/.test(current.rawDescription)
+      (itemNumberLinksToPrevious ||
+        (!current.itemNumber && descriptionLooksAttached))
   );
 }
 
@@ -133,7 +143,7 @@ function foldAttachedCostcoDiscountLines(lines: ExtractedReceiptLine[]) {
     const previous = folded.at(-1);
     if (isAttachedCostcoDiscountLine(previous, line) && previous) {
       previous.discountCents += line.discountCents;
-      previous.netAmountCents += line.netAmountCents;
+      previous.netAmountCents = previous.lineSubtotalCents - previous.discountCents;
       previous.confidenceBps = Math.min(previous.confidenceBps, line.confidenceBps);
       previous.needsReview ||= line.needsReview;
       foldedCount += 1;

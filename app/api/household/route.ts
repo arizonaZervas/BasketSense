@@ -1692,6 +1692,11 @@ async function readHouseholdState(
              WHERE receipt_items.product_id IS NOT NULL
                AND receipt_items.is_return = 0
                AND receipt_items.quantity_milli > 0
+               AND NOT (
+                 receipt_items.discount_cents > 0
+                 AND receipt_items.line_subtotal_cents <= 0
+                 AND receipt_items.net_amount_cents < 0
+               )
                AND receipt_transactions.transaction_type = 'warehouse'
                AND receipt_transactions.parse_status = 'reconciled'
                AND (
@@ -1817,6 +1822,11 @@ async function readDataHealth(
            ON receipt_transactions.id = receipt_items.receipt_transaction_id
          WHERE receipt_transactions.household_id = ?
            AND receipt_items.product_id IS NULL
+           AND NOT (
+             receipt_items.discount_cents > 0
+             AND receipt_items.line_subtotal_cents <= 0
+             AND receipt_items.net_amount_cents < 0
+           )
          ORDER BY receipt_transactions.purchased_at DESC, receipt_items.source_line_number ASC
          LIMIT 100`,
       )
@@ -2315,6 +2325,11 @@ async function catalogMatchForListItem(
        WHERE receipt_items.product_id = ?
          AND receipt_items.is_return = 0
          AND receipt_items.quantity_milli > 0
+         AND NOT (
+           receipt_items.discount_cents > 0
+           AND receipt_items.line_subtotal_cents <= 0
+           AND receipt_items.net_amount_cents < 0
+         )
          AND receipt_transactions.household_id = ?
          AND receipt_transactions.transaction_type = 'warehouse'
          AND receipt_transactions.parse_status = 'reconciled'
@@ -3362,8 +3377,54 @@ interface ValidatedDraftItem {
   lineSubtotalCents: number;
   discountCents: number;
   netAmountCents: number;
+  kind: "item" | "discount";
   taxStatus: "taxable" | "non_taxable" | "unknown";
   isReturn: boolean;
+}
+
+function draftDiscountAppliesToPrevious(
+  previous: ValidatedDraftItem | undefined,
+  current: ValidatedDraftItem
+) {
+  if (
+    !previous ||
+    previous.kind !== "item" ||
+    previous.lineSubtotalCents <= 0 ||
+    current.kind !== "discount" ||
+    current.discountCents <= 0 ||
+    current.netAmountCents >= 0
+  ) {
+    return false;
+  }
+  if (current.costcoItemNumber) {
+    return (
+      current.costcoItemNumber === previous.costcoItemNumber ||
+      Boolean(
+        previous.costcoItemNumber &&
+          current.rawDescription.includes(previous.costcoItemNumber)
+      )
+    );
+  }
+  return (
+    /\b(?:coupon|discount|instant\s+savings|rebate|mfr)\b/i.test(
+      current.rawDescription
+    ) || /^\d+\s*\/\s*\d+$/.test(current.rawDescription)
+  );
+}
+
+function foldAttachedDraftDiscounts(items: ValidatedDraftItem[]) {
+  const folded: ValidatedDraftItem[] = [];
+  for (const item of items) {
+    const previous = folded.at(-1);
+    if (draftDiscountAppliesToPrevious(previous, item) && previous) {
+      previous.discountCents += item.discountCents;
+      previous.netAmountCents =
+        previous.lineSubtotalCents - previous.discountCents;
+      continue;
+    }
+    folded.push(item);
+  }
+  return folded;
 }
 
 function requiredInteger(
@@ -3398,7 +3459,7 @@ function validateDraftItems(
   }
 
   const seenLines = new Set<number>();
-  return value.map((entry, index) => {
+  const parsed: ValidatedDraftItem[] = value.map((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       throw new ApiError(400, `items[${index}] must be an object`);
     }
@@ -3467,6 +3528,11 @@ function validateDraftItems(
       item.taxStatus === "taxable" || item.taxStatus === "non_taxable"
         ? item.taxStatus
         : "unknown";
+    const kind =
+      item.kind === "discount" ||
+      (discountCents > 0 && lineSubtotalCents <= 0 && netAmountCents < 0)
+        ? "discount"
+        : "item";
 
     return {
       sourceLineNumber,
@@ -3477,10 +3543,13 @@ function validateDraftItems(
       lineSubtotalCents,
       discountCents,
       netAmountCents,
+      kind,
       taxStatus,
-      isReturn: lineSubtotalCents < 0 && discountCents === 0,
+      isReturn:
+        kind === "item" && lineSubtotalCents < 0 && discountCents === 0,
     };
   });
+  return foldAttachedDraftDiscounts(parsed);
 }
 
 function isTotalsOnlyReceipt(receipt: Pick<ReceiptTransactionRow, "audit_flag">) {
@@ -3534,6 +3603,9 @@ async function resolveDraftProducts(
   );
 
   return items.map((item) => {
+    if (item.kind === "discount") {
+      return { item, product: null, confidenceBps: 10_000 };
+    }
     const normalized = normalizeReceiptDescription(item.rawDescription);
     const numbered = item.costcoItemNumber
       ? productsByNumber.get(item.costcoItemNumber)
@@ -3572,6 +3644,19 @@ async function authorizedReceipt(
   return receipt;
 }
 
+function receiptItemKind(
+  row: Pick<
+    ReceiptItemRow,
+    "line_subtotal_cents" | "discount_cents" | "net_amount_cents"
+  >
+): "item" | "discount" {
+  return row.discount_cents > 0 &&
+    row.line_subtotal_cents <= 0 &&
+    row.net_amount_cents < 0
+    ? "discount"
+    : "item";
+}
+
 function receiptItemSummary(row: ReceiptItemRow): ClosedLoopReceiptItem {
   return {
     id: row.id,
@@ -3586,6 +3671,7 @@ function receiptItemSummary(row: ReceiptItemRow): ClosedLoopReceiptItem {
     lineSubtotalCents: row.line_subtotal_cents,
     discountCents: row.discount_cents,
     netAmountCents: row.net_amount_cents,
+    kind: receiptItemKind(row),
     taxStatus: row.tax_status,
     matchConfidenceBps: row.match_confidence_bps,
   };
@@ -3683,6 +3769,7 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
     lineSubtotalCents: row.line_subtotal_cents,
     discountCents: row.discount_cents,
     netAmountCents: row.net_amount_cents,
+    kind: receiptItemKind(row),
     isReturn: Boolean(row.is_return),
     // A missing catalog match is not a failed receipt parse. Once the household
     // has checked and saved the receipt, an uncataloged item is valid receipt
@@ -4137,6 +4224,7 @@ async function rebuildReviewQuestions(
         !matchedReceiptIds.has(item.id) &&
         Boolean(item.product_id) &&
         !item.is_return &&
+        receiptItemKind(item) !== "discount" &&
         Math.abs(item.net_amount_cents) >= materialThreshold
     )
     .sort(
@@ -4488,7 +4576,9 @@ async function insertReceiptItems(
           item.discountCents,
           item.netAmountCents,
           item.taxStatus,
-          resolution.product
+          item.kind === "discount"
+            ? "receipt_discount"
+            : resolution.product
             ? "normalized_from_history"
             : "receipt_abbreviation",
           item.isReturn ? 1 : 0,
@@ -4752,6 +4842,7 @@ async function updateReceiptDraft(
       `UPDATE receipt_transactions
        SET purchased_at = ?, subtotal_cents = ?, tax_cents = ?,
            discount_cents = ?, total_cents = ?, household_funded_cents = ?,
+           item_gross_cents = ?, item_count = ?,
            parse_status = 'needs_review', audit_flag = ?,
            updated_at = ?
        WHERE id = ? AND household_id = ?`
@@ -4763,6 +4854,10 @@ async function updateReceiptDraft(
       discountCents,
       totalCents,
       totalCents,
+      items
+        ? items.reduce((sum, item) => sum + item.lineSubtotalCents, 0)
+        : receipt.item_gross_cents,
+      items?.length ?? receipt.item_count,
       totalsOnly ? "closed_loop_totals_only_draft" : "closed_loop_corrected",
       now,
       receipt.id,
