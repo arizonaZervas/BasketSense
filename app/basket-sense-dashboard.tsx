@@ -419,6 +419,9 @@ export function BasketSenseDashboard({
     viewData.products[0]?.id ?? "",
   );
   const [productDetailOpen, setProductDetailOpen] = useState(false);
+  const [reviewRequestedForProductId, setReviewRequestedForProductId] = useState<
+    string | null
+  >(null);
   const [productOrigin, setProductOrigin] = useState<"insights" | "products">(
     "products",
   );
@@ -784,6 +787,18 @@ export function BasketSenseDashboard({
     setSelectedProductId(productId);
     setProductSearch("");
     setProductCategory("all");
+    setProductDetailOpen(true);
+    setProductOrigin("insights");
+    setActiveTab("products");
+    window.scrollTo({ top: 0 });
+  }
+
+  function openProductReview(productId: string) {
+    productReturnFocus.current = productId;
+    setSelectedProductId(productId);
+    setProductSearch("");
+    setProductCategory("all");
+    setReviewRequestedForProductId(productId);
     setProductDetailOpen(true);
     setProductOrigin("insights");
     setActiveTab("products");
@@ -1375,6 +1390,7 @@ export function BasketSenseDashboard({
             selectedTransactionId={insightTransactionId}
             setSelectedTransactionId={setInsightTransactionId}
             onOpenProduct={openProduct}
+            onReviewProduct={openProductReview}
           />
         ) : null}
 
@@ -1392,6 +1408,8 @@ export function BasketSenseDashboard({
             setSelectedProductId={setSelectedProductId}
             detailOpen={productDetailOpen}
             setDetailOpen={setProductDetailOpen}
+            reviewRequestedForProductId={reviewRequestedForProductId}
+            onReviewRequestHandled={() => setReviewRequestedForProductId(null)}
             categories={effectiveViewData.productCategories}
             auditThrough={effectiveViewData.audit.through}
             openedFromInsights={productOrigin === "insights"}
@@ -2678,6 +2696,7 @@ function OverviewTab({
   selectedTransactionId,
   setSelectedTransactionId,
   onOpenProduct,
+  onReviewProduct,
 }: {
   viewData: DashboardViewData;
   changeTab: (tab: Tab) => void;
@@ -2688,6 +2707,7 @@ function OverviewTab({
   selectedTransactionId: string | null;
   setSelectedTransactionId: (transactionId: string | null) => void;
   onOpenProduct: (productId: string) => void;
+  onReviewProduct: (productId: string) => void;
 }) {
   const transactions = viewData.transactions.filter(
     (transaction) =>
@@ -2727,6 +2747,7 @@ function OverviewTab({
         onBack={() => setSelectedCategoryKey(null)}
         onOpenTransaction={setSelectedTransactionId}
         onOpenProduct={onOpenProduct}
+        onReviewProduct={onReviewProduct}
       />
     );
   }
@@ -3176,6 +3197,7 @@ function CategoryDetail({
   onBack,
   onOpenTransaction,
   onOpenProduct,
+  onReviewProduct,
 }: {
   category: DashboardProductCategory;
   transactions: readonly DashboardTransaction[];
@@ -3186,6 +3208,7 @@ function CategoryDetail({
   onBack: () => void;
   onOpenTransaction: (transactionId: string) => void;
   onOpenProduct: (productId: string) => void;
+  onReviewProduct: (productId: string) => void;
 }) {
   const scopeTransactionIds = new Set(transactions.map((transaction) => transaction.id));
   const categoryLines = lines.filter(
@@ -3218,6 +3241,9 @@ function CategoryDetail({
   const topProducts = [...spendByItem.values()]
     .sort((first, second) => second.spendCents - first.spendCents)
     .slice(0, 12);
+  const reviewableProducts = topProducts.filter(
+    ({ line }) => category.key === "needs_review" && productByItem.has(line.itemNumber),
+  );
   const monthLabel =
     selectedMonth === "all"
       ? `Audited 2026 through ${formatShortDate(auditThrough)}`
@@ -3259,8 +3285,9 @@ function CategoryDetail({
         <section className="notice-card">
           <span className="notice-mark" aria-hidden="true">?</span>
           <p>
-            These abbreviations are intentionally unallocated. Opening a product shows
-            the raw Costco text so the household can confirm it before totals move.
+            Choose <strong>Review &amp; categorize</strong> for each product below to
+            confirm its household name and category. Discounts are already applied at
+            checkout and do not need a category.
           </p>
         </section>
       ) : null}
@@ -3269,10 +3296,18 @@ function CategoryDetail({
         <section className="card category-product-list">
           <div className="card-heading">
             <div>
-              <h2>{channel ? "Receipt lines" : "Products in this category"}</h2>
+              <h2>
+                {channel
+                  ? "Receipt lines"
+                  : category.key === "needs_review"
+                    ? "Review & categorize products"
+                    : "Products in this category"}
+              </h2>
               <p>
                 {channel
                   ? "Largest recorded receipt-line values first; Optical lines are gross service values."
+                  : category.key === "needs_review"
+                    ? `${reviewableProducts.length} ${reviewableProducts.length === 1 ? "product is" : "products are"} ready for a quick household decision.`
                   : "Largest recorded net merchandise amounts first."}
               </p>
             </div>
@@ -3280,6 +3315,8 @@ function CategoryDetail({
           <div className="category-product-rows">
             {topProducts.map(({ line, spendCents, count }) => {
               const product = productByItem.get(line.itemNumber);
+              const canReviewProduct =
+                category.key === "needs_review" && product !== undefined;
               const content = (
                 <>
                   <span>
@@ -3288,7 +3325,13 @@ function CategoryDetail({
                   </span>
                   <span>
                     <strong>{currency.format(spendCents / 100)}</strong>
-                    <small>{classificationLabel(line.classificationStatus)}</small>
+                    <small>
+                      {canReviewProduct
+                        ? "Review & categorize →"
+                        : line.itemNumber === "0000"
+                          ? "Receipt discount · already applied"
+                          : classificationLabel(line.classificationStatus)}
+                    </small>
                   </span>
                 </>
               );
@@ -3297,7 +3340,16 @@ function CategoryDetail({
                   type="button"
                   key={line.itemNumber}
                   data-open-product-id={product.id}
-                  onClick={() => onOpenProduct(product.id)}
+                  aria-label={
+                    canReviewProduct
+                      ? `Review and categorize ${line.name}`
+                      : `Open ${line.name}`
+                  }
+                  onClick={() =>
+                    canReviewProduct
+                      ? onReviewProduct(product.id)
+                      : onOpenProduct(product.id)
+                  }
                 >
                   {content}
                 </button>
@@ -3529,6 +3581,8 @@ function ProductsTab({
   setSelectedProductId,
   detailOpen,
   setDetailOpen,
+  reviewRequestedForProductId,
+  onReviewRequestHandled,
   categories,
   auditThrough,
   openedFromInsights,
@@ -3552,6 +3606,8 @@ function ProductsTab({
   setSelectedProductId: (value: string) => void;
   detailOpen: boolean;
   setDetailOpen: (open: boolean) => void;
+  reviewRequestedForProductId: string | null;
+  onReviewRequestHandled: () => void;
   categories: readonly DashboardProductCategory[];
   auditThrough: string;
   openedFromInsights: boolean;
@@ -3634,11 +3690,7 @@ function ProductsTab({
     window.requestAnimationFrame(() => returnFocus.current?.focus());
   }
 
-  function toggleProductReview() {
-    if (reviewOpen) {
-      setReviewOpen(false);
-      return;
-    }
+  function openProductReviewForm() {
     setReviewName(catalogProduct?.canonicalName ?? selected?.name ?? "");
     const currentCategory = catalogProduct?.category ?? selected?.categoryKey ?? null;
     setReviewCategory(
@@ -3646,6 +3698,32 @@ function ProductsTab({
     );
     setReviewOpen(true);
   }
+
+  function toggleProductReview() {
+    if (reviewOpen) {
+      setReviewOpen(false);
+      return;
+    }
+    openProductReviewForm();
+  }
+
+  useEffect(() => {
+    if (
+      reviewRequestedForProductId !== selected?.id ||
+      !detailOpen ||
+      !catalogProduct
+    ) {
+      return;
+    }
+    openProductReviewForm();
+    onReviewRequestHandled();
+  }, [
+    catalogProduct,
+    detailOpen,
+    onReviewRequestHandled,
+    reviewRequestedForProductId,
+    selected?.id,
+  ]);
 
   async function saveProductReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -241,6 +241,21 @@ test("keeps product-history additions and sorting in the shared list flow", asyn
   );
 });
 
+test("makes unresolved category rows directly reviewable", async () => {
+  const source = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /Review & categorize products/);
+  assert.match(source, /Review & categorize →/);
+  assert.match(source, /function openProductReview\(productId: string\)/);
+  assert.match(source, /onReviewProduct=\{openProductReview\}/);
+  assert.match(source, /reviewRequestedForProductId/);
+  assert.match(source, /openProductReviewForm\(\);/);
+  assert.match(source, /Receipt discount · already applied/);
+});
+
 test("chooses the latest completed trip for the recap", async () => {
   const source = await readFile(
     new URL("../app/api/household/route.ts", import.meta.url),
