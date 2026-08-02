@@ -40,7 +40,15 @@ const LOW_SIGNAL_WORDS = new Set([
 ]);
 
 function text(value: unknown) {
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(", ");
+  }
+  return "";
 }
 
 function positiveInteger(value: unknown) {

@@ -248,26 +248,37 @@ async function discoverCandidates(
   const existing = await listProductImages(db, product.id);
   if (!force && existing.some((image) => image.status === "candidate")) return existing;
 
-  const url = new URL("https://world.openfoodfacts.org/cgi/search.pl");
-  url.searchParams.set("search_terms", `${product.brand ?? ""} ${product.canonical_name}`.trim());
-  url.searchParams.set("search_simple", "1");
-  url.searchParams.set("action", "process");
-  url.searchParams.set("json", "1");
-  url.searchParams.set("page_size", "8");
-  url.searchParams.set(
-    "fields",
-    "code,product_name,brands,quantity,image_front_url,image_front_small_url,image_front_width,image_front_height",
-  );
+  const url = new URL("https://search.openfoodfacts.org/search");
+  const query = `${product.brand ?? ""} ${product.canonical_name}`.trim();
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   let response: Response;
   try {
     response = await fetchImpl(url, {
+      method: "POST",
       headers: {
         Accept: "application/json",
-        "User-Agent": "BasketSense/0.1 private-household-product-imagery",
+        "Content-Type": "application/json",
+        "User-Agent":
+          "BasketSense/0.1 (https://basket-sense-household.nysha-enterp-3913.chatgpt.site)",
       },
+      body: JSON.stringify({
+        q: query,
+        page_size: 8,
+        langs: ["en"],
+        boost_phrase: true,
+        fields: [
+          "code",
+          "product_name",
+          "brands",
+          "quantity",
+          "image_front_url",
+          "image_front_small_url",
+          "image_front_width",
+          "image_front_height",
+        ],
+      }),
       signal: controller.signal,
     });
   } catch {
@@ -279,12 +290,12 @@ async function discoverCandidates(
     throw new ProductImageApiError(502, "Licensed image search is temporarily unavailable");
   }
   const payload = (await response.json().catch(() => null)) as {
-    products?: OpenFoodFactsProduct[];
+    hits?: OpenFoodFactsProduct[];
   } | null;
   const candidates = licensedOpenFoodFactsCandidates({
     canonicalName: product.canonical_name,
     brand: product.brand,
-    products: Array.isArray(payload?.products) ? payload.products : [],
+    products: Array.isArray(payload?.hits) ? payload.hits : [],
   });
   if (!candidates.length) return existing;
 

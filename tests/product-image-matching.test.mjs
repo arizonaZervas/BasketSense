@@ -60,3 +60,22 @@ test("keeps only useful image candidates from trusted Open Food Facts hosts", ()
   );
   assert.equal(isTrustedOpenFoodFactsImageUrl("https://example.com/image.jpg"), false);
 });
+
+test("accepts Search-a-licious brand arrays", () => {
+  const candidates = licensedOpenFoodFactsCandidates({
+    canonicalName: "Organic Whole Milk",
+    brand: "Kirkland",
+    products: [
+      {
+        code: "0196633946935",
+        product_name: "Organic whole milk kirkland",
+        brands: ["Kirkland", "Kirkland Signature"],
+        image_front_url:
+          "https://images.openfoodfacts.org/images/products/019/663/394/6935/front_en.6.400.jpg",
+      },
+    ],
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].brand, "Kirkland, Kirkland Signature");
+});
