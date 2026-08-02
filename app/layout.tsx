@@ -6,7 +6,7 @@ const themeBootstrapScript = `
   (() => {
     try {
       const savedTheme = window.localStorage.getItem("basketsense-color-theme");
-      if (savedTheme === "light" || savedTheme === "dark") {
+      if (savedTheme === "warm" || savedTheme === "light" || savedTheme === "dark") {
         document.documentElement.dataset.theme = savedTheme;
       }
     } catch {

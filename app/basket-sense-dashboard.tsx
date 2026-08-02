@@ -50,7 +50,7 @@ type ListItemSource =
   | "consider"
   | "in_store";
 type SyncStatus = "connecting" | "shared" | "refreshing" | "offline";
-type ThemePreference = "system" | "light" | "dark";
+type ThemePreference = "system" | "warm" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 
 const HOUSEHOLD_REQUEST_TIMEOUT_MS = 10_000;
@@ -186,6 +186,10 @@ function shoppingCompleteConfettiStyle(index: number): CSSProperties {
 }
 
 const THEME_STORAGE_KEY = "basketsense-color-theme";
+
+function isThemePreference(value: string | null): value is ThemePreference {
+  return value === "system" || value === "warm" || value === "light" || value === "dark";
+}
 
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -475,7 +479,11 @@ export function BasketSenseDashboard({
     [household?.dashboard, household?.products, viewData],
   );
   const resolvedTheme: ResolvedTheme =
-    themePreference === "system" ? systemTheme : themePreference;
+    themePreference === "system"
+      ? systemTheme
+      : themePreference === "dark"
+        ? "dark"
+        : "light";
 
   const fetchHousehold = useCallback(
     async (url: string, init?: RequestInit) => {
@@ -507,18 +515,14 @@ export function BasketSenseDashboard({
       setSystemTheme(colorScheme.matches ? "dark" : "light");
     const syncStoredTheme = (event: StorageEvent) => {
       if (event.key !== THEME_STORAGE_KEY) return;
-      setThemePreference(
-        event.newValue === "light" || event.newValue === "dark"
-          ? event.newValue
-          : "system",
-      );
+      setThemePreference(isThemePreference(event.newValue) ? event.newValue : "system");
     };
 
     const hydrateTheme = window.setTimeout(() => {
       updateSystemTheme();
       try {
         const savedPreference = window.localStorage.getItem(THEME_STORAGE_KEY);
-        if (savedPreference === "light" || savedPreference === "dark") {
+        if (isThemePreference(savedPreference)) {
           setThemePreference(savedPreference);
         }
       } catch {
@@ -761,10 +765,6 @@ export function BasketSenseDashboard({
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(null), 2_600);
-  }
-
-  function toggleTheme() {
-    setThemePreference(resolvedTheme === "dark" ? "light" : "dark");
   }
 
   function changeTab(tab: Tab) {
@@ -1268,38 +1268,30 @@ export function BasketSenseDashboard({
             </p>
           </div>
           <div className="topbar-actions">
-            <div className="theme-control" role="group" aria-label="Color theme">
-              <button
-                type="button"
-                className={`theme-toggle ${resolvedTheme}`}
-                onClick={toggleTheme}
-                aria-label={`Switch to ${resolvedTheme === "dark" ? "light" : "dark"} theme`}
-                aria-pressed={resolvedTheme === "dark"}
-                title={
-                  themePreference === "system"
-                    ? `Following this device’s ${resolvedTheme} preference`
+            <label
+              className={`theme-control theme-${themePreference}`}
+              title={
+                themePreference === "system"
+                  ? `Following this device’s ${resolvedTheme} preference`
+                  : themePreference === "warm"
+                    ? "Warm Pantry theme saved on this device"
                     : `${resolvedTheme === "dark" ? "Dark" : "Light"} theme saved on this device`
-                }
+              }
+            >
+              <span className="theme-control-swatch" aria-hidden="true" />
+              <span className="sr-only">Color theme</span>
+              <select
+                className="theme-select"
+                aria-label="Color theme"
+                value={themePreference}
+                onChange={(event) => setThemePreference(event.target.value as ThemePreference)}
               >
-                <span className="theme-toggle-track" aria-hidden="true">
-                  <span className="theme-symbol">☀︎</span>
-                  <span className="theme-symbol">☾</span>
-                  <span className="theme-toggle-knob" />
-                </span>
-                <span className="theme-toggle-label">
-                  {resolvedTheme === "dark" ? "Dark" : "Light"}
-                </span>
-              </button>
-              <button
-                type="button"
-                className={`theme-auto ${themePreference === "system" ? "active" : ""}`}
-                onClick={() => setThemePreference("system")}
-                aria-pressed={themePreference === "system"}
-                title="Follow this device’s color preference"
-              >
-                Auto
-              </button>
-            </div>
+                <option value="system">Auto</option>
+                <option value="warm">Warm</option>
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </label>
             <div
               className="avatar-stack"
               aria-label={

@@ -83,9 +83,12 @@ test("renders accessible catalog and device theme controls", async () => {
   const response = await render();
   const html = await response.text();
 
-  assert.match(html, /role="group" aria-label="Color theme"/i);
-  assert.match(html, /aria-label="Switch to dark theme"/i);
-  assert.match(html, />Auto</i);
+  assert.match(html, /select[^>]+aria-label="Color theme"/i);
+  assert.match(html, /<option value="system"[^>]*>Auto<\/option>/i);
+  assert.match(html, /<option value="warm"[^>]*>Warm<\/option>/i);
+  assert.match(html, /<option value="light"[^>]*>Light<\/option>/i);
+  assert.match(html, /<option value="dark"[^>]*>Dark<\/option>/i);
+  assert.match(html, /savedTheme === "warm"/i);
   assert.match(html, /role="combobox"/i);
   assert.match(html, /aria-autocomplete="list"/i);
   assert.match(html, /aria-controls="household-product-catalog"/i);
@@ -163,6 +166,8 @@ test("uses a dense, top-down pop and flutter celebration", async () => {
   assert.match(styles, /var\(--confetti-fall\)/);
   assert.match(styles, /clip-path: polygon/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.shopping-complete-confetti/);
+  assert.match(styles, /:root\[data-theme="warm"\]/);
+  assert.match(styles, /--card-shadow: 0 2px 6px/);
 });
 
 test("receipt capture offers camera, photo-library, and Costco PDF actions", async () => {
