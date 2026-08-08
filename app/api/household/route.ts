@@ -5827,6 +5827,16 @@ export async function handleHouseholdPatch(
     if (action === "confirm_product_metadata") {
       return await confirmProductMetadata(db, context, body);
     }
+    if (action === "confirm_receipt_product") {
+      const receiptItemId = requiredString(body.receiptItemId, "receiptItemId", 128);
+      const canonicalName = requiredString(body.canonicalName, "canonicalName", 140);
+      const category = requiredString(body.category, "category", 80);
+      const productId = await confirmReceiptProduct(db, context, receiptItemId, null, {
+        canonicalName,
+        category,
+      });
+      return json({ productId });
+    }
 
     throw new ApiError(400, "Unsupported action");
   } catch (error) {

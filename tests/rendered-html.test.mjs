@@ -249,9 +249,11 @@ test("makes unresolved category rows directly reviewable", async () => {
 
   assert.match(source, /Review & categorize products/);
   assert.match(source, /Review & categorize →/);
-  assert.match(source, /function openProductReview\(productId: string\)/);
+  assert.match(source, /function openProductReview\(productId: string, receiptItemId: string\)/);
   assert.match(source, /onReviewProduct=\{openProductReview\}/);
   assert.match(source, /reviewRequestedForProductId/);
+  assert.match(source, /reviewRequestedReceiptItemId/);
+  assert.match(source, /action: "confirm_receipt_product"/);
   assert.match(source, /openProductReviewForm\(\);/);
   assert.match(source, /Receipt discount · already applied/);
 });

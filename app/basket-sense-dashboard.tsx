@@ -422,6 +422,9 @@ export function BasketSenseDashboard({
   const [reviewRequestedForProductId, setReviewRequestedForProductId] = useState<
     string | null
   >(null);
+  const [reviewRequestedReceiptItemId, setReviewRequestedReceiptItemId] = useState<
+    string | null
+  >(null);
   const [productOrigin, setProductOrigin] = useState<"insights" | "products">(
     "products",
   );
@@ -787,18 +790,21 @@ export function BasketSenseDashboard({
     setSelectedProductId(productId);
     setProductSearch("");
     setProductCategory("all");
+    setReviewRequestedForProductId(null);
+    setReviewRequestedReceiptItemId(null);
     setProductDetailOpen(true);
     setProductOrigin("insights");
     setActiveTab("products");
     window.scrollTo({ top: 0 });
   }
 
-  function openProductReview(productId: string) {
+  function openProductReview(productId: string, receiptItemId: string) {
     productReturnFocus.current = productId;
     setSelectedProductId(productId);
     setProductSearch("");
     setProductCategory("all");
     setReviewRequestedForProductId(productId);
+    setReviewRequestedReceiptItemId(receiptItemId);
     setProductDetailOpen(true);
     setProductOrigin("insights");
     setActiveTab("products");
@@ -807,6 +813,8 @@ export function BasketSenseDashboard({
 
   function closeProductDetail() {
     setProductDetailOpen(false);
+    setReviewRequestedForProductId(null);
+    setReviewRequestedReceiptItemId(null);
     if (productOrigin === "insights") {
       setActiveTab("overview");
     }
@@ -1105,6 +1113,23 @@ export function BasketSenseDashboard({
         expectedUpdatedAt: product.updatedAt,
       },
       successMessage: `${canonicalName} saved to the household catalog`,
+    });
+  }
+
+  async function confirmReceiptProduct(
+    receiptItemId: string,
+    canonicalName: string,
+    category: ProductCategoryKey,
+  ) {
+    return await performWrite(`receipt-product-${receiptItemId}`, {
+      method: "PATCH",
+      body: {
+        action: "confirm_receipt_product",
+        receiptItemId,
+        canonicalName,
+        category,
+      },
+      successMessage: `${canonicalName} added to the household catalog`,
     });
   }
 
@@ -1410,11 +1435,14 @@ export function BasketSenseDashboard({
             setDetailOpen={setProductDetailOpen}
             reviewRequestedForProductId={reviewRequestedForProductId}
             onReviewRequestHandled={() => setReviewRequestedForProductId(null)}
+            reviewRequestedReceiptItemId={reviewRequestedReceiptItemId}
+            onReviewCompleted={() => setReviewRequestedReceiptItemId(null)}
             categories={effectiveViewData.productCategories}
             auditThrough={effectiveViewData.audit.through}
             openedFromInsights={productOrigin === "insights"}
             onBack={closeProductDetail}
             onConfirmProduct={confirmProductMetadata}
+            onConfirmReceiptProduct={confirmReceiptProduct}
             listItems={household?.listItems ?? []}
             onAddToList={addCatalogProductToList}
             failedWrites={failedWrites}
@@ -2707,7 +2735,7 @@ function OverviewTab({
   selectedTransactionId: string | null;
   setSelectedTransactionId: (transactionId: string | null) => void;
   onOpenProduct: (productId: string) => void;
-  onReviewProduct: (productId: string) => void;
+  onReviewProduct: (productId: string, receiptItemId: string) => void;
 }) {
   const transactions = viewData.transactions.filter(
     (transaction) =>
@@ -3208,7 +3236,7 @@ function CategoryDetail({
   onBack: () => void;
   onOpenTransaction: (transactionId: string) => void;
   onOpenProduct: (productId: string) => void;
-  onReviewProduct: (productId: string) => void;
+  onReviewProduct: (productId: string, receiptItemId: string) => void;
 }) {
   const scopeTransactionIds = new Set(transactions.map((transaction) => transaction.id));
   const categoryLines = lines.filter(
@@ -3242,7 +3270,10 @@ function CategoryDetail({
     .sort((first, second) => second.spendCents - first.spendCents)
     .slice(0, 12);
   const reviewableProducts = topProducts.filter(
-    ({ line }) => category.key === "needs_review" && productByItem.has(line.itemNumber),
+    ({ line }) =>
+      category.key === "needs_review" &&
+      line.itemNumber !== "0000" &&
+      productByItem.has(line.itemNumber),
   );
   const monthLabel =
     selectedMonth === "all"
@@ -3315,8 +3346,9 @@ function CategoryDetail({
           <div className="category-product-rows">
             {topProducts.map(({ line, spendCents, count }) => {
               const product = productByItem.get(line.itemNumber);
+              const isDiscountLine = line.itemNumber === "0000";
               const canReviewProduct =
-                category.key === "needs_review" && product !== undefined;
+                category.key === "needs_review" && !isDiscountLine && product !== undefined;
               const content = (
                 <>
                   <span>
@@ -3335,7 +3367,7 @@ function CategoryDetail({
                   </span>
                 </>
               );
-              return product ? (
+              return product && !isDiscountLine ? (
                 <button
                   type="button"
                   key={line.itemNumber}
@@ -3347,7 +3379,7 @@ function CategoryDetail({
                   }
                   onClick={() =>
                     canReviewProduct
-                      ? onReviewProduct(product.id)
+                      ? onReviewProduct(product.id, line.id)
                       : onOpenProduct(product.id)
                   }
                 >
@@ -3583,11 +3615,14 @@ function ProductsTab({
   setDetailOpen,
   reviewRequestedForProductId,
   onReviewRequestHandled,
+  reviewRequestedReceiptItemId,
+  onReviewCompleted,
   categories,
   auditThrough,
   openedFromInsights,
   onBack,
   onConfirmProduct,
+  onConfirmReceiptProduct,
   listItems,
   onAddToList,
   failedWrites,
@@ -3608,12 +3643,19 @@ function ProductsTab({
   setDetailOpen: (open: boolean) => void;
   reviewRequestedForProductId: string | null;
   onReviewRequestHandled: () => void;
+  reviewRequestedReceiptItemId: string | null;
+  onReviewCompleted: () => void;
   categories: readonly DashboardProductCategory[];
   auditThrough: string;
   openedFromInsights: boolean;
   onBack: () => void;
   onConfirmProduct: (
     product: SharedProduct,
+    canonicalName: string,
+    category: ProductCategoryKey,
+  ) => Promise<boolean>;
+  onConfirmReceiptProduct: (
+    receiptItemId: string,
     canonicalName: string,
     category: ProductCategoryKey,
   ) => Promise<boolean>;
@@ -3670,7 +3712,9 @@ function ProductsTab({
   const selectedIllustration = generatedProductIllustration(selected?.itemNumber);
   const reviewFailure = catalogProduct
     ? failedWrites[`product-review-${catalogProduct.id}`]
-    : undefined;
+    : reviewRequestedReceiptItemId
+      ? failedWrites[`receipt-product-${reviewRequestedReceiptItemId}`]
+      : undefined;
   const selectedListItem = catalogProduct
     ? listItems.find((item) => item.productId === catalogProduct.id)
     : undefined;
@@ -3710,8 +3754,7 @@ function ProductsTab({
   useEffect(() => {
     if (
       reviewRequestedForProductId !== selected?.id ||
-      !detailOpen ||
-      !catalogProduct
+      !detailOpen
     ) {
       return;
     }
@@ -3727,15 +3770,22 @@ function ProductsTab({
 
   async function saveProductReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!catalogProduct || !reviewName.trim() || !reviewCategory) return;
+    if (!reviewName.trim() || !reviewCategory) return;
     setReviewSaving(true);
-    const saved = await onConfirmProduct(
-      catalogProduct,
-      reviewName.trim(),
-      reviewCategory,
-    );
+    const saved = catalogProduct
+      ? await onConfirmProduct(catalogProduct, reviewName.trim(), reviewCategory)
+      : reviewRequestedReceiptItemId
+        ? await onConfirmReceiptProduct(
+            reviewRequestedReceiptItemId,
+            reviewName.trim(),
+            reviewCategory,
+          )
+        : false;
     setReviewSaving(false);
-    if (saved) setReviewOpen(false);
+    if (saved) {
+      setReviewOpen(false);
+      onReviewCompleted();
+    }
   }
 
   async function addProductFromRow(product: SharedProduct) {
@@ -4009,7 +4059,7 @@ function ProductsTab({
                 type="button"
                 className="text-button product-review-trigger"
                 onClick={toggleProductReview}
-                disabled={!catalogProduct}
+                disabled={!catalogProduct && !reviewRequestedReceiptItemId}
               >
                 {selected.classificationStatus === "needs_review"
                   ? "Help identify this item"
@@ -4028,7 +4078,7 @@ function ProductsTab({
               </div>
             </div>
           </div>
-          {reviewOpen && catalogProduct ? (
+          {reviewOpen && (catalogProduct || reviewRequestedReceiptItemId) ? (
             <form className="product-review-form" onSubmit={saveProductReview}>
               <div className="product-review-copy">
                 <strong>Help the household recognize this product</strong>

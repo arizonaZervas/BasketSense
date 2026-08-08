@@ -533,4 +533,10 @@ export type HouseholdPatchRequest =
       canonicalName: string;
       category: string;
       expectedUpdatedAt: string;
+    }
+  | {
+      action: "confirm_receipt_product";
+      receiptItemId: string;
+      canonicalName: string;
+      category: string;
     };
