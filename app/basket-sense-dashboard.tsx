@@ -457,8 +457,9 @@ export function BasketSenseDashboard({
   const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
   const productReturnFocus = useRef<string | null>(null);
   const listMoveFocus = useRef<{
-    itemId: string;
-    destination: "active" | "ideas" | "active-heading";
+    fallbackItemId: string | null;
+    location: "active" | "ideas";
+    action: "add" | "remove";
   } | null>(null);
   const effectiveViewData = useMemo(
     () =>
@@ -752,17 +753,23 @@ export function BasketSenseDashboard({
     if (!request || activeTab !== "week") return;
 
     const frame = window.requestAnimationFrame(() => {
+      const row = request.fallbackItemId
+        ? Array.from(
+            document.querySelectorAll<HTMLElement>("[data-list-item-focus]"),
+          ).find(
+            (element) =>
+              element.dataset.listItemFocus === request.fallbackItemId &&
+              element.dataset.listItemLocation === request.location,
+          )
+        : null;
       const target =
-        request.destination === "active-heading"
+        row?.querySelector<HTMLElement>(
+          `[data-list-focus-action="${request.action}"]`,
+        ) ??
+        (request.location === "active"
           ? document.getElementById("active-list-title")
-          : Array.from(
-              document.querySelectorAll<HTMLElement>("[data-list-item-focus]"),
-            ).find(
-              (element) =>
-                element.dataset.listItemFocus === request.itemId &&
-                element.dataset.listItemLocation === request.destination,
-            );
-      target?.focus();
+          : document.getElementById("ideas-title"));
+      target?.focus({ preventScroll: true });
       listMoveFocus.current = null;
     });
 
@@ -908,19 +915,24 @@ export function BasketSenseDashboard({
     if (failure) void performWrite(key, failure.request);
   }
 
-  function toggleIncluded(item: SharedListItem) {
+  function toggleIncluded(item: SharedListItem, trigger?: HTMLElement | null) {
     const key = `item-${item.id}`;
     const nextIncluded = !item.included;
-    const shoppingStarted = household?.currentTrip.status === "frozen";
-    listMoveFocus.current = {
-      itemId: item.id,
-      destination: nextIncluded
-        ? "active"
-        : shoppingStarted &&
-            (item.includedAtFreeze === true || item.addedAfterFreeze)
-          ? "active-heading"
-          : "ideas",
-    };
+    const sourceRow = trigger?.closest<HTMLElement>("[data-list-item-focus]");
+    const location = sourceRow?.dataset.listItemLocation;
+    if (sourceRow && (location === "active" || location === "ideas")) {
+      const sourceRows = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-list-item-focus]"),
+      ).filter((row) => row.dataset.listItemLocation === location);
+      const currentIndex = sourceRows.indexOf(sourceRow);
+      const fallbackRow =
+        sourceRows.at(currentIndex + 1) ?? sourceRows.at(currentIndex - 1);
+      listMoveFocus.current = {
+        fallbackItemId: fallbackRow?.dataset.listItemFocus ?? null,
+        location,
+        action: nextIncluded ? "add" : "remove",
+      };
+    }
     setHousehold((current) =>
       current
         ? {
@@ -1560,7 +1572,7 @@ function ThisWeekTab({
     item: SharedListItem,
     estimatedPriceCents: number,
   ) => Promise<boolean>;
-  onToggleIncluded: (item: SharedListItem) => void;
+  onToggleIncluded: (item: SharedListItem, trigger?: HTMLElement | null) => void;
   onToggleChecked: (item: SharedListItem) => void;
   recentlyCheckedItemId: string | null;
   onFreeze: () => void;
@@ -2367,7 +2379,10 @@ function ThisWeekTab({
                           <button
                             type="button"
                             className="text-button"
-                            onClick={() => onToggleIncluded(item)}
+                            data-list-focus-action="remove"
+                            onClick={(event) =>
+                              onToggleIncluded(item, event.currentTarget)
+                            }
                             disabled={pending || estimatePending}
                             aria-label={`Remove ${item.label} from the Active List`}
                           >
@@ -2570,7 +2585,7 @@ function SuggestionShelf({
   pendingWrites: Set<string>;
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
-  onAdd: (item: SharedListItem) => void;
+  onAdd: (item: SharedListItem, trigger?: HTMLElement | null) => void;
 }) {
   const shoppingStarted = household?.currentTrip.status === "frozen";
   const ideaGroups = IDEA_SECTIONS.map((section) => ({
@@ -2585,7 +2600,7 @@ function SuggestionShelf({
           <p className="section-label">
             Suggested starting points for {formatShortDate(household?.currentTrip.scheduledFor ?? suggestionPlanDate)}
           </p>
-          <h2 id="ideas-title">Ideas</h2>
+          <h2 id="ideas-title" tabIndex={-1}>Ideas</h2>
           <p>
             {shoppingStarted
               ? "These were not on the starting list. Add one if it makes sense in the warehouse."
@@ -2657,7 +2672,8 @@ function SuggestionShelf({
                         <button
                           type="button"
                           className="add-button"
-                          onClick={() => onAdd(item)}
+                          data-list-focus-action="add"
+                          onClick={(event) => onAdd(item, event.currentTarget)}
                           disabled={pending}
                           aria-label={`Add ${item.label} to the Active List`}
                         >

@@ -104,6 +104,10 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(source, /unfreezeTriggerRef\.current\?\.focus\(\)/);
   assert.match(source, /scrollIntoView\(\{ block: "nearest" \}\)/);
   assert.match(source, /onPointerDown=\{\(event\) => event\.preventDefault\(\)\}/);
+  assert.match(source, /data-list-focus-action="remove"/);
+  assert.match(source, /data-list-focus-action="add"/);
+  assert.match(source, /fallbackItemId/);
+  assert.match(source, /focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /No estimate · Add estimate/);
   assert.match(source, /household estimate/);
   assert.match(source, /parseManualEstimateDollars/);
