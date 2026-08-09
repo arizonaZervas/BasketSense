@@ -158,6 +158,8 @@ test("uses a smooth, top-down celebration without converging particle paths", as
 
   assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
   assert.match(dashboardSource, /topDownConfettiStyle/);
+  assert.match(dashboardSource, /const completesList =[\s\S]*activeIncluded\.length === 1/);
+  assert.match(dashboardSource, /onToggleChecked\(item\)\.then\(\(saved\) =>/);
   assert.match(confettiSource, /--confetti-drift-mid/);
   assert.match(confettiSource, /--confetti-drift-late/);
   assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
@@ -185,6 +187,49 @@ test("uses a smooth, top-down celebration without converging particle paths", as
   assert.match(
     styles,
     /@media \(max-width: 1050px\)[\s\S]*background-size: 1150px auto;/,
+  );
+});
+
+test("keeps the insights review form safe for receipt-only products", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(dashboardSource, /catalogProduct\?\.categoryReviewedByDisplayName/);
+  assert.match(dashboardSource, /reviewRequestedReceiptItemId[\s\S]*onConfirmReceiptProduct/);
+});
+
+test("re-encodes large camera photos below the live multipart safety budget", async () => {
+  const receiptFlowSource = await readFile(
+    new URL("../app/receipt-review-flow.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(receiptFlowSource, /Math\.floor\(1\.5 \* 1024 \* 1024\)/);
+  assert.match(receiptFlowSource, /await encode\(1_600, 0\.7\)/);
+  assert.match(receiptFlowSource, /await encode\(1_280, 0\.66\)/);
+  assert.match(receiptFlowSource, /compressed\.size > LIVE_UPLOAD_SAFE_BYTES\) return file/);
+});
+
+test("reflows every primary surface from the available content width", async () => {
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(styles, /\.main-canvas \{[\s\S]*container-name: basket-main;[\s\S]*container-type: inline-size;/);
+  assert.match(
+    styles,
+    /@container basket-main \(max-width: 1180px\) \{[\s\S]*\.dashboard-grid,[\s\S]*grid-template-columns: 1fr;/,
+  );
+  assert.match(
+    styles,
+    /@container basket-main \(max-width: 860px\) \{[\s\S]*\.metrics-strip\.four[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/,
+  );
+  assert.match(
+    styles,
+    /@container basket-main \(max-width: 680px\) \{[\s\S]*\.data-explorer-controls,[\s\S]*\.question-options[\s\S]*grid-template-columns: 1fr;/,
   );
 });
 

@@ -481,6 +481,8 @@ summary:focus-visible,
 .main-canvas {
   min-height: 100vh;
   margin-left: var(--sidebar);
+  container-name: basket-main;
+  container-type: inline-size;
 }
 
 .test-mode-banner {
@@ -4037,6 +4039,91 @@ button.price-point:hover {
     position: static;
   }
 
+}
+
+/* The sidebar can leave a desktop viewport with a compact reading column.
+   Reflow each surface from the space it actually receives, not the window size. */
+@container basket-main (max-width: 1180px) {
+  .hero-grid,
+  .dashboard-grid,
+  .spending-grid,
+  .product-layout,
+  .data-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .product-detail {
+    position: static;
+  }
+
+  .category-donut-explorer {
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .category-donut-wrap {
+    width: min(100%, 240px);
+  }
+}
+
+@container basket-main (max-width: 860px) {
+  .metrics-strip.four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-queue-grid,
+  .receipt-total-card,
+  .product-review-form {
+    grid-template-columns: 1fr;
+  }
+
+  .data-export-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .data-export-actions {
+    width: 100%;
+  }
+
+  .data-export-actions a {
+    flex: 1 1 180px;
+    justify-content: center;
+  }
+}
+
+@container basket-main (max-width: 680px) {
+  .data-explorer-controls,
+  .record-counts,
+  .detail-metrics,
+  .price-history,
+  .question-options {
+    grid-template-columns: 1fr;
+  }
+
+  .receipt-check-card,
+  .review-complete-card {
+    margin-left: 0;
+  }
+
+  .review-bridge-card,
+  .evidence-questions,
+  .review-section > .receipt-flow-note,
+  .resolved-review-answers,
+  .ritual-guardrail {
+    margin-left: 0;
+  }
+
+  .receipt-check-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .receipt-check-card .primary-button,
+  .receipt-check-card .secondary-button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 760px) {

@@ -152,10 +152,10 @@ const money = new Intl.NumberFormat("en-US", {
   currency: "USD",
 });
 
-// The shared-site request gateway rejects multipart bodies just over 3 MB before
-// the receipt route can apply its own 8 MB validation. Keep camera photos below
-// that gateway limit while preserving a comfortably readable receipt image.
-const LIVE_UPLOAD_SAFE_BYTES = 2 * 1024 * 1024;
+// The shared-site request gateway rejects multipart bodies before the receipt
+// route can apply its own 8 MB validation. Leave room for multipart metadata so
+// a camera photo that looks just under the limit does not still receive a 413.
+const LIVE_UPLOAD_SAFE_BYTES = Math.floor(1.5 * 1024 * 1024);
 const UPLOAD_IMAGE_MAX_EDGE = 2_000;
 
 const bucketLabels: Record<string, string> = {
@@ -259,19 +259,28 @@ async function prepareReceiptUpload(file: File) {
       if (file.size <= LIVE_UPLOAD_SAFE_BYTES && longestEdge <= UPLOAD_IMAGE_MAX_EDGE) {
         return file;
       }
-      const scale = Math.min(1, UPLOAD_IMAGE_MAX_EDGE / longestEdge);
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(source.width * scale));
-      canvas.height = Math.max(1, Math.round(source.height * scale));
-      const context = canvas.getContext("2d");
-      if (!context) return file;
-      context.drawImage(source, 0, 0, canvas.width, canvas.height);
-      const initial = await canvasToJpeg(canvas, 0.82);
-      const compressed =
-        initial && initial.size > LIVE_UPLOAD_SAFE_BYTES
-          ? await canvasToJpeg(canvas, 0.68)
-          : initial;
-      if (!compressed || compressed.size >= file.size) return file;
+      const encode = async (maxEdge: number, quality: number) => {
+        const scale = Math.min(1, maxEdge / longestEdge);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(source.width * scale));
+        canvas.height = Math.max(1, Math.round(source.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) return null;
+        context.drawImage(source, 0, 0, canvas.width, canvas.height);
+        return canvasToJpeg(canvas, quality);
+      };
+
+      let compressed = await encode(UPLOAD_IMAGE_MAX_EDGE, 0.8);
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        compressed = await encode(UPLOAD_IMAGE_MAX_EDGE, 0.62);
+      }
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        compressed = await encode(1_600, 0.7);
+      }
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        compressed = await encode(1_280, 0.66);
+      }
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) return file;
       return new File([compressed], compressedReceiptFilename(file.name), {
         type: "image/jpeg",
         lastModified: file.lastModified,

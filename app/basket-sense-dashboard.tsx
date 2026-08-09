@@ -990,7 +990,7 @@ export function BasketSenseDashboard({
           }
         : current,
     );
-    void performWrite(key, {
+    return performWrite(key, {
       method: "PATCH",
       body: {
         action: "set_item_checked",
@@ -1573,7 +1573,7 @@ function ThisWeekTab({
     estimatedPriceCents: number,
   ) => Promise<boolean>;
   onToggleIncluded: (item: SharedListItem, trigger?: HTMLElement | null) => void;
-  onToggleChecked: (item: SharedListItem) => void;
+  onToggleChecked: (item: SharedListItem) => Promise<boolean>;
   recentlyCheckedItemId: string | null;
   onFreeze: () => void;
   onUnfreeze: () => void;
@@ -1749,6 +1749,14 @@ function ThisWeekTab({
   const showCatalogResults = Boolean(
     catalogOpen && household && catalogResults.length,
   );
+
+  function handleChecked(item: SharedListItem) {
+    const completesList =
+      shoppingStarted && !item.checked && activeIncluded.length === 1;
+    void onToggleChecked(item).then((saved) => {
+      if (saved && completesList) setShowListComplete(true);
+    });
+  }
 
   useEffect(() => {
     const previous = previousTripState.current;
@@ -2238,7 +2246,7 @@ function ThisWeekTab({
                           <button
                             type="button"
                             className="check-button"
-                            onClick={() => onToggleChecked(item)}
+                            onClick={() => handleChecked(item)}
                             aria-label={`${item.checked ? "Uncheck" : "Check"} ${item.label}`}
                             disabled={pending}
                           >
@@ -2441,7 +2449,7 @@ function ThisWeekTab({
                           <button
                             type="button"
                             className="check-button"
-                            onClick={() => onToggleChecked(item)}
+                            onClick={() => handleChecked(item)}
                             aria-label={`Undo check for ${item.label}`}
                             disabled={pending}
                           >
@@ -2461,7 +2469,7 @@ function ThisWeekTab({
                             <button
                               type="button"
                               className="text-button"
-                              onClick={() => onToggleChecked(item)}
+                              onClick={() => handleChecked(item)}
                               disabled={pending}
                             >
                               {pending ? "Saving…" : "Undo"}
@@ -4155,7 +4163,7 @@ function ProductsTab({
                   {reviewSaving ? "Saving…" : "Save identification"}
                 </button>
               </div>
-              {catalogProduct.categoryReviewedByDisplayName ? (
+              {catalogProduct?.categoryReviewedByDisplayName ? (
                 <small>
                   Last reviewed by {catalogProduct.categoryReviewedByDisplayName}
                 </small>
