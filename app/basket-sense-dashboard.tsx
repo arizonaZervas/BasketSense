@@ -1589,8 +1589,10 @@ function ThisWeekTab({
   const [estimateDraft, setEstimateDraft] = useState("");
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [showListComplete, setShowListComplete] = useState(false);
+  const [imagePreview, setImagePreview] = useState<ProductImagePreview | null>(null);
   const estimateReturnFocus = useRef<HTMLButtonElement | null>(null);
   const estimateReturnItemId = useRef<string | null>(null);
+  const imagePreviewReturnFocus = useRef<HTMLElement | null>(null);
   const quickItemRef = useRef<HTMLInputElement>(null);
   const unfreezeTriggerRef = useRef<HTMLButtonElement>(null);
   const startShoppingRef = useRef<HTMLButtonElement>(null);
@@ -1754,6 +1756,14 @@ function ThisWeekTab({
     void onToggleChecked(item).then((saved) => {
       if (saved && completesList) setShowListComplete(true);
     });
+  }
+
+  function openImagePreview(
+    event: ReactMouseEvent<HTMLElement>,
+    preview: ProductImagePreview,
+  ) {
+    imagePreviewReturnFocus.current = event.currentTarget;
+    setImagePreview(preview);
   }
 
   useEffect(() => {
@@ -2255,6 +2265,7 @@ function ThisWeekTab({
                           <ListItemThumbnail
                             item={item}
                             products={household.products}
+                            onOpenImage={openImagePreview}
                           />
                           <div className="list-row-copy-body">
                             <strong>{item.label}</strong>
@@ -2457,6 +2468,7 @@ function ThisWeekTab({
                             <ListItemThumbnail
                               item={item}
                               products={household.products}
+                              onOpenImage={openImagePreview}
                             />
                             <div className="list-row-copy-body">
                               <strong>{item.label}</strong>
@@ -2531,10 +2543,18 @@ function ThisWeekTab({
             failedWrites={failedWrites}
             onRetry={onRetry}
             onAdd={onToggleIncluded}
+            onOpenImage={openImagePreview}
           />
         </div>
 
       </div>
+      {imagePreview ? (
+        <ProductImagePreviewDialog
+          preview={imagePreview}
+          returnFocusRef={imagePreviewReturnFocus}
+          onClose={() => setImagePreview(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2542,27 +2562,45 @@ function ThisWeekTab({
 function ListItemThumbnail({
   item,
   products,
+  onOpenImage,
 }: {
   item: SharedListItem;
   products: readonly SharedProduct[];
+  onOpenImage: (
+    event: ReactMouseEvent<HTMLElement>,
+    preview: ProductImagePreview,
+  ) => void;
 }) {
   const product = item.productId
     ? products.find((candidate) => candidate.id === item.productId)
     : undefined;
   const illustration = generatedProductIllustration(product?.costcoItemNumber);
   const imageUrl = product?.image?.imageUrl ?? illustration?.imageUrl;
+  const imageAlt = product?.image
+    ? `${item.label} package photo`
+    : illustration?.alt ?? `Illustration of ${item.label}`;
 
   return (
-    <span
-      className={`list-item-thumbnail ${imageUrl ? "has-photo" : ""}`}
-      aria-hidden="true"
-    >
-      {imageUrl ? (
+    imageUrl ? (
+      <button
+        type="button"
+        className="list-item-thumbnail list-item-thumbnail-button has-photo"
+        onClick={(event) =>
+          onOpenImage(event, {
+            imageUrl,
+            alt: imageAlt,
+            label: item.label,
+          })
+        }
+        aria-label={`Open full image for ${item.label}`}
+      >
         <img src={imageUrl} alt="" loading="lazy" />
-      ) : (
+      </button>
+    ) : (
+      <span className="list-item-thumbnail" aria-hidden="true">
         <span>{item.label.trim().charAt(0).toLocaleUpperCase()}</span>
-      )}
-    </span>
+      </span>
+    )
   );
 }
 
@@ -2584,6 +2622,7 @@ function SuggestionShelf({
   failedWrites,
   onRetry,
   onAdd,
+  onOpenImage,
 }: {
   suggestionPlanDate: string;
   household: HouseholdSnapshot | null;
@@ -2592,6 +2631,10 @@ function SuggestionShelf({
   failedWrites: Record<string, FailedWrite>;
   onRetry: (key: string) => void;
   onAdd: (item: SharedListItem, trigger?: HTMLElement | null) => void;
+  onOpenImage: (
+    event: ReactMouseEvent<HTMLElement>,
+    preview: ProductImagePreview,
+  ) => void;
 }) {
   const shoppingStarted = household?.currentTrip.status === "frozen";
   const ideaGroups = IDEA_SECTIONS.map((section) => ({
@@ -2654,6 +2697,7 @@ function SuggestionShelf({
                           <ListItemThumbnail
                             item={item}
                             products={household.products}
+                            onOpenImage={onOpenImage}
                           />
                           <div className="suggestion-copy-body">
                             <strong>{item.label}</strong>

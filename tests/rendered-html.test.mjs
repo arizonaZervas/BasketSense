@@ -300,9 +300,15 @@ test("keeps product-history additions and sorting in the shared list flow", asyn
   assert.match(styles, /\.product-row-action \{[\s\S]*min-width: 64px;/);
   assert.match(source, /className="product-row-image-button"/);
   assert.match(source, /Open full image for \$\{rowProductName\}/);
+  assert.match(source, /className="list-item-thumbnail list-item-thumbnail-button has-photo"/);
+  assert.match(source, /Open full image for \$\{item\.label\}/);
+  assert.match(source, /onOpenImage=\{openImagePreview\}/);
+  assert.match(source, /onOpenImage=\{onOpenImage\}/);
   assert.match(source, /function ProductImagePreviewDialog/);
   assert.match(source, /event\.key === "Escape"/);
   assert.match(source, /document\.body\.style\.overflow = "hidden"/);
+  assert.match(styles, /\.list-item-thumbnail-button \{[\s\S]*cursor: zoom-in;/);
+  assert.match(styles, /\.list-item-thumbnail-button:focus-visible \{[\s\S]*outline: 3px solid var\(--terracotta\);/);
   assert.match(styles, /\.product-image-preview-backdrop \{[\s\S]*backdrop-filter: blur\(10px\);/);
   assert.match(styles, /\.product-image-preview \{[\s\S]*transform: scale\(0\.97\);/);
   assert.match(styles, /@media \(max-width: 520px\) \{[\s\S]*\.product-row-image-button \{[\s\S]*width: 44px;/);

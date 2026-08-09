@@ -3069,6 +3069,17 @@ button.price-point:hover {
   object-fit: cover;
 }
 
+.list-item-thumbnail-button {
+  padding: 0;
+  border: 0;
+  cursor: zoom-in;
+}
+
+.list-item-thumbnail-button:focus-visible {
+  outline: 3px solid var(--terracotta);
+  outline-offset: 2px;
+}
+
 .item-evidence {
   margin-top: 2px;
 }
