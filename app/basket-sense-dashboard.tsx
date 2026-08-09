@@ -898,6 +898,7 @@ export function BasketSenseDashboard({
   }
 
   function changeTab(tab: Tab) {
+    prepareDeferredTab(tab);
     setActiveTab(tab);
     if (tab === "products") {
       setProductOrigin("products");
@@ -905,6 +906,17 @@ export function BasketSenseDashboard({
       productReturnFocus.current = null;
     }
     window.scrollTo({ top: 0 });
+  }
+
+  function prepareDeferredTab(tab: Tab) {
+    if (
+      (tab === "overview" || tab === "products") &&
+      household &&
+      !household.dashboard &&
+      insightsStatus === "idle"
+    ) {
+      void refreshInsights();
+    }
   }
 
   function openProduct(productId: string) {
@@ -1418,6 +1430,8 @@ export function BasketSenseDashboard({
               key={tab.id}
               className={activeTab === tab.id ? "active" : ""}
               onClick={() => changeTab(tab.id)}
+              onFocus={() => prepareDeferredTab(tab.id)}
+              onPointerEnter={() => prepareDeferredTab(tab.id)}
               aria-current={activeTab === tab.id ? "page" : undefined}
             >
               <span className="nav-glyph" aria-hidden="true">
@@ -1660,6 +1674,8 @@ export function BasketSenseDashboard({
             key={tab.id}
             className={activeTab === tab.id ? "active" : ""}
             onClick={() => changeTab(tab.id)}
+            onFocus={() => prepareDeferredTab(tab.id)}
+            onPointerDown={() => prepareDeferredTab(tab.id)}
             aria-current={activeTab === tab.id ? "page" : undefined}
           >
             <span className="nav-glyph" aria-hidden="true">
@@ -1717,19 +1733,45 @@ function DeferredView({
   error: string | null;
   onRetry: () => void;
 }) {
+  if (!error) {
+    return (
+      <section
+        className="deferred-view"
+        role="status"
+        aria-busy="true"
+        aria-label={`Loading ${label}`}
+      >
+        <div className="deferred-view-intro">
+          <span className="deferred-loading-mark" aria-hidden="true" />
+          <div>
+            <strong>Preparing {label}</strong>
+            <p>
+              {label === "Products"
+                ? "Organizing your household catalog."
+                : "Turning your receipt history into a clear view."}
+            </p>
+          </div>
+        </div>
+        <div className="deferred-skeleton-metrics" aria-hidden="true">
+          {Array.from({ length: 4 }, (_, index) => (
+            <span className="deferred-skeleton-block" key={index} />
+          ))}
+        </div>
+        <div className="deferred-skeleton-grid" aria-hidden="true">
+          <span className="deferred-skeleton-block deferred-skeleton-primary" />
+          <span className="deferred-skeleton-block deferred-skeleton-secondary" />
+        </div>
+      </section>
+    );
+  }
+
   return (
-    <section className="card empty-state" role={error ? "alert" : "status"}>
-      <strong>{error ? `${label} could not be loaded` : `Loading ${label}`}</strong>
-      <p>
-        {error
-          ? error
-          : "BasketSense is calculating this view only because you opened it."}
-      </p>
-      {error ? (
-        <button className="secondary-button" type="button" onClick={onRetry}>
-          Try again
-        </button>
-      ) : null}
+    <section className="card empty-state" role="alert">
+      <strong>{label} could not be loaded</strong>
+      <p>{error}</p>
+      <button className="secondary-button" type="button" onClick={onRetry}>
+        Try again
+      </button>
     </section>
   );
 }

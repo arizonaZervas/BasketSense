@@ -93,7 +93,13 @@ test("loads the historical dashboard only when a history-backed view opens", asy
   assert.match(dashboardSource, /\/api\/household\?view=core/);
   assert.match(dashboardSource, /\/api\/household\?view=insights/);
   assert.match(dashboardSource, /activeTab === "overview" \|\| activeTab === "products"/);
-  assert.match(dashboardSource, /BasketSense is calculating this view only because you opened it/);
+  assert.match(dashboardSource, /className="deferred-view"/);
+  assert.match(dashboardSource, /aria-busy="true"/);
+  assert.match(dashboardSource, /onPointerEnter=\{\(\) => prepareDeferredTab\(tab\.id\)\}/);
+  assert.doesNotMatch(
+    dashboardSource,
+    /BasketSense is calculating this view only because you opened it/,
+  );
   assert.match(dashboardSource, /insightsRevision\.current = snapshot\.historyRevision/);
   assert.doesNotMatch(
     dashboardSource,

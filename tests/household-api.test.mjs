@@ -247,6 +247,61 @@ test("core household reads defer dashboard calculation until Insights is request
   }
 });
 
+test("extra household products do not rewrite the audited seed catalog during reads", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    await handleHouseholdGet(
+      householdRequest("catalog-seed-owner@example.test", "GET", undefined, "?view=core"),
+      db,
+    );
+
+    db.database.exec(`
+      INSERT INTO products (
+        id, household_id, costco_item_number, canonical_name,
+        category, category_status, catalog_revision,
+        active, created_at, updated_at
+      )
+      SELECT
+        'product-household-extra', household_id, 'household-extra',
+        'Household extra product', category, category_status, catalog_revision,
+        1, created_at, '2035-01-01T00:00:00.000Z'
+      FROM products
+      ORDER BY id
+      LIMIT 1
+    `);
+
+    const seedProduct = db.database
+      .prepare(
+        `SELECT id FROM products
+         WHERE id <> 'product-household-extra'
+         ORDER BY id
+         LIMIT 1`,
+      )
+      .get();
+    assert.ok(seedProduct?.id);
+    db.database
+      .prepare("UPDATE products SET updated_at = ? WHERE id = ?")
+      .run("2001-01-01T00:00:00.000Z", seedProduct.id);
+
+    await handleHouseholdGet(
+      householdRequest(
+        "catalog-seed-owner@example.test",
+        "GET",
+        undefined,
+        "?view=insights",
+      ),
+      db,
+    );
+
+    const unchanged = db.database
+      .prepare("SELECT updated_at FROM products WHERE id = ?")
+      .get(seedProduct.id);
+    assert.equal(unchanged?.updated_at, "2001-01-01T00:00:00.000Z");
+  } finally {
+    db.close();
+  }
+});
+
 test("ready household reads avoid repeating runtime schema DDL", async () => {
   const initialized = new D1DatabaseAdapter();
   const reusedConnection = new D1DatabaseAdapter(initialized.database);

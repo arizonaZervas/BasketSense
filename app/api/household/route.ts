@@ -968,7 +968,8 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
     ])
   );
 
-  const [transactionCount, itemCount, currentCatalogCount] = await Promise.all([
+  const requiredProductIds = [...productByItemNumber.values()];
+  const [transactionCount, itemCount, currentCatalogSeedCount] = await Promise.all([
     db
       .prepare(
         `SELECT COUNT(*) AS count FROM receipt_transactions
@@ -988,14 +989,20 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
     db
       .prepare(
         `SELECT COUNT(*) AS count FROM products
-         WHERE household_id = ? AND catalog_revision = ?`
+         WHERE household_id = ?
+           AND catalog_revision = ?
+           AND id IN (SELECT value FROM json_each(?))`
       )
-      .bind(householdId, PRODUCT_CATALOG_REVISION)
+      .bind(
+        householdId,
+        PRODUCT_CATALOG_REVISION,
+        JSON.stringify(requiredProductIds),
+      )
       .first<{ count: number }>(),
   ]);
 
   const now = nowIso();
-  if ((currentCatalogCount?.count ?? 0) !== productByItemNumber.size) {
+  if ((currentCatalogSeedCount?.count ?? 0) !== requiredProductIds.length) {
     const productStatements: D1PreparedStatement[] = [];
     const seenProducts = new Set<string>();
 
