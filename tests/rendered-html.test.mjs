@@ -281,13 +281,15 @@ test("keeps product-history additions and sorting in the shared list flow", asyn
   assert.match(source, /productDisplayName\(left\)\.localeCompare/);
   assert.match(
     styles,
-    /\.product-row \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;/,
+    /\.product-row \{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto;/,
   );
   assert.match(styles, /\.product-row-action \{[\s\S]*min-width: 64px;/);
-  assert.match(
-    styles,
-    /@media \(max-width: 520px\)[\s\S]*\.product-row-open \.product-initial \{[\s\S]*display: none;/,
-  );
+  assert.match(source, /className="product-row-image-button"/);
+  assert.match(source, /Open full image for \$\{rowProductName\}/);
+  assert.match(source, /function ProductImagePreviewDialog/);
+  assert.match(source, /event\.key === "Escape"/);
+  assert.match(styles, /\.product-image-preview-backdrop \{[\s\S]*backdrop-filter: blur\(10px\);/);
+  assert.match(styles, /\.product-image-preview \{[\s\S]*transform: scale\(0\.97\);/);
 });
 
 test("makes unresolved category rows directly reviewable", async () => {

@@ -133,3 +133,21 @@ test("the second illustration batch covers purchase ranks 151 through 175", () =
     assert.ok(acceptedItems.has(itemNumber), `missing illustration for ${itemNumber}`);
   }
 });
+
+test("the third illustration batch covers purchase ranks 176 through 200", () => {
+  const acceptedItems = new Set(
+    productIllustrationManifest()
+      .filter((entry) => entry.acceptanceStatus === "accepted")
+      .map((entry) => entry.itemNumber),
+  );
+
+  for (const itemNumber of [
+    "1898148", "2056026", "2016761", "1851588", "1934959",
+    "1859936", "1951107", "1989442", "1902104", "2031674",
+    "2727590", "2062456", "1852806", "1920008", "2065441",
+    "2022263", "1833829", "1955377", "2033331", "2004358",
+    "1993845", "1957651", "1873251", "1955429", "1928295",
+  ]) {
+    assert.ok(acceptedItems.has(itemNumber), `missing illustration for ${itemNumber}`);
+  }
+});

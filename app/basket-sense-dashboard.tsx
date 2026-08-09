@@ -5,6 +5,7 @@
 import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -58,6 +59,11 @@ type ListItemSource =
 type SyncStatus = "connecting" | "shared" | "refreshing" | "offline";
 type ThemePreference = "system" | "warm" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
+type ProductImagePreview = {
+  imageUrl: string;
+  alt: string;
+  label: string;
+};
 
 const HOUSEHOLD_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -3624,6 +3630,84 @@ function ProductImageStudio({
   );
 }
 
+function ProductImagePreviewDialog({
+  preview,
+  returnFocusRef,
+  onClose,
+}: {
+  preview: ProductImagePreview;
+  returnFocusRef: { current: HTMLElement | null };
+  onClose: () => void;
+}) {
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  const dialog = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const returnElement = returnFocusRef.current;
+    closeButton.current?.focus();
+    const handleDialogKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+
+      const focusable = Array.from(
+        dialog.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleDialogKeys);
+    return () => {
+      window.removeEventListener("keydown", handleDialogKeys);
+      returnElement?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
+  return (
+    <div
+      className="product-image-preview-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose();
+      }}
+    >
+      <section
+        ref={dialog}
+        className="product-image-preview"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-image-preview-title"
+      >
+        <div className="product-image-preview-heading">
+          <p id="product-image-preview-title">{preview.label}</p>
+          <button
+            ref={closeButton}
+            type="button"
+            className="close-button"
+            onClick={onClose}
+            aria-label={`Close full image for ${preview.label}`}
+          >
+            ×
+          </button>
+        </div>
+        <img src={preview.imageUrl} alt={preview.alt} />
+      </section>
+    </div>
+  );
+}
+
 function ProductsTab({
   products,
   catalogProducts,
@@ -3691,6 +3775,7 @@ function ProductsTab({
 }) {
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const detailHeading = useRef<HTMLHeadingElement | null>(null);
+  const imagePreviewReturnFocus = useRef<HTMLElement | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewName, setReviewName] = useState("");
   const [reviewCategory, setReviewCategory] = useState<
@@ -3698,6 +3783,7 @@ function ProductsTab({
   >("");
   const [reviewSaving, setReviewSaving] = useState(false);
   const [addingProductId, setAddingProductId] = useState<string | null>(null);
+  const [imagePreview, setImagePreview] = useState<ProductImagePreview | null>(null);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matching = products.filter((product) => {
@@ -3756,6 +3842,14 @@ function ProductsTab({
     }
     setDetailOpen(false);
     window.requestAnimationFrame(() => returnFocus.current?.focus());
+  }
+
+  function openImagePreview(
+    event: ReactMouseEvent<HTMLElement>,
+    preview: ProductImagePreview,
+  ) {
+    imagePreviewReturnFocus.current = event.currentTarget;
+    setImagePreview(preview);
   }
 
   function openProductReviewForm() {
@@ -3905,6 +3999,9 @@ function ProductsTab({
             const rowIllustration = generatedProductIllustration(product.itemNumber);
             const rowImageUrl =
               rowCatalogProduct?.image?.imageUrl ?? rowIllustration?.imageUrl;
+            const rowImageAlt = rowCatalogProduct?.image
+              ? `${rowProductName} package photo`
+              : rowIllustration?.alt ?? `Illustration of ${rowProductName}`;
             const rowListItem = rowCatalogProduct
               ? listItems.find((item) => item.productId === rowCatalogProduct.id)
               : undefined;
@@ -3918,6 +4015,28 @@ function ProductsTab({
                 key={product.id}
                 className={`product-row ${selected.id === product.id ? "active" : ""}`}
               >
+                {rowImageUrl ? (
+                  <button
+                    type="button"
+                    className="product-row-image-button"
+                    aria-label={`Open full image for ${rowProductName}`}
+                    onClick={(event) =>
+                      openImagePreview(event, {
+                        imageUrl: rowImageUrl,
+                        alt: rowImageAlt,
+                        label: rowProductName,
+                      })
+                    }
+                  >
+                    <span className="product-initial has-photo" aria-hidden="true">
+                      <img src={rowImageUrl} alt="" loading="lazy" />
+                    </span>
+                  </button>
+                ) : (
+                  <span className="product-initial" aria-hidden="true">
+                    {product.name.charAt(0)}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="product-row-open"
@@ -3930,16 +4049,6 @@ function ProductsTab({
                     setReviewOpen(false);
                   }}
                 >
-                  <span
-                    className={`product-initial ${rowImageUrl ? "has-photo" : ""}`}
-                    aria-hidden="true"
-                  >
-                    {rowImageUrl ? (
-                      <img src={rowImageUrl} alt="" loading="lazy" />
-                    ) : (
-                      product.name.charAt(0)
-                    )}
-                  </span>
                   <span className="product-main">
                     <strong title={rowProductName}>{rowProductName}</strong>
                     <small>
@@ -4027,20 +4136,44 @@ function ProductsTab({
               }`}
             >
               {catalogProduct?.image ? (
-                <div className="product-detail-artwork">
-                  <img
-                    src={catalogProduct.image.imageUrl}
-                    alt={`${productDisplayName(selected)} package`}
-                  />
-                </div>
-              ) : selectedIllustration ? (
-                <>
+                <button
+                  type="button"
+                  className="product-detail-image-button"
+                  onClick={(event) =>
+                    openImagePreview(event, {
+                      imageUrl: catalogProduct.image.imageUrl,
+                      alt: `${productDisplayName(selected)} package photo`,
+                      label: productDisplayName(selected),
+                    })
+                  }
+                >
                   <div className="product-detail-artwork">
                     <img
-                      src={selectedIllustration.imageUrl}
-                      alt={selectedIllustration.alt}
+                      src={catalogProduct.image.imageUrl}
+                      alt={`${productDisplayName(selected)} package`}
                     />
                   </div>
+                </button>
+              ) : selectedIllustration ? (
+                <>
+                  <button
+                    type="button"
+                    className="product-detail-image-button"
+                    onClick={(event) =>
+                      openImagePreview(event, {
+                        imageUrl: selectedIllustration.imageUrl,
+                        alt: selectedIllustration.alt,
+                        label: productDisplayName(selected),
+                      })
+                    }
+                  >
+                    <div className="product-detail-artwork">
+                      <img
+                        src={selectedIllustration.imageUrl}
+                        alt={selectedIllustration.alt}
+                      />
+                    </div>
+                  </button>
                   <figcaption className="product-illustration-note">
                     AI illustration · package may differ
                   </figcaption>
@@ -4253,6 +4386,13 @@ function ProductsTab({
           </div>
         </article>
       </section>
+      {imagePreview ? (
+        <ProductImagePreviewDialog
+          preview={imagePreview}
+          returnFocusRef={imagePreviewReturnFocus}
+          onClose={() => setImagePreview(null)}
+        />
+      ) : null}
     </div>
   );
 }
