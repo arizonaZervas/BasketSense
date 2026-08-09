@@ -1,10 +1,10 @@
 import { BasketSenseDashboard } from "../basket-sense-dashboard";
-import { buildDashboardViewData } from "../basketsense-dashboard-data";
 import { chatGPTSignOutPath, requireChatGPTUser } from "../chatgpt-auth";
+import { emptyDashboardViewData } from "../empty-dashboard-view";
 
 export default async function RecapPage() {
   const user = await requireChatGPTUser("/recap");
-  const viewData = buildDashboardViewData();
+  const viewData = emptyDashboardViewData();
 
   return (
     <BasketSenseDashboard

@@ -18,7 +18,10 @@ import {
   type ReceiptIntentItem,
   type ReceiptIntentMatch,
 } from "../../receipt-logic";
-import { buildDashboardViewDataFromD1 } from "../../dashboard-d1-data";
+import {
+  buildDashboardViewStateFromD1,
+  dashboardHistoryRevisionStatement,
+} from "../../dashboard-d1-data";
 
 import type {
   ClosedLoopComparison,
@@ -36,6 +39,7 @@ import type {
   FeedbackKind,
   FeedbackSummary,
   HouseholdBootstrapResponse,
+  HouseholdCoreResponse,
   HouseholdListResponse,
   HouseholdMemberSummary,
   HouseholdPatchRequest,
@@ -1762,24 +1766,16 @@ function feedbackSummary(row: FeedbackRow): FeedbackSummary {
   };
 }
 
-async function readHouseholdState(
+async function readHouseholdCoreState(
   db: D1Database,
   context: HouseholdContext
-): Promise<HouseholdBootstrapResponse> {
+): Promise<HouseholdCoreResponse> {
   const results = await db.batch([
     db
       .prepare(
         `SELECT * FROM household_members
          WHERE household_id = ?
          ORDER BY created_at ASC`
-      )
-      .bind(context.household.id),
-    db
-      .prepare(
-        `SELECT * FROM trips
-         WHERE household_id = ?
-         ORDER BY scheduled_for DESC, created_at DESC
-         LIMIT 12`
       )
       .bind(context.household.id),
     db
@@ -1869,6 +1865,46 @@ async function readHouseholdState(
          ORDER BY products.canonical_name COLLATE NOCASE ASC`
       )
       .bind(context.household.id),
+    dashboardHistoryRevisionStatement(db, context.household.id),
+  ]);
+
+  const members = results[0].results as unknown as MemberRow[];
+  const listItems = results[1].results as unknown as ListItemRow[];
+  const products = results[2].results as unknown as ProductRow[];
+  const historyRevision = (
+    results[3].results[0] as { history_revision?: string } | undefined
+  )?.history_revision ?? "1970-01-01T00:00:00.000Z";
+
+  return {
+    historyRevision,
+    household: {
+      id: context.household.id,
+      name: context.household.name,
+      timeZone: context.household.time_zone,
+    },
+    currentUser: memberSummary(context.member),
+    members: members.map(memberSummary),
+    currentTrip: tripSummary(context.currentTrip),
+    listItems: listItems.map(listItemSummary),
+    products: products.map(productSummary),
+    closedLoop: await readClosedLoopReview(db, context.household.id),
+  };
+}
+
+async function readHouseholdState(
+  db: D1Database,
+  context: HouseholdContext
+): Promise<HouseholdBootstrapResponse> {
+  const core = await readHouseholdCoreState(db, context);
+  const supplemental = await db.batch([
+    db
+      .prepare(
+        `SELECT * FROM trips
+         WHERE household_id = ?
+         ORDER BY scheduled_for DESC, created_at DESC
+         LIMIT 12`
+      )
+      .bind(context.household.id),
     db
       .prepare(
         `SELECT * FROM receipt_transactions
@@ -1886,30 +1922,20 @@ async function readHouseholdState(
       )
       .bind(context.household.id),
   ]);
-
-  const members = results[0].results as unknown as MemberRow[];
-  const recentTrips = results[1].results as unknown as TripRow[];
-  const listItems = results[2].results as unknown as ListItemRow[];
-  const products = results[3].results as unknown as ProductRow[];
-  const receipts = results[4].results as unknown as ReceiptTransactionRow[];
-  const feedbackRows = results[5].results as unknown as FeedbackRow[];
-
+  const recentTrips = supplemental[0].results as unknown as TripRow[];
+  const receipts = supplemental[1].results as unknown as ReceiptTransactionRow[];
+  const feedbackRows = supplemental[2].results as unknown as FeedbackRow[];
+  const insights = await buildDashboardViewStateFromD1(
+    db,
+    context.household.id,
+  );
   return {
-    household: {
-      id: context.household.id,
-      name: context.household.name,
-      timeZone: context.household.time_zone,
-    },
-    currentUser: memberSummary(context.member),
-    members: members.map(memberSummary),
-    currentTrip: tripSummary(context.currentTrip),
+    ...core,
+    historyRevision: insights.historyRevision,
     recentTrips: recentTrips.map(tripSummary),
-    listItems: listItems.map(listItemSummary),
-    products: products.map(productSummary),
     receiptTransactions: receipts.map(receiptSummary),
     feedback: feedbackRows.map(feedbackSummary),
-    closedLoop: await readClosedLoopReview(db, context.household.id),
-    dashboard: await buildDashboardViewDataFromD1(db, context.household.id),
+    dashboard: insights.dashboard,
   };
 }
 
@@ -5837,6 +5863,16 @@ export async function handleHouseholdGet(
     }
     const context = await requestHouseholdContext(db, user, sandbox);
     const view = url.searchParams.get("view");
+    if (view === "core") {
+      return json(await readHouseholdCoreState(db, context));
+    }
+    if (view === "insights") {
+      const insights = await buildDashboardViewStateFromD1(
+        db,
+        context.household.id,
+      );
+      return json(insights);
+    }
     if (view === "data-health") {
       return json(await readDataHealth(db, context));
     }

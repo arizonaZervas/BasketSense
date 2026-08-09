@@ -188,6 +188,65 @@ test("D1 dashboard matches the audited historical view before client cutover", a
   }
 });
 
+test("core household reads defer dashboard calculation until Insights is requested", async (t) => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const core = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "lazy-insights-owner@example.test",
+          "GET",
+          undefined,
+          "?view=core",
+        ),
+        db,
+      ),
+    );
+
+    assert.equal("dashboard" in core, false);
+    assert.equal("recentTrips" in core, false);
+    assert.equal("receiptTransactions" in core, false);
+    assert.equal("feedback" in core, false);
+    assert.ok(core.listItems.length > 0);
+    assert.ok(core.products.length > 0);
+
+    const insights = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "lazy-insights-owner@example.test",
+          "GET",
+          undefined,
+          "?view=insights",
+        ),
+        db,
+      ),
+    );
+
+    assert.deepEqual(
+      Object.keys(insights).sort(),
+      ["dashboard", "historyRevision"],
+    );
+    assert.equal(insights.historyRevision, core.historyRevision);
+    assert.deepEqual(insights.dashboard, buildDashboardViewData());
+
+    const full = await responseJson(
+      await handleHouseholdGet(
+        householdRequest("lazy-insights-owner@example.test"),
+        db,
+      ),
+    );
+    const coreBytes = Buffer.byteLength(JSON.stringify(core));
+    const fullBytes = Buffer.byteLength(JSON.stringify(full));
+    t.diagnostic(`core=${coreBytes} bytes full=${fullBytes} bytes`);
+    assert.ok(
+      coreBytes < fullBytes * 0.75,
+      "the List-first response should remove at least 25% of the decoded full snapshot",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("ready household reads avoid repeating runtime schema DDL", async () => {
   const initialized = new D1DatabaseAdapter();
   const reusedConnection = new D1DatabaseAdapter(initialized.database);

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { BasketSenseDashboard } from "./basket-sense-dashboard";
-import { buildDashboardViewData } from "./basketsense-dashboard-data";
 import { chatGPTSignOutPath, requireChatGPTUser } from "./chatgpt-auth";
+import { emptyDashboardViewData } from "./empty-dashboard-view";
 
 export const metadata: Metadata = {
   title: "BasketSense — Our Costco companion",
@@ -34,7 +34,7 @@ export default async function Home({
   searchParams: Promise<{ sandbox?: string | string[] }>;
 }) {
   const user = await requireChatGPTUser("/");
-  const viewData = buildDashboardViewData();
+  const viewData = emptyDashboardViewData();
   const params = await searchParams;
   const sandboxMode = params.sandbox === "1";
 

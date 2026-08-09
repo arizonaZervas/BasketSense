@@ -37,20 +37,16 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /<title>BasketSense — Our Costco companion<\/title>/i);
   assert.match(html, /Our Costco companion/);
   assert.match(html, /This Saturday/);
-  assert.match(
-    html,
-    /38(?:<!-- -->)? receipt transactions audited · (?:<!-- -->)?Jan 2–Jul 18, 2026/,
-  );
+  assert.match(html, /Receipt history loads when you open Insights/);
   assert.match(html, /both spouses edit one list/i);
   assert.match(html, /Estimated list total/i);
   assert.match(html, /Updates with the live list/i);
   assert.match(html, /before tax/i);
-  assert.match(html, /Suggested starting points for (?:<!-- -->)?Jul 25/i);
+  assert.match(html, /Suggested starting points/i);
   assert.match(html, /Active List/i);
   assert.match(html, />Ideas</i);
-  assert.match(html, /Kirkland Signature organic 2% milk/i);
-  assert.match(html, /Optional seasonal favorite/i);
-  assert.match(html, /Lychee/i);
+  assert.match(html, /Loading household ideas/i);
+  assert.doesNotMatch(html, /Kirkland Signature organic 2% milk|Lychee/i);
   assert.doesNotMatch(html, /automatically versioned|Saved just now|share this link/i);
   assert.doesNotMatch(
     html,
@@ -82,6 +78,24 @@ test("renders the four focused household destinations", async () => {
   assert.match(html, /Start shopping/i);
   assert.match(html, /Plan/);
   assert.match(html, /Shop/);
+});
+
+test("loads the historical dashboard only when a history-backed view opens", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const pageSource = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(dashboardSource, /\/api\/household\?view=core/);
+  assert.match(dashboardSource, /\/api\/household\?view=insights/);
+  assert.match(dashboardSource, /activeTab === "overview" \|\| activeTab === "products"/);
+  assert.match(dashboardSource, /BasketSense is calculating this view only because you opened it/);
+  assert.match(pageSource, /emptyDashboardViewData\(\)/);
+  assert.doesNotMatch(pageSource, /buildDashboardViewData\(\)/);
 });
 
 test("renders accessible catalog and device theme controls", async () => {

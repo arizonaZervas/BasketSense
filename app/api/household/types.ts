@@ -294,6 +294,7 @@ export interface FeedbackSummary {
 }
 
 export interface HouseholdBootstrapResponse {
+  historyRevision: string;
   household: HouseholdSummary;
   currentUser: HouseholdMemberSummary;
   members: HouseholdMemberSummary[];
@@ -304,6 +305,23 @@ export interface HouseholdBootstrapResponse {
   receiptTransactions: ReceiptTransactionSummary[];
   feedback: FeedbackSummary[];
   closedLoop: ClosedLoopReview | null;
+  dashboard: DashboardViewData;
+}
+
+export type HouseholdCoreResponse = Pick<
+  HouseholdBootstrapResponse,
+  | "historyRevision"
+  | "household"
+  | "currentUser"
+  | "members"
+  | "currentTrip"
+  | "listItems"
+  | "products"
+  | "closedLoop"
+>;
+
+export interface HouseholdInsightsResponse {
+  historyRevision: string;
   dashboard: DashboardViewData;
 }
 

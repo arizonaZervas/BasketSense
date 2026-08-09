@@ -20,6 +20,7 @@ import type {
   DashboardViewData,
 } from "./dashboard-types";
 import type {
+  HouseholdInsightsResponse,
   HouseholdListMutationResponse,
   HouseholdListResponse,
   ProductPrimaryImageSummary,
@@ -63,6 +64,7 @@ type ListItemSource =
   | "consider"
   | "in_store";
 type SyncStatus = "connecting" | "shared" | "refreshing" | "offline";
+type DeferredViewStatus = "idle" | "loading" | "ready" | "error";
 type ThemePreference = "system" | "warm" | "light" | "dark";
 type ResolvedTheme = "light" | "dark";
 type ProductImagePreview = {
@@ -130,26 +132,16 @@ type SharedProduct = HouseholdCatalogProductMetadata & {
   updatedAt: string;
 };
 
-type SharedFeedback = {
-  id: string;
-  receiptTransactionId: string | null;
-  kind: string;
-  value: string;
-  rating: number | null;
-  createdByMemberId: string | null;
-  createdAt: string;
-};
-
 type HouseholdSnapshot = {
+  historyRevision: string;
   household: { id: string; name: string; timeZone: string };
   currentUser: HouseholdMember;
   members: HouseholdMember[];
   currentTrip: SharedTrip;
   listItems: SharedListItem[];
   products: SharedProduct[];
-  feedback: SharedFeedback[];
   closedLoop?: ClosedLoopSnapshot | null;
-  dashboard: DashboardViewData;
+  dashboard?: DashboardViewData;
 };
 
 type WriteRequest = {
@@ -415,6 +407,9 @@ export function BasketSenseDashboard({
   const [household, setHousehold] = useState<HouseholdSnapshot | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [insightsStatus, setInsightsStatus] =
+    useState<DeferredViewStatus>("idle");
+  const [insightsError, setInsightsError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [pendingWrites, setPendingWrites] = useState<Set<string>>(
     () => new Set(),
@@ -462,6 +457,9 @@ export function BasketSenseDashboard({
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>("light");
   const [themeReady, setThemeReady] = useState(false);
   const refreshPromise = useRef<Promise<void> | null>(null);
+  const insightsRefreshPromise = useRef<Promise<void> | null>(null);
+  const insightsRevision = useRef<string | null>(null);
+  const coreHistoryRevision = useRef<string | null>(null);
   const listRefreshPromise = useRef<Promise<void> | null>(null);
   const pendingCheckedStates = useRef(new Map<string, boolean>());
   const toastTimer = useRef<number | null>(null);
@@ -591,7 +589,9 @@ export function BasketSenseDashboard({
       }
       try {
         const response = await fetchHousehold(
-          sandboxMode ? "/api/household?sandbox=1" : "/api/household",
+          sandboxMode
+            ? "/api/household?view=core&sandbox=1"
+            : "/api/household?view=core",
           {
           headers: { Accept: "application/json" },
           cache: "no-store",
@@ -604,10 +604,21 @@ export function BasketSenseDashboard({
           );
         }
         const snapshot = body as HouseholdSnapshot;
-        setHousehold({
+        const historyChanged =
+          coreHistoryRevision.current !== null &&
+          coreHistoryRevision.current !== snapshot.historyRevision;
+        coreHistoryRevision.current = snapshot.historyRevision;
+        const keepDashboard =
+          insightsRevision.current === snapshot.historyRevision;
+        setHousehold((current) => ({
           ...snapshot,
+          dashboard: keepDashboard ? current?.dashboard : undefined,
           listItems: keepPendingCheckedStates(snapshot.listItems),
-        });
+        }));
+        if (historyChanged) {
+          setInsightsStatus("idle");
+          setInsightsError(null);
+        }
         setSyncStatus("shared");
         setSyncError(null);
         setLastSyncedAt(new Date());
@@ -624,6 +635,67 @@ export function BasketSenseDashboard({
     });
 
     refreshPromise.current = refresh;
+    return refresh;
+  }, [fetchHousehold, sandboxMode]);
+
+  const refreshInsights = useCallback(async () => {
+    if (insightsRefreshPromise.current) {
+      return insightsRefreshPromise.current;
+    }
+
+    const refresh = (async () => {
+      setInsightsStatus("loading");
+      setInsightsError(null);
+      try {
+        const response = await fetchHousehold(
+          sandboxMode
+            ? "/api/household?view=insights&sandbox=1"
+            : "/api/household?view=insights",
+          {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+          },
+        );
+        const body = (await response.json().catch(() => null)) as unknown;
+        if (!response.ok) {
+          throw new Error(
+            apiErrorMessage(body, "Insights could not be loaded."),
+          );
+        }
+        if (
+          !body ||
+          typeof body !== "object" ||
+          !("historyRevision" in body) ||
+          typeof body.historyRevision !== "string" ||
+          !("dashboard" in body) ||
+          !body.dashboard ||
+          typeof body.dashboard !== "object"
+        ) {
+          throw new Error("Insights returned an unexpected response.");
+        }
+
+        const snapshot = body as HouseholdInsightsResponse;
+        if (snapshot.historyRevision !== coreHistoryRevision.current) {
+          setInsightsStatus("idle");
+          return;
+        }
+        setHousehold((current) => {
+          if (!current) return current;
+          insightsRevision.current = snapshot.historyRevision;
+          return { ...current, dashboard: snapshot.dashboard };
+        });
+        setInsightsStatus("ready");
+      } catch (error) {
+        setInsightsStatus("error");
+        setInsightsError(
+          error instanceof Error ? error.message : "Insights could not be loaded.",
+        );
+      }
+    })().finally(() => {
+      insightsRefreshPromise.current = null;
+    });
+
+    insightsRefreshPromise.current = refresh;
     return refresh;
   }, [fetchHousehold, sandboxMode]);
 
@@ -722,6 +794,25 @@ export function BasketSenseDashboard({
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [refreshHousehold]);
+
+  useEffect(() => {
+    const needsInsights =
+      activeTab === "overview" || activeTab === "products" || isDataDialogOpen;
+    if (
+      needsInsights &&
+      household &&
+      !household.dashboard &&
+      insightsStatus === "idle"
+    ) {
+      void refreshInsights();
+    }
+  }, [
+    activeTab,
+    household,
+    insightsStatus,
+    isDataDialogOpen,
+    refreshInsights,
+  ]);
 
   useEffect(() => {
     const refreshPeriodMs = activeTab === "week" ? 5_000 : 15_000;
@@ -893,6 +984,15 @@ export function BasketSenseDashboard({
     window.scrollTo({ top: 0 });
   }, []);
 
+  function invalidateInsights() {
+    insightsRevision.current = null;
+    setHousehold((current) =>
+      current ? { ...current, dashboard: undefined } : current,
+    );
+    setInsightsStatus("idle");
+    setInsightsError(null);
+  }
+
   async function performWrite(key: string, request: WriteRequest) {
     setPendingWrites((current) => new Set(current).add(key));
     setFailedWrites((current) => {
@@ -924,6 +1024,7 @@ export function BasketSenseDashboard({
         }
         applyListMutation(mutation);
       } else {
+        invalidateInsights();
         await refreshHousehold(true, true);
       }
       flash(request.successMessage);
@@ -1289,10 +1390,13 @@ export function BasketSenseDashboard({
     email: user.email,
     role: "member" as const,
   };
-  const auditRange = formatAuditRange(
-    effectiveViewData.transactions,
-    effectiveViewData.audit.through,
-  );
+  const insightsAvailable = Boolean(household?.dashboard);
+  const auditRange = household?.dashboard
+    ? formatAuditRange(
+        household.dashboard.transactions,
+        household.dashboard.audit.through,
+      )
+    : null;
   const visibleTabs = primaryTabs;
 
   return (
@@ -1381,7 +1485,9 @@ export function BasketSenseDashboard({
           <div className="topbar-context">
             <span className="mobile-kicker">BasketSense</span>
             <p className="data-label">
-              {effectiveViewData.audit.transactionCount} receipt transactions audited · {auditRange}
+              {household?.dashboard && auditRange
+                ? `${household.dashboard.audit.transactionCount} receipt transactions audited · ${auditRange}`
+                : "Receipt history loads when you open Insights"}
             </p>
           </div>
           <div className="topbar-actions">
@@ -1454,7 +1560,11 @@ export function BasketSenseDashboard({
             syncStatus={syncStatus}
             syncError={syncError}
             lastSyncedAt={lastSyncedAt}
-            suggestionPlanDate={effectiveViewData.suggestionPlanDate}
+            suggestionPlanDate={
+              household?.dashboard?.suggestionPlanDate ??
+              household?.currentTrip.scheduledFor ??
+              viewData.suggestionPlanDate
+            }
             newItem={newItem}
             setNewItem={setNewItem}
             pendingWrites={pendingWrites}
@@ -1473,7 +1583,7 @@ export function BasketSenseDashboard({
           />
         ) : null}
 
-        {activeTab === "overview" ? (
+        {activeTab === "overview" && insightsAvailable ? (
           <OverviewTab
             viewData={effectiveViewData}
             changeTab={changeTab}
@@ -1486,9 +1596,15 @@ export function BasketSenseDashboard({
             onOpenProduct={openProduct}
             onReviewProduct={openProductReview}
           />
+        ) : activeTab === "overview" ? (
+          <DeferredView
+            label="Insights"
+            error={insightsError ?? syncError}
+            onRetry={() => void refreshInsights()}
+          />
         ) : null}
 
-        {activeTab === "products" ? (
+        {activeTab === "products" && insightsAvailable ? (
           <ProductsTab
             products={effectiveViewData.products}
             catalogProducts={household?.products ?? []}
@@ -1519,6 +1635,12 @@ export function BasketSenseDashboard({
             onImagesUpdated={async () => {
               await refreshHousehold(true, true);
             }}
+          />
+        ) : activeTab === "products" ? (
+          <DeferredView
+            label="Products"
+            error={insightsError ?? syncError}
+            onRetry={() => void refreshInsights()}
           />
         ) : null}
 
@@ -1557,7 +1679,9 @@ export function BasketSenseDashboard({
 
       {isDataDialogOpen ? (
         <DataDialog
-          viewData={effectiveViewData}
+          viewData={household?.dashboard ?? null}
+          error={insightsError ?? syncError}
+          onRetry={() => void refreshInsights()}
           returnFocusRef={dialogReturnFocus}
           onClose={closeDataDialog}
         />
@@ -1585,6 +1709,32 @@ export function BasketSenseDashboard({
         {toast ? <div className="toast">{toast}</div> : null}
       </div>
     </div>
+  );
+}
+
+function DeferredView({
+  label,
+  error,
+  onRetry,
+}: {
+  label: string;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  return (
+    <section className="card empty-state" role={error ? "alert" : "status"}>
+      <strong>{error ? `${label} could not be loaded` : `Loading ${label}`}</strong>
+      <p>
+        {error
+          ? error
+          : "BasketSense is calculating this view only because you opened it."}
+      </p>
+      {error ? (
+        <button className="secondary-button" type="button" onClick={onRetry}>
+          Try again
+        </button>
+      ) : null}
+    </section>
   );
 }
 
@@ -4535,10 +4685,14 @@ function EvidenceBadge({
 
 function DataDialog({
   viewData,
+  error,
+  onRetry,
   returnFocusRef,
   onClose,
 }: {
-  viewData: DashboardViewData;
+  viewData: DashboardViewData | null;
+  error: string | null;
+  onRetry: () => void;
   returnFocusRef: { current: HTMLElement | null };
   onClose: () => void;
 }) {
@@ -4615,20 +4769,36 @@ function DataDialog({
           stored.
         </p>
 
-        <div className="data-audit-summary">
-          <div>
-            <span>Audited through</span>
-            <strong>{formatFullDate(viewData.audit.through)}</strong>
+        {viewData ? (
+          <div className="data-audit-summary">
+            <div>
+              <span>Audited through</span>
+              <strong>{formatFullDate(viewData.audit.through)}</strong>
+            </div>
+            <div>
+              <span>Receipt transactions</span>
+              <strong>{viewData.audit.transactionCount}</strong>
+            </div>
+            <div>
+              <span>Reconciliation issues</span>
+              <strong>{viewData.audit.reconciliationIssueCount}</strong>
+            </div>
           </div>
-          <div>
-            <span>Receipt transactions</span>
-            <strong>{viewData.audit.transactionCount}</strong>
+        ) : (
+          <div className="empty-state" role={error ? "alert" : "status"}>
+            <strong>{error ? "Audit summary could not be loaded" : "Loading audit summary"}</strong>
+            <p>
+              {error
+                ? error
+                : "BasketSense calculates the receipt summary only when you request it."}
+            </p>
+            {error ? (
+              <button className="secondary-button" type="button" onClick={onRetry}>
+                Try again
+              </button>
+            ) : null}
           </div>
-          <div>
-            <span>Reconciliation issues</span>
-            <strong>{viewData.audit.reconciliationIssueCount}</strong>
-          </div>
-        </div>
+        )}
 
         <div className="truth-list">
           <h3>Stored for this household</h3>

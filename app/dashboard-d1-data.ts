@@ -1,6 +1,7 @@
 import {
   buildDashboardViewDataFromHistory,
 } from "./basketsense-dashboard-data";
+import { emptyDashboardViewData } from "./empty-dashboard-view";
 import {
   categoryPresentation,
   classifyReceiptItem,
@@ -48,55 +49,45 @@ type DashboardReceiptLineRow = {
   tax_status: string;
 };
 
-function emptyDashboardViewData(): DashboardViewData {
-  // A fresh owner test sandbox deliberately starts without audited receipts.
-  // Keep that absence visible instead of borrowing the real household's
-  // historical view merely to satisfy dashboard presentation requirements.
-  const today = new Date().toISOString().slice(0, 10);
-  return {
-    audit: {
-      through: today,
-      householdFundedCents: 0,
-      grossReceiptTotalCents: 0,
-      externalFundingCents: 0,
-      transactionCount: 0,
-      warehouseTransactionCount: 0,
-      gasTransactionCount: 0,
-      opticalTransactionCount: 0,
-      averageWarehouseCents: 0,
-      reconciliationIssueCount: 0,
-    },
-    months: [],
-    channels: [
-      { key: "warehouse", label: "Warehouse", color: "var(--sage)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
-      { key: "gas", label: "Gas", color: "var(--apricot)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
-      { key: "optical", label: "Optical out-of-pocket", color: "var(--lilac)", householdFundedCents: 0, grossReceiptTotalCents: 0, transactionCount: 0 },
-    ],
-    productCategories: [],
-    warehouseTaxCents: 0,
-    classifiedWarehouseCents: 0,
-    needsReviewWarehouseCents: 0,
-    transactions: [],
-    receiptLines: [],
-    recentTransactions: [],
-    products: [],
-    suggestions: [],
-    suggestionPlanDate: today,
-    latestWarehouseTransaction: {
-      id: "empty-dashboard",
-      purchasedOn: today,
-      channel: "warehouse",
-      itemCount: 0,
-      receiptTotalCents: 0,
-      householdFundedCents: 0,
-      discountCents: 0,
-      merchandiseSubtotalCents: 0,
-      taxCents: 0,
-      externalFundingCents: 0,
-      sourceType: "receipt_photo",
-      auditFlag: "none",
-    },
-  };
+type DashboardHistoryRevisionRow = {
+  history_revision: string;
+};
+
+export function dashboardHistoryRevisionStatement(
+  db: D1Database,
+  householdId: string,
+) {
+  return db
+    .prepare(
+      `WITH scoped(household_id) AS (VALUES (?)),
+            history_changes(changed_at) AS (
+              SELECT receipt_transactions.updated_at
+              FROM receipt_transactions, scoped
+              WHERE receipt_transactions.household_id = scoped.household_id
+              UNION ALL
+              SELECT receipt_items.updated_at
+              FROM receipt_items
+              INNER JOIN receipt_transactions
+                ON receipt_transactions.id = receipt_items.receipt_transaction_id
+              INNER JOIN scoped
+                ON scoped.household_id = receipt_transactions.household_id
+              UNION ALL
+              SELECT products.updated_at
+              FROM products, scoped
+              WHERE products.household_id = scoped.household_id
+              UNION ALL
+              SELECT product_images.updated_at
+              FROM product_images
+              INNER JOIN products ON products.id = product_images.product_id
+              INNER JOIN scoped ON scoped.household_id = products.household_id
+            )
+       SELECT COALESCE(
+                MAX(changed_at),
+                '1970-01-01T00:00:00.000Z'
+              ) AS history_revision
+       FROM history_changes`,
+    )
+    .bind(householdId);
 }
 
 function dashboardChannel(
@@ -159,10 +150,10 @@ function dashboardNormalizationStatus(
  * reconciled household evidence. Draft/rejected receipts remain visible in
  * Review, but never silently change historical actuals.
  */
-export async function buildDashboardViewDataFromD1(
+export async function buildDashboardViewStateFromD1(
   db: D1Database,
   householdId: string,
-): Promise<DashboardViewData> {
+): Promise<{ dashboard: DashboardViewData; historyRevision: string }> {
   const results = await db.batch([
     db
       .prepare(
@@ -229,11 +220,15 @@ export async function buildDashboardViewDataFromD1(
            AND transaction_type IN ('warehouse', 'fuel', 'optical')`,
       )
       .bind(householdId),
+    dashboardHistoryRevisionStatement(db, householdId),
   ]);
 
   const transactionRows = results[0].results as DashboardTransactionRow[];
   const receiptLineRows = results[1].results as DashboardReceiptLineRow[];
   const unresolved = results[2].results[0] as { count?: number } | undefined;
+  const historyRevision = (
+    results[3].results[0] as DashboardHistoryRevisionRow | undefined
+  )?.history_revision ?? "1970-01-01T00:00:00.000Z";
 
   const transactions: DashboardTransaction[] = transactionRows.map((row) => ({
     id: row.id,
@@ -273,13 +268,23 @@ export async function buildDashboardViewDataFromD1(
 
   const through = transactions.at(0)?.purchasedOn;
   if (!through) {
-    return emptyDashboardViewData();
+    return { dashboard: emptyDashboardViewData(), historyRevision };
   }
 
-  return buildDashboardViewDataFromHistory({
-    through,
-    reconciliationIssueCount: unresolved?.count ?? 0,
-    transactions,
-    receiptLines,
-  });
+  return {
+    dashboard: buildDashboardViewDataFromHistory({
+      through,
+      reconciliationIssueCount: unresolved?.count ?? 0,
+      transactions,
+      receiptLines,
+    }),
+    historyRevision,
+  };
+}
+
+export async function buildDashboardViewDataFromD1(
+  db: D1Database,
+  householdId: string,
+): Promise<DashboardViewData> {
+  return (await buildDashboardViewStateFromD1(db, householdId)).dashboard;
 }

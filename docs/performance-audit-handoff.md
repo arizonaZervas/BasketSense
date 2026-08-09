@@ -399,17 +399,31 @@ These are implementation acceptance gates.
   mutations trigger zero full household GETs; add/remove/check converge across
   two clients without skipping an intervening partner change.
 
-Implementation checkpoint, 2026-08-09: the local worktree contains the D1
-revision migration/triggers, authoritative item response contract, client merge,
-204 poll handling, and focused concurrency tests. It is not built, committed,
-deployed, or production-measured. Thirteen focused List/API tests pass, including
-add, remove, and check revision responses, an assertion that an unchanged 204
-does not read list-item rows, stale-write protection, atomic freeze rollback,
-two-spouse synchronization, and recovery from an intervening partner mutation.
+Implementation checkpoint, 2026-08-09: the D1 revision migration/triggers,
+authoritative item response contract, client merge, 204 poll handling, and
+focused concurrency tests were released. Migration 0008 was applied with Sites
+version 63. Its first production sandbox smoke exposed a D1 runtime difference:
+trigger side effects were included in `meta.changes`, so successful List writes
+could commit but the route's exact-one guard returned 409.
 
-Release gate: apply and verify migration 0008 against the existing BasketSense
-D1 before releasing the route/client code. Never deploy the new response
-contract against an unmigrated database, and do not touch Good Cart Day storage.
+Sites version 64, source commit
+`e9781c7e80e68e8bb8fd9f2f229d943b72b1fb99`, changes only the trigger-affected
+List guards to accept one-or-more changes and adds a trigger-inclusive test
+adapter/regression sequence for add, reuse, remove, freeze, check, and unfreeze.
+Sixteen focused tests, route/test lint, the production build, and the saved
+archive checks passed before release.
+
+Authenticated owner-sandbox smoke after version 64 measured one undo at 771 ms
+and one check-off at 808 ms from tap to the settled visible state in the in-app
+desktop browser. Both completed with zero alerts after a 1.5-second recovery
+window. Reload confirmed the sandbox was restored to two checked items and zero
+active items. These are release-smoke samples, not phone p95 measurements.
+
+Release gate status: migration 0008 and the version 64 hotfix are deployed to
+the existing BasketSense Site and bindings. The remaining acceptance gate is an
+authenticated two-phone run covering add, remove, and check-off tap-to-settled
+latency plus partner convergence; do not infer that result from the desktop
+sandbox sample, and do not touch Good Cart Day storage.
 
 ### Checkpoint 2 — asynchronous receipt dispatch (Terra, Luna UX)
 
@@ -441,6 +455,29 @@ contract against an unmigrated database, and do not touch Good Cart Day storage.
   skeleton, retry, and cache-invalidation tests.
 - Exit: initial List API ≤75 kB encoded / ≤400 kB decoded; Products and histories
   paginate; direct tab URLs recover correctly.
+
+Implementation checkpoint, 2026-08-09: the first local, undeployed slice keeps
+the legacy full household response for compatibility but moves the app onto a
+List-first `view=core` response. Historical dashboard construction now runs
+only through `view=insights`, requested when Insights, Products, or the data
+status dialog opens. The initial server document uses an empty structural view
+instead of serializing the audited receipt history, and deferred views include
+loading, retry, sandbox, and refresh behavior.
+
+In the representative D1 fixture, the decoded core JSON measured **143,884
+bytes** versus **574,751 bytes** for the legacy full snapshot, a **75.0%
+reduction**. The locally built authenticated document measured **19,195 decoded
+bytes**; compare that directionally, not one-to-one, with the 483,924-byte
+production baseline because the environments and transfer encoding differ.
+The production build, 27 dashboard/List/render tests, and four focused API/List
+tests pass. The broader receipt-heavy API suite still has unrelated existing
+failures and was not used as a release gate for this slice.
+
+Remaining before release: authenticated browser verification of List →
+Insights → Products → List navigation; production encoded-size/timing evidence;
+versioned view contracts; and later separation/pagination of the catalog,
+receipt review, and feedback payloads. Receipt ingestion and its synchronous
+processing path are explicitly unchanged.
 
 ### Checkpoint 5 — request-path bootstrap cleanup (Terra, Luna regression)
 
