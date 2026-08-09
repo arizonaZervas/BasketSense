@@ -2690,7 +2690,7 @@ async function addListItem(
         context.household.id
       )
       .run();
-    if ((update.meta.changes ?? 0) !== 1) {
+    if ((update.meta.changes ?? 0) < 1) {
       throw new ApiError(
         409,
         "List items can only be added while a trip is being planned or shopped"
@@ -2753,7 +2753,7 @@ async function addListItem(
       context.household.id
     )
     .run();
-  if ((insert.meta.changes ?? 0) !== 1) {
+  if ((insert.meta.changes ?? 0) < 1) {
     throw new ApiError(
       409,
       "List items can only be added while a trip is being planned or shopped"
@@ -2981,7 +2981,7 @@ async function setListItemBoolean(
       .run();
     changes = update.meta.changes ?? 0;
   }
-  if (changes !== 1) {
+  if (changes < 1) {
     if (column === "checked" && value) {
       throw new ApiError(
         409,
@@ -3424,7 +3424,7 @@ async function unfreezeTrip(
       ),
   ]);
 
-  if ((results[2]?.meta.changes ?? 0) !== 1) {
+  if ((results[2]?.meta.changes ?? 0) < 1) {
     const receiptAfterRace = await db
       .prepare(
         `SELECT id FROM receipt_transactions

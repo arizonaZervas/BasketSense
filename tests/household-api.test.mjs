@@ -16,11 +16,18 @@ import {
 } from "../app/recommendation-engine.ts";
 
 class PreparedStatementAdapter {
-  constructor(database, sql, values = [], beforeExecute = null) {
+  constructor(
+    database,
+    sql,
+    values = [],
+    beforeExecute = null,
+    reportedChanges = null,
+  ) {
     this.database = database;
     this.sql = sql;
     this.values = values;
     this.beforeExecute = beforeExecute;
+    this.reportedChanges = reportedChanges;
   }
 
   bind(...values) {
@@ -29,6 +36,7 @@ class PreparedStatementAdapter {
       this.sql,
       values,
       this.beforeExecute,
+      this.reportedChanges,
     );
   }
 
@@ -59,16 +67,21 @@ class PreparedStatementAdapter {
     }
 
     const result = statement.run(...this.values);
+    const changes = Number(result.changes);
     return {
       success: true,
       results: [],
-      meta: { changes: Number(result.changes) },
+      meta: {
+        changes: this.reportedChanges
+          ? this.reportedChanges(this.sql, changes)
+          : changes,
+      },
     };
   }
 }
 
 class D1DatabaseAdapter {
-  constructor(database = null) {
+  constructor(database = null, reportedChanges = null) {
     this.database = database ?? new DatabaseSync(":memory:");
     this.ownsDatabase = database === null;
     this.database.exec("PRAGMA foreign_keys = ON");
@@ -76,19 +89,26 @@ class D1DatabaseAdapter {
     this.beforeNextStatement = null;
     this.batchCalls = 0;
     this.schemaBatchCalls = 0;
+    this.reportedChanges = reportedChanges;
   }
 
   prepare(sql) {
-    return new PreparedStatementAdapter(this.database, sql, [], (statement) => {
-      if (
-        this.beforeNextStatement &&
-        this.beforeNextStatement.pattern.test(statement)
-      ) {
-        const { mutation } = this.beforeNextStatement;
-        this.beforeNextStatement = null;
-        mutation(this.database);
-      }
-    });
+    return new PreparedStatementAdapter(
+      this.database,
+      sql,
+      [],
+      (statement) => {
+        if (
+          this.beforeNextStatement &&
+          this.beforeNextStatement.pattern.test(statement)
+        ) {
+          const { mutation } = this.beforeNextStatement;
+          this.beforeNextStatement = null;
+          mutation(this.database);
+        }
+      },
+      this.reportedChanges,
+    );
   }
 
   async batch(statements) {
@@ -1152,6 +1172,93 @@ test("add, remove, and check mutations return authoritative revisions", async ()
       db,
     );
     assert.equal(caughtUp.status, 204);
+  } finally {
+    db.close();
+  }
+});
+
+test("trigger-inclusive D1 change counts still acknowledge successful writes", async () => {
+  const db = new D1DatabaseAdapter(null, (sql, changes) => {
+    if (
+      changes > 0 &&
+      /\b(?:INSERT INTO|UPDATE)\s+[`\"]?(?:trip_list_items|trips)[`\"]?/i.test(
+        sql,
+      )
+    ) {
+      return changes + 2;
+    }
+    return changes;
+  });
+  try {
+    const email = "trigger-count-owner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const checkedItem = initial.listItems.find((item) => item.included);
+    assert.ok(checkedItem);
+
+    const addBody = {
+      action: "add_list_item",
+      tripId,
+      label: "Trigger count test item",
+      source: "manual",
+      section: "essentials",
+      included: true,
+    };
+    const addedResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", addBody),
+      db,
+    );
+    assert.equal(addedResponse.status, 201);
+    const added = await responseJson(addedResponse);
+
+    const reusedResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", addBody),
+      db,
+    );
+    assert.equal(reusedResponse.status, 200);
+
+    const removedResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: added.item.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(removedResponse.status, 200);
+
+    const frozenResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(frozenResponse.status, 200);
+
+    const checkedResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: checkedItem.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkedResponse.status, 200);
+
+    const unfrozenResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "unfreeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(unfrozenResponse.status, 200);
+    const unfrozen = await responseJson(unfrozenResponse);
+    assert.equal(unfrozen.trip.status, "planning");
+    assert.equal(unfrozen.listItems.some((item) => item.checked), false);
   } finally {
     db.close();
   }
