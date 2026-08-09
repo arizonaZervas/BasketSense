@@ -201,6 +201,17 @@ function buildReceiptLines(
 
 type ProductPriceEvent = DashboardProduct["priceHistory"][number];
 
+function recordedUnitPriceCents(line: DashboardReceiptLine): number | null {
+  if (line.unitPriceCents !== null) return line.unitPriceCents;
+
+  // Receipt OCR sometimes preserves a complete line subtotal but omits the
+  // unit-price field. A whole-package line still has an exact package price;
+  // do not invent one for fractional or non-even quantities.
+  if (!Number.isInteger(line.quantity) || line.quantity <= 0) return null;
+  const derivedPriceCents = line.grossAmountCents / line.quantity;
+  return Number.isInteger(derivedPriceCents) ? derivedPriceCents : null;
+}
+
 function buildProducts(
   receiptLines: readonly DashboardReceiptLine[],
   transactionById: ReadonlyMap<string, DashboardTransaction>,
@@ -268,10 +279,11 @@ function buildProducts(
             `Dashboard product event join failed for line ${line.id}`,
           );
         }
+        const unitPriceCents = recordedUnitPriceCents(line);
         const existing = eventsByTransaction.get(line.transactionId);
         if (
           existing &&
-          existing.unitPriceCents !== line.unitPriceCents
+          existing.unitPriceCents !== unitPriceCents
         ) {
           throw new Error(
             `Dashboard product event has conflicting unit prices for ${itemNumber} in ${line.transactionId}`,
@@ -281,7 +293,7 @@ function buildProducts(
           transactionId: line.transactionId,
           purchasedOn: transaction.purchasedOn,
           quantity: (existing?.quantity ?? 0) + line.quantity,
-          unitPriceCents: line.unitPriceCents,
+          unitPriceCents,
           grossAmountCents:
             (existing?.grossAmountCents ?? 0) + line.grossAmountCents,
           discountCents:

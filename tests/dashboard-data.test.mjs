@@ -36,6 +36,30 @@ test("product history keeps friendly names and gross, discount, and paid amounts
   assert.equal(viewData.needsReviewWarehouseCents, 3997);
 });
 
+test("product price uses an exact receipt subtotal when OCR omits the unit price", () => {
+  const source = buildDashboardViewData();
+  const receiptLines = source.receiptLines.map((line) =>
+    line.itemNumber === "1977696"
+      ? { ...line, unitPriceCents: null }
+      : line,
+  );
+
+  const viewData = buildDashboardViewDataFromHistory({
+    through: source.audit.through,
+    reconciliationIssueCount: source.audit.reconciliationIssueCount,
+    transactions: source.transactions,
+    receiptLines,
+  });
+  const tractorWheels = viewData.products.find(
+    (product) => product.itemNumber === "1977696",
+  );
+
+  assert.ok(tractorWheels);
+  assert.equal(tractorWheels.lastPriceCents, 1369);
+  assert.equal(tractorWheels.priceHistory.at(-1)?.unitPriceCents, 1369);
+  assert.equal(tractorWheels.totalSpendCents, 1369);
+});
+
 test("household metadata changes labels and categories without rewriting old receipt text", () => {
   const viewData = buildDashboardViewData();
   const cottageCheeseRawNames = viewData.receiptLines
