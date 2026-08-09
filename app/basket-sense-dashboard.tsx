@@ -675,13 +675,9 @@ export function BasketSenseDashboard({
         }
 
         const snapshot = body as HouseholdInsightsResponse;
-        if (snapshot.historyRevision !== coreHistoryRevision.current) {
-          setInsightsStatus("idle");
-          return;
-        }
+        insightsRevision.current = snapshot.historyRevision;
         setHousehold((current) => {
           if (!current) return current;
-          insightsRevision.current = snapshot.historyRevision;
           return { ...current, dashboard: snapshot.dashboard };
         });
         setInsightsStatus("ready");
