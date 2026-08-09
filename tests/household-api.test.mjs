@@ -302,6 +302,71 @@ test("extra household products do not rewrite the audited seed catalog during re
   }
 });
 
+test("additional receipt history does not rewrite audited seed data during reads", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const core = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "history-seed-owner@example.test",
+          "GET",
+          undefined,
+          "?view=core",
+        ),
+        db,
+      ),
+    );
+
+    const cloneRow = (table, overrides) => {
+      const columns = db.database
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((column) => column.name);
+      const source = db.database.prepare(`SELECT * FROM ${table} LIMIT 1`).get();
+      assert.ok(source);
+      const values = columns.map((column) =>
+        Object.hasOwn(overrides, column) ? overrides[column] : source[column],
+      );
+      db.database
+        .prepare(
+          `INSERT INTO ${table} (${columns.join(", ")})
+           VALUES (${columns.map(() => "?").join(", ")})`,
+        )
+        .run(...values);
+    };
+
+    cloneRow("receipt_transactions", {
+      id: "additional-receipt-history",
+      source_transaction_key: "additional-receipt-history",
+      trip_id: null,
+      created_at: "2000-01-01T00:00:00.000Z",
+      updated_at: "2000-01-01T00:00:00.000Z",
+    });
+    cloneRow("receipt_items", {
+      id: "additional-receipt-item",
+      receipt_transaction_id: "additional-receipt-history",
+      created_at: "2000-01-01T00:00:00.000Z",
+      updated_at: "2000-01-01T00:00:00.000Z",
+    });
+
+    const insights = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "history-seed-owner@example.test",
+          "GET",
+          undefined,
+          "?view=insights",
+        ),
+        db,
+      ),
+    );
+
+    assert.equal(insights.historyRevision, core.historyRevision);
+  } finally {
+    db.close();
+  }
+});
+
 test("ready household reads avoid repeating runtime schema DDL", async () => {
   const initialized = new D1DatabaseAdapter();
   const reusedConnection = new D1DatabaseAdapter(initialized.database);

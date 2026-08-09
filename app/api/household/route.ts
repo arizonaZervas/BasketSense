@@ -968,38 +968,45 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
     ])
   );
 
+  const requiredTransactionIds = AUDITED_RECEIPT_TRANSACTIONS_2026.map(
+    (transaction) => transaction.id,
+  );
+  const requiredItemIds = AUDITED_RECEIPT_ITEMS_2026.map((item) => item.id);
   const requiredProductIds = [...productByItemNumber.values()];
-  const [transactionCount, itemCount, currentCatalogSeedCount] = await Promise.all([
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM receipt_transactions
-         WHERE household_id = ?`
-      )
-      .bind(householdId)
-      .first<{ count: number }>(),
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM receipt_items
-         WHERE receipt_transaction_id IN (
-           SELECT id FROM receipt_transactions WHERE household_id = ?
-      )`
-      )
-      .bind(householdId)
-      .first<{ count: number }>(),
-    db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM products
-         WHERE household_id = ?
-           AND catalog_revision = ?
-           AND id IN (SELECT value FROM json_each(?))`
-      )
-      .bind(
-        householdId,
-        PRODUCT_CATALOG_REVISION,
-        JSON.stringify(requiredProductIds),
-      )
-      .first<{ count: number }>(),
-  ]);
+  const [transactionSeedCount, itemSeedCount, currentCatalogSeedCount] =
+    await Promise.all([
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_transactions
+           WHERE household_id = ?
+             AND id IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(householdId, JSON.stringify(requiredTransactionIds))
+        .first<{ count: number }>(),
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM receipt_items
+           WHERE receipt_transaction_id IN (
+             SELECT id FROM receipt_transactions WHERE household_id = ?
+           )
+             AND id IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(householdId, JSON.stringify(requiredItemIds))
+        .first<{ count: number }>(),
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM products
+           WHERE household_id = ?
+             AND catalog_revision = ?
+             AND id IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(
+          householdId,
+          PRODUCT_CATALOG_REVISION,
+          JSON.stringify(requiredProductIds),
+        )
+        .first<{ count: number }>(),
+    ]);
 
   const now = nowIso();
   if ((currentCatalogSeedCount?.count ?? 0) !== requiredProductIds.length) {
@@ -1064,8 +1071,8 @@ async function seedAuditedHistory(db: D1Database, householdId: string) {
   }
 
   if (
-    transactionCount?.count === AUDITED_RECEIPT_TRANSACTIONS_2026.length &&
-    itemCount?.count === AUDITED_RECEIPT_ITEMS_2026.length
+    transactionSeedCount?.count === requiredTransactionIds.length &&
+    itemSeedCount?.count === requiredItemIds.length
   ) {
     return;
   }
