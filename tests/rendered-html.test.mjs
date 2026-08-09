@@ -108,6 +108,10 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(source, /data-list-focus-action="add"/);
   assert.match(source, /fallbackItemId/);
   assert.match(source, /focus\(\{ preventScroll: true \}\)/);
+  assert.match(
+    source,
+    /function toggleIncluded[\s\S]*const shoppingStarted = household\?\.currentTrip\.status === "frozen";/,
+  );
   assert.match(source, /No estimate · Add estimate/);
   assert.match(source, /household estimate/);
   assert.match(source, /parseManualEstimateDollars/);

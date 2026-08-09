@@ -924,6 +924,7 @@ export function BasketSenseDashboard({
   function toggleIncluded(item: SharedListItem, trigger?: HTMLElement | null) {
     const key = `item-${item.id}`;
     const nextIncluded = !item.included;
+    const shoppingStarted = household?.currentTrip.status === "frozen";
     const sourceRow = trigger?.closest<HTMLElement>("[data-list-item-focus]");
     const location = sourceRow?.dataset.listItemLocation;
     if (sourceRow && (location === "active" || location === "ideas")) {
