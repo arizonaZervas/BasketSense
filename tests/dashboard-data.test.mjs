@@ -6,6 +6,7 @@ import {
   buildDashboardViewDataFromHistory,
 } from "../app/basketsense-dashboard-data.ts";
 import { mergeHouseholdProductMetadata } from "../app/dashboard-product-metadata.ts";
+import { productIllustrationManifest } from "../app/product-illustration-manifest.ts";
 
 test("product history keeps friendly names and gross, discount, and paid amounts", () => {
   const viewData = buildDashboardViewData();
@@ -113,4 +114,22 @@ test("a missing catalog line stays visible as needs-review evidence", () => {
   assert.ok(
     viewData.needsReviewWarehouseCents >= source.needsReviewWarehouseCents + omittedLine.netAmountCents,
   );
+});
+
+test("the second illustration batch covers purchase ranks 151 through 175", () => {
+  const acceptedItems = new Set(
+    productIllustrationManifest()
+      .filter((entry) => entry.acceptanceStatus === "accepted")
+      .map((entry) => entry.itemNumber),
+  );
+
+  for (const itemNumber of [
+    "2034800", "1851746", "1992399", "1943125", "1974258",
+    "1962938", "2029201", "1919326", "1851481", "1901810",
+    "1901772", "1868328", "1955439", "1899482", "1854748",
+    "1863710", "1963239", "1985993", "1861502", "1959114",
+    "1896154", "1796303", "1851163", "1957935", "1796314",
+  ]) {
+    assert.ok(acceptedItems.has(itemNumber), `missing illustration for ${itemNumber}`);
+  }
 });
