@@ -23,6 +23,16 @@ changing it.
   for future receipts without broad semantic guessing.
 - Completed shared trips and receipts are immutable so historical totals and
   recaps stay trustworthy.
+- The customer-facing navigation has four destinations: List, Insights,
+  Products, and Recap. Data Health is no longer a UI tab. Its owner-authorized
+  backend inspection/export paths remain dormant for future debugging.
+
+## Performance audit
+
+- The 2026-08-08 code-confirmed performance audit and fresh-task trace plan are
+  in `docs/performance-audit-handoff.md`.
+- Chrome DevTools MCP was installed globally after that audit. It requires a
+  fresh task/runtime before its tools are available.
 
 ## Owner test sandbox
 

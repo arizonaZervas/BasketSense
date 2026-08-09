@@ -29,8 +29,9 @@ a guilt-heavy budgeting exercise.
   receipt, recap, and flash-card UI labels that amount as “Paid”.
 - Creates at most three evidence-triggered review questions after a trip and
   turns confirmed answers into reusable household context.
-- Offers interactive product, transaction, category, receipt, and Data Health
-  drill-downs. The Data Health view is owner-only.
+- Offers interactive product, transaction, category, and receipt drill-downs.
+  Owner-authorized data inspection and export remain available as dormant
+  backend tools for future debugging rather than a customer-facing tab.
 - Provides an in-app recap at `/recap` plus the Recap destination in the
   private dashboard. Automatic outgoing recap e-mail is intentionally disabled.
 - Provides an owner-only disposable test sandbox at `/?sandbox=1`. Sandbox

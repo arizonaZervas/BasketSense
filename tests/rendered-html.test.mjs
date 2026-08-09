@@ -66,6 +66,16 @@ test("renders the four focused household destinations", async () => {
   for (const label of ["List", "Insights", "Products", "Recap"]) {
     assert.match(html, new RegExp(label));
   }
+  assert.doesNotMatch(html, /Data Health/i);
+
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    dashboardSource,
+    /DataHealthExplorer|dataHealthTab|activeTab === "data"|label: "Data Health"/,
+  );
 
   assert.match(html, /Data status/i);
   assert.match(html, /href="\/signout-with-chatgpt\?return_to=%2F"[^>]*>Sign out<\/a>/i);
@@ -233,7 +243,7 @@ test("reflows every primary surface from the available content width", async () 
   );
   assert.match(
     styles,
-    /@container basket-main \(max-width: 680px\) \{[\s\S]*\.data-explorer-controls,[\s\S]*\.question-options[\s\S]*grid-template-columns: 1fr;/,
+    /@container basket-main \(max-width: 680px\) \{[\s\S]*\.detail-metrics,[\s\S]*\.question-options[\s\S]*grid-template-columns: 1fr;/,
   );
 });
 

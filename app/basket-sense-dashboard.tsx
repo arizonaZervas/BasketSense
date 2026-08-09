@@ -23,7 +23,6 @@ import type {
   HouseholdListResponse,
   ProductPrimaryImageSummary,
 } from "./api/household/types";
-import { DataHealthExplorer } from "./data-health-explorer";
 import { generatedProductIllustration } from "./generated-product-illustrations";
 import {
   isProductCategoryKey,
@@ -48,7 +47,7 @@ import {
 } from "./receipt-review-flow";
 import { topDownConfettiStyle } from "./top-down-confetti";
 
-type Tab = "overview" | "products" | "week" | "review" | "data";
+type Tab = "overview" | "products" | "week" | "review";
 type TripStatus = "planning" | "frozen" | "completed";
 type ListItemSource =
   | "manual"
@@ -171,8 +170,6 @@ const primaryTabs = [
   { id: "products", label: "Products", symbol: "▤" },
   { id: "review", label: "Recap", symbol: "?" },
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
-
-const dataHealthTab = { id: "data", label: "Data Health", symbol: "⌘" } as const;
 
 const THEME_STORAGE_KEY = "basketsense-color-theme";
 
@@ -1240,10 +1237,7 @@ export function BasketSenseDashboard({
     effectiveViewData.transactions,
     effectiveViewData.audit.through,
   );
-  const visibleTabs =
-    household?.currentUser.role === "owner" && !sandboxMode
-      ? [...primaryTabs, dataHealthTab]
-      : primaryTabs;
+  const visibleTabs = primaryTabs;
 
   return (
     <div className="app-shell">
@@ -1484,9 +1478,6 @@ export function BasketSenseDashboard({
           />
         ) : null}
 
-        {activeTab === "data" && household?.currentUser.role === "owner" && !sandboxMode ? (
-          <DataHealthExplorer />
-        ) : null}
       </main>
 
       <nav className="mobile-nav" aria-label="Primary navigation">
