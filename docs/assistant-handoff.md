@@ -51,10 +51,9 @@ changing it.
   replacement site, D1 database, or R2 bucket.
 - Preserve the existing custom access allowlist: owner and household viewer,
   with no access groups. Verify identities live before modifying or deploying.
-- The latest known production source commit is `612947fd0114d4f84541ff0bc13f02a72b356b8e`
-  (product image preview, purchase-rank illustrations 176–200, and mobile
-  preview polish), deployed as Sites version 59. Treat that value as a handoff
-  hint, not live proof.
+- The latest known production source commit is `e45e5c144d198d6d3eb12bfe849a8a5b6a749471`
+  (receipt-price fallback and active-list removal repair), deployed as Sites
+  version 60. Treat that value as a handoff hint, not live proof.
 
 ## Hard scope boundaries
 
