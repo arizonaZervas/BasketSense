@@ -185,6 +185,7 @@ export interface TripSummary {
   id: string;
   scheduledFor: string;
   status: TripStatus;
+  listRevision: number;
   targetCents: number | null;
   discoveryAllowanceCents: number | null;
   estimatedListTotalAtFreezeCents: number | null;
@@ -309,6 +310,11 @@ export interface HouseholdBootstrapResponse {
 export interface HouseholdListResponse {
   currentTrip: TripSummary;
   listItems: TripListItemSummary[];
+}
+
+export interface HouseholdListMutationResponse {
+  item: TripListItemSummary;
+  listRevision: number;
 }
 
 export type DataHealthTableKey =

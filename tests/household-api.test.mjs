@@ -603,6 +603,139 @@ test("trip report outbox migration creates an idempotent delivery ledger", () =>
   }
 });
 
+test("list revision migration adds an atomic trip and item ledger", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE trips (
+        id TEXT PRIMARY KEY NOT NULL,
+        status TEXT NOT NULL DEFAULT 'planning',
+        target_cents INTEGER,
+        discovery_allowance_cents INTEGER,
+        estimated_list_total_at_freeze_cents INTEGER,
+        estimated_priced_item_count_at_freeze INTEGER,
+        estimated_unpriced_item_count_at_freeze INTEGER,
+        frozen_at TEXT,
+        completed_at TEXT
+      );
+      CREATE TABLE trip_list_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        trip_id TEXT NOT NULL,
+        product_id TEXT,
+        label TEXT NOT NULL,
+        section TEXT NOT NULL DEFAULT 'essentials',
+        source TEXT NOT NULL DEFAULT 'manual',
+        recommendation_reason TEXT,
+        confidence_bps INTEGER,
+        included INTEGER NOT NULL DEFAULT 1,
+        checked INTEGER NOT NULL DEFAULT 0,
+        included_at_freeze INTEGER,
+        added_after_freeze INTEGER NOT NULL DEFAULT 0,
+        estimated_price_cents INTEGER,
+        quantity_milli INTEGER NOT NULL DEFAULT 1000,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        added_by_member_id TEXT
+      );
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0008_sticky_roxanne_simpson.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+
+    for (const table of ["trips", "trip_list_items"]) {
+      const columns = db.database
+        .prepare(`PRAGMA table_info(${table})`)
+        .all()
+        .map((column) => column.name);
+      assert.ok(columns.includes("list_revision"));
+    }
+    const triggers = db.database
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'trigger' AND name LIKE '%list_revision%'
+         ORDER BY name`,
+      )
+      .all()
+      .map((trigger) => trigger.name);
+    assert.deepEqual(triggers, [
+      "trips_list_revision_after_state_update",
+    ]);
+    const itemTriggers = db.database
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'trigger' AND name LIKE 'trip_list_items_revision_%'
+         ORDER BY name`,
+      )
+      .all()
+      .map((trigger) => trigger.name);
+    assert.deepEqual(itemTriggers, [
+      "trip_list_items_revision_after_delete",
+      "trip_list_items_revision_after_insert",
+      "trip_list_items_revision_after_update",
+    ]);
+
+    db.database
+      .prepare(`INSERT INTO trips (id) VALUES (?)`)
+      .run("revision-trip");
+    db.database
+      .prepare(
+        `INSERT INTO trip_list_items (id, trip_id, label)
+         VALUES (?, ?, ?)`,
+      )
+      .run("revision-item", "revision-trip", "Revision test");
+    const insertedRevisions = db.database
+      .prepare(
+        `SELECT trips.list_revision AS tripRevision,
+                trip_list_items.list_revision AS itemRevision
+         FROM trips
+         INNER JOIN trip_list_items ON trip_list_items.trip_id = trips.id
+         WHERE trips.id = ?`,
+      )
+      .get("revision-trip");
+    assert.equal(insertedRevisions.tripRevision, 1);
+    assert.equal(insertedRevisions.itemRevision, 1);
+
+    db.database
+      .prepare(`UPDATE trip_list_items SET checked = 1 WHERE id = ?`)
+      .run("revision-item");
+    const updatedRevisions = db.database
+      .prepare(
+        `SELECT trips.list_revision AS tripRevision,
+                trip_list_items.list_revision AS itemRevision
+         FROM trips
+         INNER JOIN trip_list_items ON trip_list_items.trip_id = trips.id
+         WHERE trips.id = ?`,
+      )
+      .get("revision-trip");
+    assert.equal(updatedRevisions.tripRevision, 2);
+    assert.equal(updatedRevisions.itemRevision, 2);
+
+    db.database
+      .prepare(`UPDATE trips SET status = 'frozen' WHERE id = ?`)
+      .run("revision-trip");
+    assert.equal(
+      db.database
+        .prepare(`SELECT list_revision AS revision FROM trips WHERE id = ?`)
+        .get("revision-trip").revision,
+      3,
+    );
+    db.database
+      .prepare(`DELETE FROM trip_list_items WHERE id = ?`)
+      .run("revision-item");
+    assert.equal(
+      db.database
+        .prepare(`SELECT list_revision AS revision FROM trips WHERE id = ?`)
+        .get("revision-trip").revision,
+      4,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("August receipt date migration repairs only the linked 2026 trip", () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -844,6 +977,181 @@ test("list scope returns only the live trip without rerunning household bootstra
         .count,
       1,
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("list revisions suppress unchanged polls and preserve intervening partner changes", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "revision-owner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const [firstItem, partnerItem] = initial.listItems;
+    assert.ok(firstItem);
+    assert.ok(partnerItem);
+    assert.ok(Number.isSafeInteger(initial.currentTrip.listRevision));
+
+    db.beforeNextStatementMatching(
+      /SELECT \* FROM trip_list_items\s+WHERE trip_id = \?/,
+      () => {
+        throw new Error("Unchanged list polls must not read list item rows");
+      },
+    );
+    const unchanged = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(initial.currentTrip.id)}&revision=${initial.currentTrip.listRevision}`,
+      ),
+      db,
+    );
+    assert.equal(unchanged.status, 204);
+    assert.equal(await unchanged.text(), "");
+    assert.ok(db.beforeNextStatement);
+    db.beforeNextStatement = null;
+
+    db.beforeNextStatementMatching(
+      /SELECT \* FROM trip_list_items WHERE id = \? LIMIT 1/,
+      (database) => {
+        database
+          .prepare(
+            `UPDATE trip_list_items
+             SET included = CASE included WHEN 1 THEN 0 ELSE 1 END
+             WHERE id = ?`,
+          )
+          .run(partnerItem.id);
+      },
+    );
+    const mutationResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: firstItem.id,
+        included: !firstItem.included,
+      }),
+      db,
+    );
+    assert.equal(mutationResponse.status, 200);
+    const mutation = await responseJson(mutationResponse);
+    assert.equal(mutation.item.id, firstItem.id);
+    assert.equal(mutation.item.included, !firstItem.included);
+    assert.ok(mutation.listRevision > initial.currentTrip.listRevision);
+
+    const databaseRevision = db.database
+      .prepare(`SELECT list_revision AS revision FROM trips WHERE id = ?`)
+      .get(initial.currentTrip.id).revision;
+    assert.ok(databaseRevision > mutation.listRevision);
+
+    const changedResponse = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(initial.currentTrip.id)}&revision=${mutation.listRevision}`,
+      ),
+      db,
+    );
+    assert.equal(changedResponse.status, 200);
+    const changed = await responseJson(changedResponse);
+    assert.equal(changed.currentTrip.listRevision, databaseRevision);
+    assert.equal(
+      changed.listItems.find((item) => item.id === partnerItem.id).included,
+      !partnerItem.included,
+    );
+
+    const caughtUp = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(initial.currentTrip.id)}&revision=${databaseRevision}`,
+      ),
+      db,
+    );
+    assert.equal(caughtUp.status, 204);
+  } finally {
+    db.close();
+  }
+});
+
+test("add, remove, and check mutations return authoritative revisions", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "revision-actions-owner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const checkedItem = initial.listItems.find((item) => item.included);
+    assert.ok(checkedItem);
+
+    const addResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "Revision action test item",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(addResponse.status, 201);
+    const added = await responseJson(addResponse);
+    assert.equal(added.item.included, true);
+    assert.ok(added.listRevision > initial.currentTrip.listRevision);
+
+    const removeResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: added.item.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(removeResponse.status, 200);
+    const removed = await responseJson(removeResponse);
+    assert.equal(removed.item.id, added.item.id);
+    assert.equal(removed.item.included, false);
+    assert.ok(removed.listRevision > added.listRevision);
+
+    const freezeResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "freeze_trip",
+        tripId,
+      }),
+      db,
+    );
+    assert.equal(freezeResponse.status, 200);
+    const frozen = await responseJson(freezeResponse);
+
+    const checkResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_checked",
+        itemId: checkedItem.id,
+        checked: true,
+      }),
+      db,
+    );
+    assert.equal(checkResponse.status, 200);
+    const checked = await responseJson(checkResponse);
+    assert.equal(checked.item.id, checkedItem.id);
+    assert.equal(checked.item.checked, true);
+    assert.ok(checked.listRevision > frozen.trip.listRevision);
+
+    const caughtUp = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?scope=list&tripId=${encodeURIComponent(tripId)}&revision=${checked.listRevision}`,
+      ),
+      db,
+    );
+    assert.equal(caughtUp.status, 204);
   } finally {
     db.close();
   }

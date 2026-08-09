@@ -20,9 +20,16 @@ import type {
   DashboardViewData,
 } from "./dashboard-types";
 import type {
+  HouseholdListMutationResponse,
   HouseholdListResponse,
   ProductPrimaryImageSummary,
 } from "./api/household/types";
+import {
+  isHouseholdListMutationAction,
+  isHouseholdListSnapshotCurrent,
+  mergeHouseholdListMutation,
+  parseHouseholdListMutationResponse,
+} from "./household-list-sync";
 import { generatedProductIllustration } from "./generated-product-illustrations";
 import {
   isProductCategoryKey,
@@ -82,6 +89,7 @@ type SharedTrip = {
   id: string;
   scheduledFor: string;
   status: TripStatus;
+  listRevision: number;
   estimatedListTotalAtFreezeCents: number | null;
   estimatedPricedItemCountAtFreeze: number | null;
   estimatedUnpricedItemCountAtFreeze: number | null;
@@ -105,6 +113,8 @@ type SharedListItem = {
   quantityMilli: number;
   addedByMemberId: string | null;
   sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type SharedProduct = HouseholdCatalogProductMetadata & {
@@ -618,7 +628,7 @@ export function BasketSenseDashboard({
   }, [fetchHousehold, sandboxMode]);
 
   const refreshHouseholdList = useCallback(
-    async (tripId: string) => {
+    async (tripId: string, revision: number) => {
       if (refreshPromise.current) return refreshPromise.current;
       if (listRefreshPromise.current) return listRefreshPromise.current;
 
@@ -626,12 +636,18 @@ export function BasketSenseDashboard({
       const refresh = (async () => {
         try {
           const response = await fetchHousehold(
-            `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}${sandboxMode ? "&sandbox=1" : ""}`,
+            `/api/household?scope=list&tripId=${encodeURIComponent(tripId)}&revision=${revision}${sandboxMode ? "&sandbox=1" : ""}`,
             {
               headers: { Accept: "application/json" },
               cache: "no-store",
             },
           );
+          if (response.status === 204) {
+            setSyncStatus("shared");
+            setSyncError(null);
+            setLastSyncedAt(new Date());
+            return;
+          }
           const body = (await response.json().catch(() => null)) as unknown;
           if (!response.ok) {
             throw new Error(
@@ -650,15 +666,22 @@ export function BasketSenseDashboard({
 
           const snapshot = body as HouseholdListResponse;
           if (snapshot.currentTrip.id !== tripId) return;
-          setHousehold((current) =>
-            !current || current.currentTrip.id !== tripId
-              ? current
-              : {
-                  ...current,
-                  currentTrip: snapshot.currentTrip,
-                  listItems: keepPendingCheckedStates(snapshot.listItems),
-                },
-          );
+          setHousehold((current) => {
+            if (
+              !current ||
+              !isHouseholdListSnapshotCurrent(
+                current.currentTrip,
+                snapshot.currentTrip,
+              )
+            ) {
+              return current;
+            }
+            return {
+              ...current,
+              currentTrip: snapshot.currentTrip,
+              listItems: keepPendingCheckedStates(snapshot.listItems),
+            };
+          });
           setSyncStatus("shared");
           setSyncError(null);
           setLastSyncedAt(new Date());
@@ -705,8 +728,9 @@ export function BasketSenseDashboard({
     const interval = window.setInterval(() => {
       if (document.visibilityState !== "visible" || pendingWrites.size) return;
       const tripId = household?.currentTrip.id;
-      if (activeTab === "week" && tripId) {
-        void refreshHouseholdList(tripId);
+      const revision = household?.currentTrip.listRevision;
+      if (activeTab === "week" && tripId && revision !== undefined) {
+        void refreshHouseholdList(tripId, revision);
       } else {
         void refreshHousehold(true);
       }
@@ -716,6 +740,7 @@ export function BasketSenseDashboard({
   }, [
     activeTab,
     household?.currentTrip.id,
+    household?.currentTrip.listRevision,
     pendingWrites.size,
     refreshHousehold,
     refreshHouseholdList,
@@ -891,7 +916,16 @@ export function BasketSenseDashboard({
       if (!response.ok) {
         throw new Error(apiErrorMessage(body, "That change was not saved."));
       }
-      await refreshHousehold(true, true);
+      const action = request.body.action;
+      if (isHouseholdListMutationAction(action)) {
+        const mutation = parseHouseholdListMutationResponse(body);
+        if (!mutation) {
+          throw new Error("The saved list change returned an unexpected response.");
+        }
+        applyListMutation(mutation);
+      } else {
+        await refreshHousehold(true, true);
+      }
       flash(request.successMessage);
       return true;
     } catch (error) {
@@ -911,6 +945,28 @@ export function BasketSenseDashboard({
         return next;
       });
     }
+  }
+
+  function applyListMutation(mutation: HouseholdListMutationResponse) {
+    const expectedChecked = pendingCheckedStates.current.get(mutation.item.id);
+    if (
+      expectedChecked === undefined ||
+      mutation.item.checked === expectedChecked
+    ) {
+      pendingCheckedStates.current.delete(mutation.item.id);
+    }
+    setHousehold((current) => {
+      if (!current) return current;
+      const merged = mergeHouseholdListMutation(
+        current.currentTrip,
+        current.listItems,
+        mutation,
+      );
+      return merged ? { ...current, ...merged } : current;
+    });
+    setSyncStatus("shared");
+    setSyncError(null);
+    setLastSyncedAt(new Date());
   }
 
   function retryWrite(key: string) {

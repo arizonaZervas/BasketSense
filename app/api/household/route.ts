@@ -203,6 +203,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     household_id TEXT NOT NULL,
     scheduled_for TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'planning',
+    list_revision INTEGER NOT NULL DEFAULT 0,
     target_cents INTEGER,
     discovery_allowance_cents INTEGER,
     estimated_list_total_at_freeze_cents INTEGER,
@@ -236,6 +237,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     estimated_price_cents INTEGER,
     quantity_milli INTEGER NOT NULL DEFAULT 1000,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    list_revision INTEGER NOT NULL DEFAULT 0,
     added_by_member_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -247,6 +249,55 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON trip_list_items (trip_id, sort_order)`,
   `CREATE INDEX IF NOT EXISTS trip_list_items_product_idx
     ON trip_list_items (product_id)`,
+  `CREATE TRIGGER IF NOT EXISTS trip_list_items_revision_after_insert
+    AFTER INSERT ON trip_list_items
+    BEGIN
+      UPDATE trips
+      SET list_revision = list_revision + 1
+      WHERE id = NEW.trip_id;
+      UPDATE trip_list_items
+      SET list_revision = (
+        SELECT list_revision FROM trips WHERE id = NEW.trip_id
+      )
+      WHERE id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS trip_list_items_revision_after_update
+    AFTER UPDATE OF
+      product_id, label, section, source, recommendation_reason,
+      confidence_bps, included, checked, included_at_freeze,
+      added_after_freeze, estimated_price_cents, quantity_milli,
+      sort_order, added_by_member_id
+    ON trip_list_items
+    BEGIN
+      UPDATE trips
+      SET list_revision = list_revision + 1
+      WHERE id = NEW.trip_id;
+      UPDATE trip_list_items
+      SET list_revision = (
+        SELECT list_revision FROM trips WHERE id = NEW.trip_id
+      )
+      WHERE id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS trip_list_items_revision_after_delete
+    AFTER DELETE ON trip_list_items
+    BEGIN
+      UPDATE trips
+      SET list_revision = list_revision + 1
+      WHERE id = OLD.trip_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS trips_list_revision_after_state_update
+    AFTER UPDATE OF
+      status, target_cents, discovery_allowance_cents,
+      estimated_list_total_at_freeze_cents,
+      estimated_priced_item_count_at_freeze,
+      estimated_unpriced_item_count_at_freeze,
+      frozen_at, completed_at
+    ON trips
+    BEGIN
+      UPDATE trips
+      SET list_revision = list_revision + 1
+      WHERE id = NEW.id;
+    END`,
   `CREATE TABLE IF NOT EXISTS receipt_transactions (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -580,6 +631,7 @@ interface TripRow {
   household_id: string;
   scheduled_for: string;
   status: TripStatus;
+  list_revision: number;
   target_cents: number | null;
   discovery_allowance_cents: number | null;
   estimated_list_total_at_freeze_cents: number | null;
@@ -608,6 +660,7 @@ interface ListItemRow {
   estimated_price_cents: number | null;
   quantity_milli: number;
   sort_order: number;
+  list_revision: number;
   added_by_member_id: string | null;
   created_at: string;
   updated_at: string;
@@ -1237,6 +1290,18 @@ function optionalId(value: unknown, field: string) {
   return requiredString(value, field, 128);
 }
 
+function optionalRevision(value: string | null) {
+  if (value === null || value === "") return null;
+  if (!/^\d+$/.test(value)) {
+    throw new ApiError(400, "revision must be a non-negative integer");
+  }
+  const revision = Number(value);
+  if (!Number.isSafeInteger(revision)) {
+    throw new ApiError(400, "revision must be a non-negative integer");
+  }
+  return revision;
+}
+
 function optionalInteger(
   value: unknown,
   field: string,
@@ -1425,7 +1490,12 @@ async function bootstrapHousehold(
 
   await seedSaturdayList(db, currentTrip, now);
 
-  return { household, member, currentTrip };
+  const revisionedTrip = await authorizedTrip(
+    db,
+    household.id,
+    currentTrip.id,
+  );
+  return { household, member, currentTrip: revisionedTrip };
 }
 
 async function bootstrapOwnerSandbox(
@@ -1567,6 +1637,7 @@ function tripSummary(row: TripRow): TripSummary {
     id: row.id,
     scheduledFor: row.scheduled_for,
     status: row.status,
+    listRevision: row.list_revision,
     targetCents: row.target_cents,
     discoveryAllowanceCents: row.discovery_allowance_cents,
     estimatedListTotalAtFreezeCents:
@@ -1606,6 +1677,16 @@ function listItemSummary(row: ListItemRow): TripListItemSummary {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function listMutationResponse(row: ListItemRow, status = 200) {
+  return json(
+    {
+      item: listItemSummary(row),
+      listRevision: row.list_revision,
+    },
+    status,
+  );
 }
 
 function productSummary(row: ProductRow): ProductSummary {
@@ -2622,7 +2703,7 @@ async function addListItem(
       .first<ListItemRow>();
     if (!reusedItem) throw new ApiError(500, "Unable to add the list item");
 
-    return json({ item: listItemSummary(reusedItem) });
+    return listMutationResponse(reusedItem);
   }
 
   const id = crypto.randomUUID();
@@ -2685,7 +2766,7 @@ async function addListItem(
     .first<ListItemRow>();
   if (!item) throw new ApiError(500, "Unable to add the list item");
 
-  return json({ item: listItemSummary(item) }, 201);
+  return listMutationResponse(item, 201);
 }
 
 async function addFeedback(
@@ -2922,7 +3003,7 @@ async function setListItemBoolean(
     throw new ApiError(409, "Only active list items can be checked");
   }
 
-  return json({ item: listItemSummary(updated) });
+  return listMutationResponse(updated);
 }
 
 async function ensureIntentSnapshot(
@@ -5730,6 +5811,7 @@ export async function handleHouseholdGet(
     const sandbox = sandboxRequested(url.searchParams.get("sandbox"));
     if (url.searchParams.get("scope") === "list") {
       const tripId = optionalId(url.searchParams.get("tripId"), "tripId");
+      const revision = optionalRevision(url.searchParams.get("revision"));
       const context = sandbox
         ? await requestHouseholdContext(db, user, true)
         : await readExistingHouseholdContext(db, user, tripId);
@@ -5737,7 +5819,19 @@ export async function handleHouseholdGet(
         // requestHouseholdContext only returns the current sandbox trip. Keep
         // an explicit ownership check for polling a historical sandbox trip.
         const authorized = await authorizedTrip(db, context.household.id, tripId);
+        if (revision === authorized.list_revision) {
+          return new Response(null, {
+            status: 204,
+            headers: { "Cache-Control": "no-store" },
+          });
+        }
         return json(await readHouseholdListState(db, { ...context, currentTrip: authorized }));
+      }
+      if (revision === context.currentTrip.list_revision) {
+        return new Response(null, {
+          status: 204,
+          headers: { "Cache-Control": "no-store" },
+        });
       }
       return json(await readHouseholdListState(db, context));
     }

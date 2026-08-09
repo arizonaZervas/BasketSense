@@ -168,6 +168,8 @@ export const trips = sqliteTable(
     status: text("status", { enum: ["planning", "frozen", "completed"] })
       .notNull()
       .default("planning"),
+    // Migration 0008 installs the triggers that advance this ledger.
+    listRevision: integer("list_revision").notNull().default(0),
     targetCents: integer("target_cents"),
     discoveryAllowanceCents: integer("discovery_allowance_cents"),
     estimatedListTotalAtFreezeCents: integer(
@@ -233,6 +235,8 @@ export const tripListItems = sqliteTable(
     estimatedPriceCents: integer("estimated_price_cents"),
     quantityMilli: integer("quantity_milli").notNull().default(1000),
     sortOrder: integer("sort_order").notNull().default(0),
+    // Stores the exact revision assigned by the same trigger transaction.
+    listRevision: integer("list_revision").notNull().default(0),
     addedByMemberId: text("added_by_member_id").references(
       () => householdMembers.id,
       { onDelete: "set null" }
