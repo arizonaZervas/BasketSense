@@ -145,6 +145,48 @@ function dashboardNormalizationStatus(
     : "receipt_abbreviation";
 }
 
+function receiptDiscountSummaryLineIds(
+  rows: readonly DashboardReceiptLineRow[],
+  transactions: readonly DashboardTransaction[],
+): ReadonlySet<string> {
+  const transactionById = new Map(
+    transactions.map((transaction) => [transaction.id, transaction]),
+  );
+  const candidatesByTransaction = new Map<string, DashboardReceiptLineRow[]>();
+
+  for (const row of rows) {
+    if (
+      row.transaction_type !== "warehouse" ||
+      row.costco_item_number !== "0000" ||
+      row.net_amount_cents <= 0
+    ) {
+      continue;
+    }
+    const candidates =
+      candidatesByTransaction.get(row.receipt_transaction_id) ?? [];
+    candidates.push(row);
+    candidatesByTransaction.set(row.receipt_transaction_id, candidates);
+  }
+
+  const summaryLineIds = new Set<string>();
+  for (const [transactionId, candidates] of candidatesByTransaction) {
+    const transaction = transactionById.get(transactionId);
+    const candidateTotalCents = candidates.reduce(
+      (sum, row) => sum + row.net_amount_cents,
+      0,
+    );
+    if (
+      transaction &&
+      transaction.discountCents > 0 &&
+      candidateTotalCents === Math.abs(transaction.discountCents)
+    ) {
+      for (const candidate of candidates) summaryLineIds.add(candidate.id);
+    }
+  }
+
+  return summaryLineIds;
+}
+
 /**
  * Builds the exact view model consumed by the existing dashboard from
  * reconciled household evidence. Draft/rejected receipts remain visible in
@@ -245,26 +287,38 @@ export async function buildDashboardViewStateFromD1(
     auditFlag: row.audit_flag,
   }));
 
-  const receiptLines: DashboardReceiptLine[] = receiptLineRows.map((row) => {
-    const classification = dashboardClassification(row);
-    return {
-      id: row.id,
-      transactionId: row.receipt_transaction_id,
-      itemNumber: dashboardItemNumber(row),
-      name: row.canonical_name ?? row.raw_description,
-      rawDescription: row.raw_description,
-      normalizationStatus: dashboardNormalizationStatus(row.normalization_status),
-      quantity: row.quantity_milli / 1_000,
-      unitPriceCents: row.unit_price_cents,
-      grossAmountCents: row.line_subtotal_cents,
-      discountCents: row.discount_cents,
-      netAmountCents: row.net_amount_cents,
-      taxStatus: dashboardTaxStatus(row.tax_status),
-      categoryKey: classification.key,
-      categoryLabel: categoryPresentation(classification.key).label,
-      classificationStatus: classification.status,
-    };
-  });
+  // Some imported receipts include a positive item-0000 summary equal to the
+  // receipt-level discount. It is an arithmetic duplicate, not merchandise or
+  // a product the household can categorize.
+  const discountSummaryLineIds = receiptDiscountSummaryLineIds(
+    receiptLineRows,
+    transactions,
+  );
+
+  const receiptLines: DashboardReceiptLine[] = receiptLineRows
+    .filter((row) => !discountSummaryLineIds.has(row.id))
+    .map((row) => {
+      const classification = dashboardClassification(row);
+      return {
+        id: row.id,
+        transactionId: row.receipt_transaction_id,
+        itemNumber: dashboardItemNumber(row),
+        name: row.canonical_name ?? row.raw_description,
+        rawDescription: row.raw_description,
+        normalizationStatus: dashboardNormalizationStatus(
+          row.normalization_status,
+        ),
+        quantity: row.quantity_milli / 1_000,
+        unitPriceCents: row.unit_price_cents,
+        grossAmountCents: row.line_subtotal_cents,
+        discountCents: row.discount_cents,
+        netAmountCents: row.net_amount_cents,
+        taxStatus: dashboardTaxStatus(row.tax_status),
+        categoryKey: classification.key,
+        categoryLabel: categoryPresentation(classification.key).label,
+        classificationStatus: classification.status,
+      };
+    });
 
   const through = transactions.at(0)?.purchasedOn;
   if (!through) {

@@ -247,6 +247,105 @@ test("core household reads defer dashboard calculation until Insights is request
   }
 });
 
+test("positive item-0000 discount summaries do not become products needing review", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const core = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "discount-summary-owner@example.test",
+          "GET",
+          undefined,
+          "?view=core",
+        ),
+        db,
+      ),
+    );
+    const householdId = core.household.id;
+    const now = "2035-01-01T00:00:00.000Z";
+    const groceryProduct = db.database
+      .prepare(
+        `SELECT id, costco_item_number
+         FROM products
+         WHERE household_id = ?
+           AND category = 'groceries_beverages'
+         LIMIT 1`,
+      )
+      .get(householdId);
+    assert.ok(groceryProduct?.id);
+
+    db.database
+      .prepare(
+        `INSERT INTO receipt_transactions (
+          id, household_id, trip_id, source_transaction_key,
+          transaction_type, source_type, purchased_at, item_gross_cents,
+          item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
+          household_funded_cents, external_funding_cents, audit_flag,
+          parse_status, created_at, updated_at
+        ) VALUES (
+          'discount-summary-transaction', ?, NULL, 'discount-summary-transaction',
+          'warehouse', 'manual', ?, 2900, 2, 1000, 0, 1900, 1000,
+          1000, 0, 'test_discount_summary', 'reconciled', ?, ?
+        )`,
+      )
+      .run(householdId, now, now, now);
+    db.database
+      .prepare(
+        `INSERT INTO receipt_items (
+          id, receipt_transaction_id, product_id, source_line_number,
+          costco_item_number, raw_description, quantity_milli,
+          unit_price_cents, line_subtotal_cents, discount_cents,
+          net_amount_cents, tax_status, normalization_status, is_return,
+          created_at, updated_at
+        ) VALUES
+          ('discount-summary-product', 'discount-summary-transaction', ?, 1,
+           ?, 'TEST PRODUCT', 1000, 1000, 1000, 0, 1000, 'non_taxable',
+           'normalized_from_history', 0, ?, ?),
+          ('discount-summary-line', 'discount-summary-transaction', NULL, 2,
+           '0000', 'Discounts', 1000, 1900, 1900, 0, 1900, 'unknown',
+           'receipt_abbreviation', 0, ?, ?)`,
+      )
+      .run(
+        groceryProduct.id,
+        groceryProduct.costco_item_number,
+        now,
+        now,
+        now,
+        now,
+      );
+
+    const insights = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "discount-summary-owner@example.test",
+          "GET",
+          undefined,
+          "?view=insights",
+        ),
+        db,
+      ),
+    );
+    const transactionLines = insights.dashboard.receiptLines.filter(
+      (line) => line.transactionId === "discount-summary-transaction",
+    );
+
+    assert.equal(transactionLines.length, 1);
+    assert.equal(transactionLines[0].itemNumber, groceryProduct.costco_item_number);
+    assert.equal(
+      insights.dashboard.products.some((product) => product.itemNumber === "0000"),
+      false,
+    );
+    assert.equal(
+      insights.dashboard.productCategories.find(
+        (category) => category.key === "needs_review",
+      ).householdViewCents,
+      buildDashboardViewData().needsReviewWarehouseCents,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("extra household products do not rewrite the audited seed catalog during reads", async () => {
   const db = new D1DatabaseAdapter();
   try {
