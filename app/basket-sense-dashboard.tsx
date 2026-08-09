@@ -3644,6 +3644,8 @@ function ProductImagePreviewDialog({
 
   useEffect(() => {
     const returnElement = returnFocusRef.current;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     closeButton.current?.focus();
     const handleDialogKeys = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -3671,6 +3673,7 @@ function ProductImagePreviewDialog({
     window.addEventListener("keydown", handleDialogKeys);
     return () => {
       window.removeEventListener("keydown", handleDialogKeys);
+      document.body.style.overflow = previousBodyOverflow;
       returnElement?.focus();
     };
   }, [onClose, returnFocusRef]);

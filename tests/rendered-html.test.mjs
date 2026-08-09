@@ -288,8 +288,11 @@ test("keeps product-history additions and sorting in the shared list flow", asyn
   assert.match(source, /Open full image for \$\{rowProductName\}/);
   assert.match(source, /function ProductImagePreviewDialog/);
   assert.match(source, /event\.key === "Escape"/);
+  assert.match(source, /document\.body\.style\.overflow = "hidden"/);
   assert.match(styles, /\.product-image-preview-backdrop \{[\s\S]*backdrop-filter: blur\(10px\);/);
   assert.match(styles, /\.product-image-preview \{[\s\S]*transform: scale\(0\.97\);/);
+  assert.match(styles, /@media \(max-width: 520px\) \{[\s\S]*\.product-row-image-button \{[\s\S]*width: 44px;/);
+  assert.match(styles, /\.product-image-preview \{[\s\S]*env\(safe-area-inset-bottom\)/);
 });
 
 test("makes unresolved category rows directly reviewable", async () => {

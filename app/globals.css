@@ -1870,6 +1870,7 @@ td small {
   background: rgba(16, 22, 18, 0.52);
   padding: 24px;
   backdrop-filter: blur(10px);
+  overscroll-behavior: contain;
   opacity: 1;
   transition: opacity 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
@@ -6873,7 +6874,14 @@ button.price-point:hover {
     gap: 8px;
   }
 
-  .product-row-image-button,
+  .product-row-image-button {
+    width: 44px;
+    height: 44px;
+    margin-left: 4px;
+    place-items: center;
+  }
+
+  .product-row-image-button .product-initial,
   .product-row > .product-initial {
     width: 36px;
     height: 36px;
@@ -6890,6 +6898,11 @@ button.price-point:hover {
     width: 100%;
     max-height: calc(100dvh - 12px);
     border-radius: 18px 18px 0 0;
+    padding: 12px 12px max(12px, env(safe-area-inset-bottom));
+  }
+
+  .product-image-preview > img {
+    max-height: calc(100dvh - 104px);
   }
 
   .product-row-action {
