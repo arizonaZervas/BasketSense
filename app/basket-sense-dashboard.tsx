@@ -23,7 +23,10 @@ import type {
   HouseholdInsightsResponse,
   HouseholdListMutationResponse,
   HouseholdListResponse,
+  ProductMemorySummary,
   ProductPrimaryImageSummary,
+  TripReviewHistoryEntry,
+  TripReviewHistoryResponse,
 } from "./api/household/types";
 import {
   isHouseholdListMutationAction,
@@ -54,6 +57,15 @@ import {
   type ReceiptStep,
 } from "./receipt-review-flow";
 import { topDownConfettiStyle } from "./top-down-confetti";
+import {
+  productMemoryLabel,
+  productMemorySuppressesSuggestion,
+  type ProductMemoryPreference,
+} from "./product-memory";
+import {
+  SaturdayPrepExperience,
+  type SaturdayPrepItem,
+} from "./saturday-prep";
 
 type Tab = "overview" | "products" | "week" | "review";
 type TripStatus = "planning" | "frozen" | "completed";
@@ -128,6 +140,7 @@ type SharedProduct = HouseholdCatalogProductMetadata & {
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
+  memory: ProductMemorySummary | null;
   image: ProductPrimaryImageSummary | null;
   updatedAt: string;
 };
@@ -174,6 +187,7 @@ const primaryTabs = [
 ] as const satisfies readonly { id: Tab; label: string; symbol: string }[];
 
 const THEME_STORAGE_KEY = "basketsense-color-theme";
+const AD_HOC_RECEIPT_STORAGE_KEY = "basketsense-ad-hoc-receipt-draft";
 
 function isThemePreference(value: string | null): value is ThemePreference {
   return value === "system" || value === "warm" || value === "light" || value === "dark";
@@ -403,6 +417,9 @@ export function BasketSenseDashboard({
   initialTab = "week",
   sandboxMode = false,
 }: BasketSenseDashboardProps) {
+  const adHocReceiptStorageKey = `${AD_HOC_RECEIPT_STORAGE_KEY}:${
+    sandboxMode ? "sandbox" : "household"
+  }`;
   const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [household, setHousehold] = useState<HouseholdSnapshot | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("connecting");
@@ -447,7 +464,22 @@ export function BasketSenseDashboard({
   const [receiptFlowInitialStep, setReceiptFlowInitialStep] =
     useState<ReceiptStep>("capture");
   const [receiptFlowScope, setReceiptFlowScope] =
-    useState<"current" | "latest">("current");
+    useState<"current" | "latest" | "ad_hoc" | "correction">("current");
+  const [reviewHistoryStatus, setReviewHistoryStatus] =
+    useState<DeferredViewStatus>("idle");
+  const [reviewHistoryError, setReviewHistoryError] = useState<string | null>(null);
+  const [reviewHistory, setReviewHistory] = useState<TripReviewHistoryEntry[]>([]);
+  const [selectedReviewReceiptId, setSelectedReviewReceiptId] = useState<string | null>(null);
+  const [selectedTripReview, setSelectedTripReview] =
+    useState<ClosedLoopSnapshot | null>(null);
+  const [adHocReceiptId, setAdHocReceiptId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(adHocReceiptStorageKey);
+    } catch {
+      return null;
+    }
+  });
   const [toast, setToast] = useState<string | null>(null);
   const [recentlyCheckedItemId, setRecentlyCheckedItemId] = useState<string | null>(
     null,
@@ -458,6 +490,7 @@ export function BasketSenseDashboard({
   const [themeReady, setThemeReady] = useState(false);
   const refreshPromise = useRef<Promise<void> | null>(null);
   const insightsRefreshPromise = useRef<Promise<void> | null>(null);
+  const reviewHistoryPromise = useRef<Promise<void> | null>(null);
   const insightsRevision = useRef<string | null>(null);
   const coreHistoryRevision = useRef<string | null>(null);
   const listRefreshPromise = useRef<Promise<void> | null>(null);
@@ -972,7 +1005,10 @@ export function BasketSenseDashboard({
   }, []);
 
   const openReceiptFlow = useCallback(
-    (step: ReceiptStep = "capture", scope: "current" | "latest" = "current") => {
+    (
+      step: ReceiptStep = "capture",
+      scope: "current" | "latest" | "ad_hoc" | "correction" = "current",
+    ) => {
       receiptFlowReturnFocus.current = document.activeElement as HTMLElement | null;
       setReceiptFlowInitialStep(step);
       setReceiptFlowScope(scope);
@@ -980,6 +1016,20 @@ export function BasketSenseDashboard({
     },
     [],
   );
+
+  const openAdHocReceiptFlow = useCallback(() => {
+    openReceiptFlow("capture", "ad_hoc");
+  }, [openReceiptFlow]);
+
+  const rememberAdHocReceipt = useCallback((receiptId: string | null) => {
+    setAdHocReceiptId(receiptId);
+    try {
+      if (receiptId) window.localStorage.setItem(adHocReceiptStorageKey, receiptId);
+      else window.localStorage.removeItem(adHocReceiptStorageKey);
+    } catch {
+      // Current-visit state remains available when local storage is blocked.
+    }
+  }, [adHocReceiptStorageKey]);
 
   const closeReceiptFlow = useCallback(() => {
     setIsReceiptFlowOpen(false);
@@ -1314,6 +1364,23 @@ export function BasketSenseDashboard({
     });
   }
 
+  async function setProductMemory(
+    product: SharedProduct,
+    preference: ProductMemoryPreference,
+    note: string,
+  ) {
+    return await performWrite(`product-memory-${product.id}`, {
+      method: "POST",
+      body: {
+        action: "set_product_memory",
+        productId: product.id,
+        preference,
+        note: note || null,
+      },
+      successMessage: `${product.canonicalName} memory saved for future Prep`,
+    });
+  }
+
   function freezeTrip() {
     if (!household) return;
     void performWrite("freeze-trip", {
@@ -1374,6 +1441,96 @@ export function BasketSenseDashboard({
   }
 
   const closedLoop = household?.closedLoop ?? null;
+  const loadTripReview = useCallback(async (receiptId: string, force = false) => {
+    setSelectedReviewReceiptId(receiptId);
+    setReviewHistoryStatus("loading");
+    if (!force && closedLoop?.receipt?.id === receiptId) {
+      setSelectedTripReview(closedLoop);
+      setReviewHistoryStatus("ready");
+      return;
+    }
+    setSelectedTripReview(null);
+    setReviewHistoryError(null);
+    try {
+      const response = await fetchHousehold(
+        `/api/household?view=trip-review&receiptId=${encodeURIComponent(receiptId)}${sandboxMode ? "&sandbox=1" : ""}`,
+        { headers: { Accept: "application/json" }, cache: "no-store" },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        error?: unknown;
+        closedLoop?: unknown;
+      } | null;
+      if (!response.ok || !body?.closedLoop || typeof body.closedLoop !== "object") {
+        throw new Error(apiErrorMessage(body, "This trip review could not be loaded."));
+      }
+      setSelectedTripReview(body.closedLoop as ClosedLoopSnapshot);
+      setReviewHistoryStatus("ready");
+    } catch (error) {
+      setReviewHistoryStatus("error");
+      setReviewHistoryError(
+        error instanceof Error ? error.message : "This trip review could not be loaded.",
+      );
+    }
+  }, [closedLoop, fetchHousehold, sandboxMode]);
+
+  const loadReviewHistory = useCallback(async (force = false) => {
+    if (reviewHistoryPromise.current) return reviewHistoryPromise.current;
+    if (!force && reviewHistoryStatus === "ready") return;
+    const refresh = (async () => {
+      setReviewHistoryStatus("loading");
+      setReviewHistoryError(null);
+      try {
+        const response = await fetchHousehold(
+          sandboxMode
+            ? "/api/household?view=review-history&sandbox=1"
+            : "/api/household?view=review-history",
+          { headers: { Accept: "application/json" }, cache: "no-store" },
+        );
+        const body = (await response.json().catch(() => null)) as
+          | (Partial<TripReviewHistoryResponse> & { error?: unknown })
+          | null;
+        if (!response.ok || !Array.isArray(body?.history)) {
+          throw new Error(apiErrorMessage(body, "Trip review history could not be loaded."));
+        }
+        setReviewHistory(body.history);
+        const preferredId =
+          selectedReviewReceiptId && body.history.some((entry) => entry.receiptId === selectedReviewReceiptId)
+            ? selectedReviewReceiptId
+            : body.history[0]?.receiptId ?? null;
+        if (preferredId) await loadTripReview(preferredId, force);
+        else {
+          setSelectedReviewReceiptId(null);
+          setSelectedTripReview(null);
+        }
+        setReviewHistoryStatus("ready");
+      } catch (error) {
+        setReviewHistoryStatus("error");
+        setReviewHistoryError(
+          error instanceof Error ? error.message : "Trip review history could not be loaded.",
+        );
+      }
+    })().finally(() => {
+      reviewHistoryPromise.current = null;
+    });
+    reviewHistoryPromise.current = refresh;
+    return refresh;
+  }, [fetchHousehold, loadTripReview, reviewHistoryStatus, sandboxMode, selectedReviewReceiptId]);
+
+  useEffect(() => {
+    if (activeTab === "review" && reviewHistoryStatus === "idle") {
+      void loadReviewHistory();
+    }
+  }, [activeTab, loadReviewHistory, reviewHistoryStatus]);
+
+  const selectedReviewEntry = reviewHistory.find(
+    (entry) => entry.receiptId === selectedReviewReceiptId,
+  ) ?? null;
+  const displayedTripReview = selectedTripReview ?? (
+    !selectedReviewReceiptId || closedLoop?.receipt?.id === selectedReviewReceiptId
+      ? closedLoop
+      : null
+  );
+
   const currentTripClosedLoop =
     closedLoop?.receipt?.tripId === household?.currentTrip.id ? closedLoop : null;
   const openReviewQuestions = (closedLoop?.questions ?? [])
@@ -1605,6 +1762,7 @@ export function BasketSenseDashboard({
             setSelectedTransactionId={setInsightTransactionId}
             onOpenProduct={openProduct}
             onReviewProduct={openProductReview}
+            onAddCostcoPurchase={openAdHocReceiptFlow}
           />
         ) : activeTab === "overview" ? (
           <DeferredView
@@ -1638,6 +1796,7 @@ export function BasketSenseDashboard({
             onBack={closeProductDetail}
             onConfirmProduct={confirmProductMetadata}
             onConfirmReceiptProduct={confirmReceiptProduct}
+            onSetProductMemory={setProductMemory}
             listItems={household?.listItems ?? []}
             onAddToList={addCatalogProductToList}
             failedWrites={failedWrites}
@@ -1656,12 +1815,21 @@ export function BasketSenseDashboard({
 
         {activeTab === "review" ? (
           <ReviewTab
-            closedLoop={closedLoop}
+            closedLoop={displayedTripReview}
+            history={reviewHistory}
+            selectedReceiptId={selectedReviewReceiptId}
+            historyStatus={reviewHistoryStatus}
+            historyError={reviewHistoryError}
+            canCorrect={household?.currentUser.role === "owner"}
             connected={Boolean(household) && syncStatus !== "offline"}
             sandboxMode={sandboxMode}
+            onSelectReceipt={(receiptId) => void loadTripReview(receiptId)}
             onOpenReceipt={(step) => openReceiptFlow(step, "latest")}
+            onCorrectReceipt={() => openReceiptFlow("capture", "correction")}
+            onRetryHistory={() => void loadReviewHistory(true)}
             onRefresh={async () => {
               await refreshHousehold(true, true);
+              await loadReviewHistory(true);
             }}
           />
         ) : null}
@@ -1700,17 +1868,45 @@ export function BasketSenseDashboard({
       ) : null}
 
       <ReceiptFlowDialog
+        key={
+          isReceiptFlowOpen
+            ? `${receiptFlowScope}:${receiptFlowInitialStep}:${selectedReviewReceiptId ?? "current"}`
+            : "closed"
+        }
         open={isReceiptFlowOpen}
         initialStep={receiptFlowInitialStep}
-        tripId={household?.currentTrip.id ?? null}
-        tripScheduledFor={household?.currentTrip.scheduledFor ?? null}
-        tripStatus={household?.currentTrip.status ?? null}
-        closedLoop={
-          receiptFlowScope === "latest" ? closedLoop : currentTripClosedLoop
+        tripId={
+          receiptFlowScope === "correction"
+            ? selectedReviewEntry?.tripId ?? null
+            : household?.currentTrip.id ?? null
         }
+        tripScheduledFor={
+          receiptFlowScope === "correction"
+            ? selectedReviewEntry?.scheduledFor ?? null
+            : household?.currentTrip.scheduledFor ?? null
+        }
+        tripStatus={
+          receiptFlowScope === "correction"
+            ? "completed"
+            : household?.currentTrip.status ?? null
+        }
+        closedLoop={
+          receiptFlowScope === "correction"
+            ? displayedTripReview
+            : receiptFlowScope === "latest"
+              ? closedLoop
+              : currentTripClosedLoop
+        }
+        correction={receiptFlowScope === "correction"}
+        standalone={receiptFlowScope === "ad_hoc"}
+        standaloneReceiptId={receiptFlowScope === "ad_hoc" ? adHocReceiptId : null}
+        onStandaloneReceiptIdChange={rememberAdHocReceipt}
         onClose={closeReceiptFlow}
         onRefresh={async () => {
           await refreshHousehold(true, true);
+          if (receiptFlowScope === "correction") {
+            await loadReviewHistory(true);
+          }
         }}
         onOpenReview={openTripReview}
         sandboxMode={sandboxMode}
@@ -1973,6 +2169,25 @@ function ThisWeekTab({
     : [];
   const removedAfterStartIds = new Set(removedAfterStart.map((item) => item.id));
   const ideaItems = excluded.filter((item) => !removedAfterStartIds.has(item.id));
+  const productMemoryById = new Map(
+    (household?.products ?? []).map((product) => [product.id, product.memory]),
+  );
+  const suppressedIdeaItems = ideaItems.filter((item) =>
+    productMemorySuppressesSuggestion(
+      item.productId ? productMemoryById.get(item.productId)?.preference : null,
+    ),
+  );
+  const suppressedIdeaItemIds = new Set(
+    suppressedIdeaItems.map((item) => item.id),
+  );
+  const visibleIdeaItems = ideaItems.filter(
+    (item) => !suppressedIdeaItemIds.has(item.id),
+  );
+  const prepPendingItemIds = new Set(
+    visibleIdeaItems
+      .filter((item) => pendingWrites.has(`item-${item.id}`))
+      .map((item) => item.id),
+  );
   const syncTitle =
     syncStatus === "connecting"
       ? "Connecting the household list"
@@ -2027,12 +2242,14 @@ function ThisWeekTab({
   useEffect(() => {
     if (!shoppingStarted) {
       previousRemainingItemCount.current = null;
-      setShowListComplete(false);
-      return;
+      const frame = window.requestAnimationFrame(() => setShowListComplete(false));
+      return () => window.cancelAnimationFrame(frame);
     }
     const previous = previousRemainingItemCount.current;
     if (previous !== null && previous > 0 && activeIncluded.length === 0 && checkedIncluded.length) {
-      setShowListComplete(true);
+      const frame = window.requestAnimationFrame(() => setShowListComplete(true));
+      previousRemainingItemCount.current = activeIncluded.length;
+      return () => window.cancelAnimationFrame(frame);
     }
     previousRemainingItemCount.current = activeIncluded.length;
   }, [activeIncluded.length, checkedIncluded.length, shoppingStarted]);
@@ -2249,6 +2466,21 @@ function ThisWeekTab({
         failure={failedWrites["unfreeze-trip"]}
         onRetry={() => onRetry("unfreeze-trip")}
       />
+
+      {!shoppingStarted && household && visibleIdeaItems.length ? (
+        <SaturdayPrepExperience
+          key={household.currentTrip.id}
+          tripId={household.currentTrip.id}
+          scheduledFor={household.currentTrip.scheduledFor}
+          items={visibleIdeaItems}
+          suppressedCount={suppressedIdeaItems.length}
+          pendingItemIds={prepPendingItemIds}
+          onAdd={(prepItem: SaturdayPrepItem, trigger) => {
+            const item = items.find((candidate) => candidate.id === prepItem.id);
+            if (item && !item.included) onToggleIncluded(item, trigger);
+          }}
+        />
+      ) : null}
 
       <form
         className="quick-add"
@@ -2711,7 +2943,7 @@ function ThisWeekTab({
                           <div className="list-row-copy">
                             <ListItemThumbnail
                               item={item}
-                              products={household.products}
+                              products={household?.products ?? []}
                               onOpenImage={openImagePreview}
                             />
                             <div className="list-row-copy-body">
@@ -2782,7 +3014,7 @@ function ThisWeekTab({
           <SuggestionShelf
             suggestionPlanDate={suggestionPlanDate}
             household={household}
-            items={ideaItems}
+            items={visibleIdeaItems}
             pendingWrites={pendingWrites}
             failedWrites={failedWrites}
             onRetry={onRetry}
@@ -3010,6 +3242,15 @@ function channelLabel(channel: DashboardTransaction["channel"]) {
   return "Warehouse";
 }
 
+function isReturnTransaction(transaction: DashboardTransaction) {
+  return transaction.transactionKind === "return";
+}
+
+function transactionContextLabel(transaction: DashboardTransaction) {
+  if (isReturnTransaction(transaction)) return "Return";
+  return transaction.purchaseContext === "ad_hoc" ? "Ad hoc" : null;
+}
+
 function classificationLabel(status: DashboardReceiptLine["classificationStatus"]) {
   if (status === "reviewed") return "Reviewed mapping";
   if (status === "rule_based") return "Rule-matched";
@@ -3035,6 +3276,7 @@ function OverviewTab({
   setSelectedTransactionId,
   onOpenProduct,
   onReviewProduct,
+  onAddCostcoPurchase,
 }: {
   viewData: DashboardViewData;
   changeTab: (tab: Tab) => void;
@@ -3046,6 +3288,7 @@ function OverviewTab({
   setSelectedTransactionId: (transactionId: string | null) => void;
   onOpenProduct: (productId: string) => void;
   onReviewProduct: (productId: string, receiptItemId: string) => void;
+  onAddCostcoPurchase: () => void;
 }) {
   const transactions = viewData.transactions.filter(
     (transaction) =>
@@ -3113,9 +3356,12 @@ function OverviewTab({
         <p className="section-label">Audited household history</p>
         <h1>Insights</h1>
         <p>
-          Explore 2026 spending from category to trip to receipt line. Planned
+          Explore 2026 spending from category to purchase to receipt line. Weekly
           comparisons begin only after Start shopping captures a pre-trip list.
         </p>
+        <button type="button" className="secondary-button ad-hoc-purchase-action" onClick={onAddCostcoPurchase}>
+          Add Costco receipt
+        </button>
       </section>
 
       <section className="notice-card gentle">
@@ -3479,7 +3725,12 @@ function TransactionTable({
             {transactions.map((transaction) => (
               <tr key={transaction.id}>
                 <td>{formatShortDate(transaction.purchasedOn)}</td>
-                <td>{channelLabel(transaction.channel)}</td>
+                <td>
+                  {channelLabel(transaction.channel)}
+                  {transactionContextLabel(transaction) ? (
+                    <span className="purchase-context-badge">{transactionContextLabel(transaction)}</span>
+                  ) : null}
+                </td>
                 <td>{transaction.itemCount}</td>
                 <td>
                   {transaction.discountCents
@@ -3512,7 +3763,12 @@ function TransactionTable({
           >
             <span>
               <strong>{formatShortDate(transaction.purchasedOn)}</strong>
-              <small>{channelLabel(transaction.channel)} · {transaction.itemCount} items</small>
+              <small>
+                {transaction.purchaseContext === "ad_hoc"
+                  ? isReturnTransaction(transaction) ? "Ad hoc Costco return · " : "Ad hoc Costco purchase · "
+                  : ""}
+                {channelLabel(transaction.channel)} · {transaction.itemCount} items
+              </small>
             </span>
             <span>
               <strong>{currency.format(transaction.householdFundedCents / 100)}</strong>
@@ -3745,9 +4001,9 @@ function ReceiptDetail({
     <div className="page detail-page">
       <button className="back-button" type="button" onClick={onBack}>← Back to insights</button>
       <section className="page-heading detail-heading">
-        <p className="section-label">{channelLabel(transaction.channel)} receipt</p>
+        <p className="section-label">{transaction.purchaseContext === "ad_hoc" ? isReturnTransaction(transaction) ? "Ad hoc Costco return" : "Ad hoc Costco purchase" : `${channelLabel(transaction.channel)} receipt`}</p>
         <h1>{formatFullDate(transaction.purchasedOn)}</h1>
-        <p>{sourceLabel} · {transaction.itemCount} recorded items</p>
+        <p>{sourceLabel} · {transaction.itemCount} recorded items{transaction.purchaseContext === "ad_hoc" ? " · not matched to the Saturday list" : ""}</p>
       </section>
 
       <section className="receipt-total-card card">
@@ -3876,7 +4132,10 @@ function ProductImageStudio({
       <div className="product-image-studio-heading">
         <div>
           <h3>Product photo</h3>
-          <p>Add a package photo to replace this illustration for your household.</p>
+          <p>
+            Add a package photo to replace the current reference image for your
+            household.
+          </p>
         </div>
         <div className="product-image-actions">
           <button
@@ -4014,6 +4273,7 @@ function ProductsTab({
   onBack,
   onConfirmProduct,
   onConfirmReceiptProduct,
+  onSetProductMemory,
   listItems,
   onAddToList,
   failedWrites,
@@ -4050,6 +4310,11 @@ function ProductsTab({
     canonicalName: string,
     category: ProductCategoryKey,
   ) => Promise<boolean>;
+  onSetProductMemory: (
+    product: SharedProduct,
+    preference: ProductMemoryPreference,
+    note: string,
+  ) => Promise<boolean>;
   listItems: readonly SharedListItem[];
   onAddToList: (product: SharedProduct) => Promise<boolean>;
   failedWrites: Record<string, FailedWrite>;
@@ -4067,6 +4332,12 @@ function ProductsTab({
   const [reviewSaving, setReviewSaving] = useState(false);
   const [addingProductId, setAddingProductId] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<ProductImagePreview | null>(null);
+  const [memoryDraft, setMemoryDraft] = useState<{
+    productId: string;
+    preference: ProductMemoryPreference | "";
+    note: string;
+  } | null>(null);
+  const [memorySaving, setMemorySaving] = useState(false);
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     const matching = products.filter((product) => {
@@ -4111,6 +4382,14 @@ function ProductsTab({
   const selectedListItem = catalogProduct
     ? listItems.find((item) => item.productId === catalogProduct.id)
     : undefined;
+  const memoryFailure = catalogProduct
+    ? failedWrites[`product-memory-${catalogProduct.id}`]
+    : undefined;
+  const activeMemoryDraft =
+    memoryDraft?.productId === catalogProduct?.id ? memoryDraft : null;
+  const memoryPreference =
+    activeMemoryDraft?.preference ?? catalogProduct?.memory?.preference ?? "";
+  const memoryNote = activeMemoryDraft?.note ?? catalogProduct?.memory?.note ?? "";
 
   useEffect(() => {
     if (!detailOpen) return;
@@ -4135,14 +4414,22 @@ function ProductsTab({
     setImagePreview(preview);
   }
 
-  function openProductReviewForm() {
+  const openProductReviewForm = useCallback(() => {
     setReviewName(catalogProduct?.canonicalName ?? selected?.name ?? "");
     const currentCategory = catalogProduct?.category ?? selected?.categoryKey ?? null;
     setReviewCategory(
       isReviewableProductCategory(currentCategory) ? currentCategory : "",
     );
     setReviewOpen(true);
-  }
+  }, [
+    catalogProduct?.canonicalName,
+    catalogProduct?.category,
+    selected?.categoryKey,
+    selected?.name,
+    setReviewCategory,
+    setReviewName,
+    setReviewOpen,
+  ]);
 
   function toggleProductReview() {
     if (reviewOpen) {
@@ -4159,12 +4446,16 @@ function ProductsTab({
     ) {
       return;
     }
-    openProductReviewForm();
-    onReviewRequestHandled();
+    const frame = window.requestAnimationFrame(() => {
+      openProductReviewForm();
+      onReviewRequestHandled();
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [
     catalogProduct,
     detailOpen,
     onReviewRequestHandled,
+    openProductReviewForm,
     reviewRequestedForProductId,
     selected?.id,
   ]);
@@ -4187,6 +4478,19 @@ function ProductsTab({
       setReviewOpen(false);
       onReviewCompleted();
     }
+  }
+
+  async function saveProductMemory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!catalogProduct || !memoryPreference) return;
+    setMemorySaving(true);
+    const saved = await onSetProductMemory(
+      catalogProduct,
+      memoryPreference,
+      memoryNote.trim(),
+    );
+    setMemorySaving(false);
+    if (saved) setMemoryDraft(null);
   }
 
   async function addProductFromRow(product: SharedProduct) {
@@ -4339,6 +4643,13 @@ function ProductsTab({
                       {product.categoryLabel} · {product.purchaseCount}{" "}
                       {product.purchaseCount === 1 ? "purchase" : "purchases"}
                     </small>
+                    {rowCatalogProduct?.memory ? (
+                      <span
+                        className={`product-memory-badge memory-${rowCatalogProduct.memory.preference}`}
+                      >
+                        {productMemoryLabel(rowCatalogProduct.memory.preference)}
+                      </span>
+                    ) : null}
                   </span>
                   <span className="product-meta">
                     <strong>
@@ -4419,24 +4730,31 @@ function ProductsTab({
               }`}
             >
               {catalogProduct?.image ? (
-                <button
-                  type="button"
-                  className="product-detail-image-button"
-                  onClick={(event) =>
-                    openImagePreview(event, {
-                      imageUrl: catalogProduct.image.imageUrl,
-                      alt: `${productDisplayName(selected)} package photo`,
-                      label: productDisplayName(selected),
-                    })
-                  }
-                >
-                  <div className="product-detail-artwork">
-                    <img
-                      src={catalogProduct.image.imageUrl}
-                      alt={`${productDisplayName(selected)} package`}
-                    />
-                  </div>
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="product-detail-image-button"
+                    onClick={(event) =>
+                      openImagePreview(event, {
+                        imageUrl: catalogProduct.image!.imageUrl,
+                        alt: `${productDisplayName(selected)} package photo`,
+                        label: productDisplayName(selected),
+                      })
+                    }
+                  >
+                    <div className="product-detail-artwork">
+                      <img
+                        src={catalogProduct.image.imageUrl}
+                        alt={`${productDisplayName(selected)} package`}
+                      />
+                    </div>
+                  </button>
+                  {catalogProduct.image.sourceType === "ai_generated" ? (
+                    <figcaption className="product-illustration-note">
+                      AI-generated reference · packaging may differ
+                    </figcaption>
+                  ) : null}
+                </>
               ) : selectedIllustration ? (
                 <>
                   <button
@@ -4587,6 +4905,99 @@ function ProductsTab({
             </form>
           ) : null}
           {catalogProduct ? (
+            <form className="product-memory-editor" onSubmit={saveProductMemory}>
+              <div className="product-memory-editor-heading">
+                <div>
+                  <strong>Household Product Memory</strong>
+                  <p>
+                    This explicit choice shapes future Saturday Prep suggestions.
+                    Receipt cadence alone never decides it.
+                  </p>
+                </div>
+                {catalogProduct.memory ? (
+                  <span
+                    className={`product-memory-badge memory-${catalogProduct.memory.preference}`}
+                  >
+                    {productMemoryLabel(catalogProduct.memory.preference)}
+                  </span>
+                ) : null}
+              </div>
+              <div
+                className="product-memory-choice-grid"
+                role="radiogroup"
+                aria-label="Product memory preference"
+              >
+                {(
+                  [
+                    ["buy_again", "Buy again", "May appear when its receipt cadence suggests it is due."],
+                    ["pause", "Pause for now", "Stays out of Prep until the household changes it."],
+                    ["not_for_us", "Not for us", "Stays out of future suggestions until changed."],
+                  ] as const
+                ).map(([value, label, description]) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={memoryPreference === value}
+                    className={memoryPreference === value ? "selected" : ""}
+                    key={value}
+                    disabled={memorySaving}
+                    onClick={() =>
+                      setMemoryDraft({
+                        productId: catalogProduct.id,
+                        preference: value,
+                        note: memoryNote,
+                      })
+                    }
+                  >
+                    <strong>{label}</strong>
+                    <small>{description}</small>
+                  </button>
+                ))}
+              </div>
+              <label className="product-memory-editor-note">
+                <span>Optional household note</span>
+                <input
+                  value={memoryNote}
+                  onChange={(event) =>
+                    setMemoryDraft({
+                      productId: catalogProduct.id,
+                      preference: memoryPreference,
+                      note: event.target.value,
+                    })
+                  }
+                  maxLength={500}
+                  placeholder="Smaller package next time"
+                  disabled={memorySaving}
+                />
+              </label>
+              {catalogProduct.memory?.sourcePurchasedAt ? (
+                <small className="product-memory-source">
+                  Current memory traces to a reconciled purchase from{" "}
+                  {formatShortDate(catalogProduct.memory.sourcePurchasedAt)}.
+                </small>
+              ) : null}
+              {memoryFailure ? (
+                <p className="product-review-error" role="alert">
+                  {memoryFailure.message}
+                </p>
+              ) : null}
+              <div className="product-memory-editor-actions">
+                <span>
+                  {catalogProduct.memory
+                    ? "Change this any time. The newest explicit choice is used."
+                    : "No household memory has been saved yet."}
+                </span>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={memorySaving || !memoryPreference}
+                >
+                  {memorySaving ? "Saving…" : "Save memory"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+          {catalogProduct ? (
             <ProductImageStudio
               key={catalogProduct.id}
               product={catalogProduct}
@@ -4626,7 +5037,7 @@ function ProductsTab({
           <div className="history-section">
             <div className="section-heading">
               <h3>Exact-product receipt history</h3>
-              <span>Open any trip</span>
+              <span>Open any purchase</span>
             </div>
             <div className="price-history">
               {selected.priceHistory.slice(-10).map((point) => (
@@ -4637,6 +5048,7 @@ function ProductsTab({
                   onClick={() => onOpenTransaction(point.transactionId)}
                 >
                   <span>{formatShortDate(point.purchasedOn)}</span>
+                  {point.purchaseContext === "ad_hoc" ? <EvidenceBadge label="Ad hoc" tone="receipt" /> : null}
                   <strong>{currency.format(point.netAmountCents / 100)} paid</strong>
                   {point.discountCents > 0 ? (
                     <small className="price-discount">
@@ -4682,31 +5094,116 @@ function ProductsTab({
 
 function ReviewTab({
   closedLoop,
+  history,
+  selectedReceiptId,
+  historyStatus,
+  historyError,
+  canCorrect,
   connected,
   sandboxMode,
+  onSelectReceipt,
   onOpenReceipt,
+  onCorrectReceipt,
+  onRetryHistory,
   onRefresh,
 }: {
   closedLoop: ClosedLoopSnapshot | null;
+  history: TripReviewHistoryEntry[];
+  selectedReceiptId: string | null;
+  historyStatus: DeferredViewStatus;
+  historyError: string | null;
+  canCorrect: boolean;
   connected: boolean;
   sandboxMode: boolean;
+  onSelectReceipt: (receiptId: string) => void;
   onOpenReceipt: (step?: ReceiptStep) => void;
+  onCorrectReceipt: () => void;
+  onRetryHistory: () => void;
   onRefresh: () => Promise<void>;
 }) {
+  const selected = history.find((entry) => entry.receiptId === selectedReceiptId) ?? history[0];
   return (
     <div className="page review-page">
       <section className="page-heading">
-        <p className="section-label">Latest trip</p>
-        <h1>Receipt recap</h1>
-        <p>See the saved list alongside the receipt.</p>
+        <p className="section-label">Trip history</p>
+        <h1>Receipt recaps</h1>
+        <p>Revisit any completed Costco trip and its saved-list comparison.</p>
       </section>
-      <ClosedLoopReview
-        closedLoop={closedLoop}
-        connected={connected}
-        sandboxMode={sandboxMode}
-        onOpenReceipt={onOpenReceipt}
-        onRefresh={onRefresh}
-      />
+
+      {historyStatus === "loading" && !history.length ? (
+        <section className="card review-history-loading" role="status" aria-busy="true">
+          <span className="deferred-loading-mark" aria-hidden="true" />
+          <div><strong>Loading trip history</strong><p>Finding your completed receipt reviews.</p></div>
+        </section>
+      ) : null}
+      {historyError ? (
+        <section className="card review-history-error" role="alert">
+          <div><strong>Trip history needs another try</strong><p>{historyError}</p></div>
+          <button type="button" className="secondary-button" onClick={onRetryHistory}>Retry</button>
+        </section>
+      ) : null}
+      {history.length ? (
+        <section className="card review-history-picker" aria-labelledby="review-history-title">
+          <div>
+            <p className="section-label">Saved weeks</p>
+            <h2 id="review-history-title">Choose a trip</h2>
+          </div>
+          <label>
+            <span className="sr-only">Completed Costco trip</span>
+            <select
+              value={selected?.receiptId ?? ""}
+              onChange={(event) => onSelectReceipt(event.target.value)}
+            >
+              {history.map((entry) => (
+                <option key={entry.receiptId} value={entry.receiptId}>
+                  {formatFullDate(entry.scheduledFor)} · {currency.format(entry.totalCents / 100)}
+                  {entry.correctionCount ? ` · corrected ${entry.correctionCount}×` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selected ? (
+            <div className="review-history-summary">
+              <span>{selected.itemCount} receipt {selected.itemCount === 1 ? "line" : "lines"}</span>
+              <span>{selected.openQuestionCount ? `${selected.openQuestionCount} open review ${selected.openQuestionCount === 1 ? "question" : "questions"}` : "Review complete"}</span>
+              {selected.correctionCount ? <span>Revision {selected.correctionCount + 1}</span> : <span>Original revision</span>}
+            </div>
+          ) : null}
+          {selected && canCorrect ? (
+            <div className="review-history-correction">
+              <div>
+                <strong>Need to replace this receipt?</strong>
+                <p>The current version stays official until you review and apply the replacement.</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={onCorrectReceipt}>
+                Correct this receipt
+              </button>
+            </div>
+          ) : null}
+        </section>
+      ) : historyStatus === "ready" ? (
+        <section className="card empty-state">
+          <strong>No completed receipt reviews yet</strong>
+          <p>Your first completed trip will appear here.</p>
+        </section>
+      ) : null}
+      {historyStatus === "loading" && history.length && !closedLoop ? (
+        <section className="card review-history-loading" role="status" aria-busy="true">
+          <span className="deferred-loading-mark" aria-hidden="true" />
+          <div><strong>Loading this trip</strong><p>Rebuilding its saved receipt comparison.</p></div>
+        </section>
+      ) : null}
+      {closedLoop ? (
+        <ClosedLoopReview
+          closedLoop={closedLoop}
+          connected={connected}
+          sandboxMode={sandboxMode}
+          onOpenReceipt={canCorrect ? () => onCorrectReceipt() : onOpenReceipt}
+          canEditReceipt={canCorrect}
+          receiptActionLabel="Correct receipt"
+          onRefresh={onRefresh}
+        />
+      ) : null}
     </div>
   );
 }

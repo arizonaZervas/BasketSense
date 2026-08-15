@@ -99,7 +99,12 @@ export const productImages = sqliteTable(
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
     sourceType: text("source_type", {
-      enum: ["household_upload", "open_food_facts", "manufacturer"],
+      enum: [
+        "household_upload",
+        "ai_generated",
+        "open_food_facts",
+        "manufacturer",
+      ],
     }).notNull(),
     sourcePageUrl: text("source_page_url"),
     sourceImageUrl: text("source_image_url"),
@@ -366,6 +371,9 @@ export const feedback = sqliteTable(
     receiptItemId: text("receipt_item_id").references(() => receiptItems.id, {
       onDelete: "set null",
     }),
+    productId: text("product_id").references(() => products.id, {
+      onDelete: "set null",
+    }),
     kind: text("kind", {
       enum: [
         "trip_enjoyment",
@@ -398,6 +406,7 @@ export const feedback = sqliteTable(
       table.receiptTransactionId
     ),
     index("feedback_receipt_item_idx").on(table.receiptItemId),
+    index("feedback_product_idx").on(table.productId),
   ]
 );
 
@@ -514,9 +523,9 @@ export const receiptIngestions = sqliteTable(
     householdId: text("household_id")
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
-    tripId: text("trip_id")
-      .notNull()
-      .references(() => trips.id, { onDelete: "cascade" }),
+    tripId: text("trip_id").references(() => trips.id, {
+      onDelete: "cascade",
+    }),
     requestedByMemberId: text("requested_by_member_id").references(
       () => householdMembers.id,
       { onDelete: "set null" }
@@ -548,12 +557,17 @@ export const receiptIngestions = sqliteTable(
     model: text("model"),
     promptVersion: text("prompt_version"),
     schemaVersion: text("schema_version"),
+    recoveryManifestKey: text("recovery_manifest_key"),
     extractionArtifactKey: text("extraction_artifact_key"),
     receiptTransactionId: text("receipt_transaction_id").references(
       () => receiptTransactions.id,
       { onDelete: "set null" }
     ),
     errorCode: text("error_code"),
+    providerResponseId: text("provider_response_id"),
+    providerFinishReason: text("provider_finish_reason"),
+    providerDurationMs: integer("provider_duration_ms"),
+    extractionPass: integer("extraction_pass"),
     createdAt: text("created_at").notNull().default(timestampDefault),
     updatedAt: text("updated_at").notNull().default(timestampDefault),
     completedAt: text("completed_at"),
@@ -574,6 +588,105 @@ export const receiptIngestions = sqliteTable(
     index("receipt_ingestions_trip_idx").on(table.tripId),
     index("receipt_ingestions_receipt_idx").on(table.receiptTransactionId),
   ]
+);
+
+/**
+ * Audit evidence for an explicitly confirmed historical receipt correction.
+ * The current receipt row keeps a stable ID, while this private snapshot keeps
+ * the previous authoritative values and file pointer recoverable.
+ */
+export const receiptCorrections = sqliteTable(
+  "receipt_corrections",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    receiptTransactionId: text("receipt_transaction_id")
+      .notNull()
+      .references(() => receiptTransactions.id, { onDelete: "cascade" }),
+    ingestionId: text("ingestion_id")
+      .notNull()
+      .references(() => receiptIngestions.id, { onDelete: "restrict" }),
+    revision: integer("revision").notNull(),
+    status: text("status", { enum: ["applied", "superseded"] })
+      .notNull()
+      .default("applied"),
+    previousReceiptJson: text("previous_receipt_json").notNull(),
+    previousItemsJson: text("previous_items_json").notNull(),
+    previousMatchesJson: text("previous_matches_json").notNull(),
+    previousQuestionsJson: text("previous_questions_json").notNull(),
+    previousUploadJson: text("previous_upload_json"),
+    replacementStorageKey: text("replacement_storage_key").notNull(),
+    appliedByMemberId: text("applied_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    appliedAt: text("applied_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("receipt_corrections_ingestion_unique").on(table.ingestionId),
+    uniqueIndex("receipt_corrections_receipt_revision_unique").on(
+      table.receiptTransactionId,
+      table.revision,
+    ),
+    index("receipt_corrections_receipt_idx").on(
+      table.receiptTransactionId,
+      table.appliedAt,
+    ),
+    index("receipt_corrections_household_idx").on(
+      table.householdId,
+      table.appliedAt,
+    ),
+  ],
+);
+
+/**
+ * Durable background work for private product reference images. Catalog
+ * promotion commits first; the existing scheduled receipt Worker claims these
+ * rows later so receipt finalization never waits on image generation.
+ */
+export const productImageJobs = sqliteTable(
+  "product_image_jobs",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    receiptTransactionId: text("receipt_transaction_id").references(
+      () => receiptTransactions.id,
+      { onDelete: "set null" },
+    ),
+    status: text("status", {
+      enum: ["queued", "processing", "generated", "skipped", "failed"],
+    })
+      .notNull()
+      .default("queued"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    model: text("model"),
+    errorCode: text("error_code"),
+    lockedAt: text("locked_at"),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("product_image_jobs_product_unique").on(table.productId),
+    index("product_image_jobs_status_idx").on(table.status, table.updatedAt),
+    index("product_image_jobs_household_status_idx").on(
+      table.householdId,
+      table.status,
+      table.updatedAt,
+    ),
+    index("product_image_jobs_receipt_idx").on(table.receiptTransactionId),
+  ],
 );
 
 /**
@@ -638,7 +751,7 @@ export const productAliases = sqliteTable(
       .notNull()
       .references(() => products.id, { onDelete: "cascade" }),
     confirmationSource: text("confirmation_source", {
-      enum: ["historical", "member"],
+      enum: ["historical", "member", "receipt"],
     }).notNull(),
     confirmedByMemberId: text("confirmed_by_member_id").references(
       () => householdMembers.id,
@@ -761,6 +874,18 @@ export const reviewQuestions = sqliteTable(
   ]
 );
 
+export const basketSenseSchemaMigrations = sqliteTable(
+  "basketsense_schema_migrations",
+  {
+    id: text("id").primaryKey(),
+    status: text("status", { enum: ["applying", "completed", "failed"] })
+      .notNull(),
+    startedAt: text("started_at").notNull().default(timestampDefault),
+    completedAt: text("completed_at"),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  }
+);
+
 export type Household = typeof households.$inferSelect;
 export type HouseholdMember = typeof householdMembers.$inferSelect;
 export type Product = typeof products.$inferSelect;
@@ -774,7 +899,11 @@ export type TripIntentSnapshot = typeof tripIntentSnapshots.$inferSelect;
 export type TripIntentItem = typeof tripIntentItems.$inferSelect;
 export type ReceiptUpload = typeof receiptUploads.$inferSelect;
 export type ReceiptIngestion = typeof receiptIngestions.$inferSelect;
+export type ReceiptCorrection = typeof receiptCorrections.$inferSelect;
+export type ProductImageJob = typeof productImageJobs.$inferSelect;
 export type EmailOutbox = typeof emailOutbox.$inferSelect;
 export type ProductAlias = typeof productAliases.$inferSelect;
 export type TripItemMatch = typeof tripItemMatches.$inferSelect;
 export type ReviewQuestion = typeof reviewQuestions.$inferSelect;
+export type BasketSenseSchemaMigration =
+  typeof basketSenseSchemaMigrations.$inferSelect;

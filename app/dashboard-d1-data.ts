@@ -18,7 +18,7 @@ import type {
 type DashboardTransactionRow = {
   id: string;
   purchased_at: string;
-  transaction_type: "warehouse" | "fuel" | "optical";
+  transaction_type: "warehouse" | "fuel" | "optical" | "return";
   item_count: number;
   total_cents: number;
   household_funded_cents: number;
@@ -33,7 +33,7 @@ type DashboardTransactionRow = {
 type DashboardReceiptLineRow = {
   id: string;
   receipt_transaction_id: string;
-  transaction_type: "warehouse" | "fuel" | "optical";
+  transaction_type: "warehouse" | "fuel" | "optical" | "return";
   costco_item_number: string | null;
   product_id: string | null;
   canonical_name: string | null;
@@ -93,7 +93,9 @@ export function dashboardHistoryRevisionStatement(
 function dashboardChannel(
   transactionType: DashboardTransactionRow["transaction_type"],
 ): DashboardTransaction["channel"] {
-  return transactionType === "fuel" ? "gas" : transactionType;
+  if (transactionType === "fuel") return "gas";
+  if (transactionType === "return") return "warehouse";
+  return transactionType;
 }
 
 function dashboardTaxStatus(
@@ -205,7 +207,7 @@ export async function buildDashboardViewStateFromD1(
          FROM receipt_transactions
          WHERE household_id = ?
            AND parse_status = 'reconciled'
-           AND transaction_type IN ('warehouse', 'fuel', 'optical')
+           AND transaction_type IN ('warehouse', 'fuel', 'optical', 'return')
            AND (
              source_type <> 'receipt_photo'
              OR receipt_transactions.trip_id IS NULL
@@ -236,7 +238,7 @@ export async function buildDashboardViewStateFromD1(
          LEFT JOIN products ON products.id = receipt_items.product_id
          WHERE receipt_transactions.household_id = ?
            AND receipt_transactions.parse_status = 'reconciled'
-           AND receipt_transactions.transaction_type IN ('warehouse', 'fuel', 'optical')
+           AND receipt_transactions.transaction_type IN ('warehouse', 'fuel', 'optical', 'return')
            AND (
              receipt_transactions.source_type <> 'receipt_photo'
              OR receipt_transactions.trip_id IS NULL
@@ -259,7 +261,12 @@ export async function buildDashboardViewStateFromD1(
          FROM receipt_transactions
          WHERE household_id = ?
            AND parse_status <> 'reconciled'
-           AND transaction_type IN ('warehouse', 'fuel', 'optical')`,
+           AND transaction_type IN ('warehouse', 'fuel', 'optical', 'return')
+           AND NOT (
+             source_type = 'receipt_photo'
+             AND trip_id IS NULL
+             AND audit_flag LIKE 'ad_hoc_%'
+           )`,
       )
       .bind(householdId),
     dashboardHistoryRevisionStatement(db, householdId),
@@ -285,6 +292,8 @@ export async function buildDashboardViewStateFromD1(
     externalFundingCents: row.external_funding_cents,
     sourceType: row.source_type,
     auditFlag: row.audit_flag,
+    purchaseContext: row.audit_flag.startsWith("ad_hoc_") ? "ad_hoc" : "trip",
+    transactionKind: row.transaction_type === "return" ? "return" : "purchase",
   }));
 
   // Some imported receipts include a positive item-0000 summary equal to the

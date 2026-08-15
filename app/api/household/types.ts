@@ -1,4 +1,5 @@
 import type { DashboardViewData } from "../../dashboard-types";
+import type { ProductMemoryPreference } from "../../product-memory";
 
 export type TripStatus = "planning" | "frozen" | "completed";
 
@@ -125,9 +126,15 @@ export interface ClosedLoopComparison {
     totalDeltaCents: number | null;
   };
   intentEvidence: "pre_trip" | "upload_fallback";
+  /** Immutable estimate captured before shopping began. */
   frozenEstimateCents: number;
   pricedIntentItemCount: number;
   unpricedIntentItemCount: number;
+  /** Estimate for the final included shopping list, including in-store changes. */
+  finalListEstimateCents: number;
+  listEstimateChangeCents: number;
+  finalPricedItemCount: number;
+  finalUnpricedItemCount: number;
   actualMerchandiseCents: number;
   actualTotalCents: number;
   matchedVarianceCents: number;
@@ -166,6 +173,24 @@ export interface ClosedLoopReview {
     uploadedAt: string;
     imageUrl: string;
   } | null;
+}
+
+export interface TripReviewHistoryEntry {
+  tripId: string;
+  scheduledFor: string;
+  completedAt: string | null;
+  receiptId: string;
+  purchasedAt: string;
+  totalCents: number;
+  itemCount: number;
+  parseStatus: ReceiptTransactionSummary["parseStatus"];
+  auditFlag: string;
+  openQuestionCount: number;
+  correctionCount: number;
+}
+
+export interface TripReviewHistoryResponse {
+  history: TripReviewHistoryEntry[];
 }
 
 export interface HouseholdSummary {
@@ -232,6 +257,7 @@ export interface ProductSummary {
   latestPaidUnitPriceCents: number | null;
   latestDiscountUnitCents: number | null;
   purchaseCount: number;
+  memory: ProductMemorySummary | null;
   image: ProductPrimaryImageSummary | null;
   brand: string | null;
   unitDescription: string | null;
@@ -239,9 +265,20 @@ export interface ProductSummary {
   updatedAt: string;
 }
 
+export interface ProductMemorySummary {
+  preference: ProductMemoryPreference;
+  note: string | null;
+  updatedAt: string;
+  sourcePurchasedAt: string | null;
+}
+
 export interface ProductPrimaryImageSummary {
   id: string;
-  sourceType: "household_upload" | "open_food_facts" | "manufacturer";
+  sourceType:
+    | "household_upload"
+    | "ai_generated"
+    | "open_food_facts"
+    | "manufacturer";
   sourcePageUrl: string | null;
   attributionText: string | null;
   licenseCode: string | null;
@@ -503,6 +540,17 @@ export type HouseholdPostRequest =
       items: ReceiptItemDraftInput[];
     }
   | {
+      action: "create_ad_hoc_receipt";
+      clientReceiptId: string;
+      transactionType?: "warehouse" | "return";
+      purchasedAt: string;
+      subtotalCents: number;
+      taxCents: number;
+      totalCents: number;
+      discountCents?: number | null;
+      items: ReceiptItemDraftInput[];
+    }
+  | {
       action: "answer_review_question";
       questionId: string;
       value: string;
@@ -511,6 +559,12 @@ export type HouseholdPostRequest =
       canonicalName?: string;
       category?: string;
       replacementReceiptItemId?: string | null;
+    }
+  | {
+      action: "set_product_memory";
+      productId: string;
+      preference: ProductMemoryPreference;
+      note?: string | null;
     };
 
 export type HouseholdPatchRequest =
@@ -549,6 +603,36 @@ export type HouseholdPatchRequest =
     }
   | {
       action: "finalize_receipt";
+      receiptId: string;
+    }
+  | {
+      action: "apply_receipt_correction";
+      receiptId: string;
+      ingestionId: string;
+      purchasedAt: string;
+      subtotalCents: number;
+      taxCents: number;
+      totalCents: number;
+      discountCents?: number | null;
+      items: ReceiptItemDraftInput[];
+    }
+  | {
+      action: "update_ad_hoc_receipt";
+      receiptId: string;
+      transactionType?: "warehouse" | "return";
+      purchasedAt?: string;
+      subtotalCents?: number;
+      taxCents?: number;
+      totalCents?: number;
+      discountCents?: number | null;
+      items?: ReceiptItemDraftInput[];
+    }
+  | {
+      action: "finalize_ad_hoc_receipt";
+      receiptId: string;
+    }
+  | {
+      action: "discard_ad_hoc_receipt";
       receiptId: string;
     }
   | {

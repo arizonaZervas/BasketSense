@@ -27,6 +27,8 @@ export type DashboardTransaction = {
   externalFundingCents: number;
   sourceType: "digital_receipt" | "fuel_receipt" | "receipt_photo";
   auditFlag: string;
+  purchaseContext: "trip" | "ad_hoc";
+  transactionKind?: "purchase" | "return";
 };
 
 export type DashboardReceiptLine = {
@@ -84,6 +86,7 @@ export type DashboardProduct = {
     grossAmountCents: number;
     discountCents: number;
     netAmountCents: number;
+    purchaseContext: "trip" | "ad_hoc";
   }[];
 };
 

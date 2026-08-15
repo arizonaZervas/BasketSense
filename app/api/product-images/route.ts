@@ -20,7 +20,11 @@ interface ProductImageRow {
   id: string;
   household_id: string;
   product_id: string;
-  source_type: "household_upload" | "open_food_facts" | "manufacturer";
+  source_type:
+    | "household_upload"
+    | "ai_generated"
+    | "open_food_facts"
+    | "manufacturer";
   source_page_url: string | null;
   source_image_url: string | null;
   source_external_id: string | null;
@@ -176,7 +180,7 @@ async function authorizedImage(db: D1Database, email: string, imageId: string) {
        INNER JOIN household_members
          ON household_members.household_id = product_images.household_id
        WHERE product_images.id = ?
-         AND product_images.source_type = 'household_upload'
+         AND product_images.source_type IN ('household_upload', 'ai_generated')
          AND lower(household_members.user_email) = ?
        LIMIT 1`,
     )
@@ -214,7 +218,7 @@ async function listProductImages(db: D1Database, productId: string) {
     .prepare(
       `SELECT * FROM product_images
        WHERE product_id = ?
-         AND source_type = 'household_upload'
+         AND source_type IN ('household_upload', 'ai_generated')
          AND status != 'rejected'
        ORDER BY is_primary DESC, status = 'approved' DESC,
                 confidence_bps DESC, updated_at DESC`,

@@ -37,7 +37,8 @@ a guilt-heavy budgeting exercise.
 - Provides an owner-only disposable test sandbox at `/?sandbox=1`. Sandbox
   receipts, lists, recaps, and review answers stay separate from shared
   household history. Finalized sandbox tests can be reopened for retesting;
-  shared-history receipts remain immutable.
+  shared-history receipt corrections require an explicit owner-confirmed
+  replacement and preserve the prior private revision.
 - Offers accessible light, dark, and system theme modes, including an optional
   reduced-motion completion state and a full-page completion confetti burst.
 
@@ -66,9 +67,10 @@ Important conventions:
 - Quantity is stored in thousandths, so fractional fuel quantities remain exact.
 - A `trip` is the planning event; a `receipt_transaction` is a financial event.
 - The live list is mutable; a frozen intent snapshot is immutable evidence.
-- Completed shared trips and their receipts are immutable. That protects
-  historical totals and recap facts. The owner-only sandbox is the deliberate
-  exception for repeatable testing.
+- Completed shared trip intent and final-list evidence remain immutable. An
+  owner may explicitly replace a historical receipt after reviewing the
+  proposed correction; BasketSense preserves the prior private revision and
+  recalculates totals without rewriting the frozen plan.
 - Receipt images live in private R2 object storage. Searchable metadata and
   normalized line items live in D1.
 - Draft or rejected receipts never silently alter “actual” spending metrics.

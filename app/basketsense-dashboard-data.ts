@@ -114,6 +114,8 @@ function buildTransactions(): readonly DashboardTransaction[] {
       externalFundingCents: transaction.externalFundingCents,
       sourceType: transaction.sourceType,
       auditFlag: transaction.auditFlag,
+      purchaseContext: "trip",
+      transactionKind: "purchase",
     }),
   ).sort(
     (first, second) =>
@@ -225,7 +227,7 @@ function buildProducts(
         `Dashboard product join failed: ${line.id} references missing transaction ${line.transactionId}`,
       );
     }
-    if (transaction.channel !== "warehouse") continue;
+    if (transaction.channel !== "warehouse" || transaction.transactionKind === "return") continue;
 
     const lines = warehouseLinesByItem.get(line.itemNumber) ?? [];
     lines.push(line);
@@ -299,6 +301,7 @@ function buildProducts(
           discountCents:
             (existing?.discountCents ?? 0) + line.discountCents,
           netAmountCents: (existing?.netAmountCents ?? 0) + line.netAmountCents,
+          purchaseContext: transaction.purchaseContext,
         });
       }
 
@@ -368,7 +371,8 @@ function buildProducts(
     receiptLines
       .filter(
         (line) =>
-          transactionById.get(line.transactionId)?.channel === "warehouse",
+          transactionById.get(line.transactionId)?.channel === "warehouse" &&
+          transactionById.get(line.transactionId)?.transactionKind !== "return",
       )
       .reduce((sum, line) => sum + line.netAmountCents, 0),
     "warehouse product net spend",

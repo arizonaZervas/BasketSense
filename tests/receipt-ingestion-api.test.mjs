@@ -1,0 +1,111 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import {
+  receiptIngestionRetryDisposition,
+  receiptIngestionUploadTarget,
+} from "../app/api/receipt-ingestion/route.ts";
+import {
+  isReceiptImageContentType,
+  isReceiptUploadContentType,
+  RECEIPT_UPLOAD_CONTENT_TYPES,
+} from "../app/receipt-upload-formats.ts";
+import { prepareReceiptUpload } from "../app/receipt-review-flow.tsx";
+
+test("receipt ingestion accepts one authorized context: a trip or a standalone receipt", () => {
+  const tripUpload = new FormData();
+  tripUpload.set("tripId", "trip-123");
+  assert.deepEqual(receiptIngestionUploadTarget(tripUpload), {
+    tripId: "trip-123",
+    receiptId: null,
+  });
+
+  const standaloneUpload = new FormData();
+  standaloneUpload.set("receiptId", "receipt-123");
+  assert.deepEqual(receiptIngestionUploadTarget(standaloneUpload), {
+    tripId: null,
+    receiptId: "receipt-123",
+  });
+});
+
+test("receipt ingestion rejects ambiguous or targetless uploads", () => {
+  assert.throws(
+    () => receiptIngestionUploadTarget(new FormData()),
+    /either tripId or receiptId/i,
+  );
+  const ambiguous = new FormData();
+  ambiguous.set("tripId", "trip-123");
+  ambiguous.set("receiptId", "receipt-123");
+  assert.throws(
+    () => receiptIngestionUploadTarget(ambiguous),
+    /either tripId or receiptId/i,
+  );
+});
+
+test("receipt retry reuses terminal failures and never starts a competing extraction", () => {
+  assert.equal(receiptIngestionRetryDisposition("failed"), "retry");
+  assert.equal(receiptIngestionRetryDisposition("uploaded"), "retry");
+  assert.equal(receiptIngestionRetryDisposition("extracting"), "busy");
+  assert.equal(receiptIngestionRetryDisposition("awaiting_review"), "ready");
+  assert.equal(receiptIngestionRetryDisposition("completed"), "unavailable");
+});
+
+test("standalone return receipts can be uploaded, retried, and linked", async () => {
+  const source = await readFile(
+    new URL("../app/api/receipt-ingestion/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /transaction_type IN \('warehouse', 'return'\)/);
+  assert.match(source, /body\.action !== "retry_extraction"/);
+  assert.match(source, /nativeExtractReceipt\(\{/);
+  assert.match(source, /\["warehouse", "return"\]\.includes\(receipt\.transaction_type\)/);
+});
+
+test("receipt upload contract accepts PDFs and the supported image formats", () => {
+  assert.deepEqual(RECEIPT_UPLOAD_CONTENT_TYPES, [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/heic",
+    "image/heif",
+    "image/webp",
+  ]);
+  for (const contentType of RECEIPT_UPLOAD_CONTENT_TYPES) {
+    assert.equal(isReceiptUploadContentType(contentType), true, contentType);
+  }
+  assert.equal(isReceiptImageContentType("application/pdf"), false);
+  assert.equal(isReceiptImageContentType("image/jpeg"), true);
+  assert.equal(isReceiptUploadContentType("text/plain"), false);
+  assert.equal(isReceiptUploadContentType("image/svg+xml"), false);
+});
+
+test("receipt preparation passes PDFs through and preserves safe images", async () => {
+  const pdf = new File(["%PDF synthetic"], "costco-order.pdf", {
+    type: "application/pdf",
+  });
+  assert.equal(await prepareReceiptUpload(pdf), pdf);
+
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  let closed = false;
+  globalThis.createImageBitmap = async () => ({
+    width: 1_200,
+    height: 5_000,
+    close() {
+      closed = true;
+    },
+  });
+  try {
+    const photo = new File([new Uint8Array(1_024)], "costco-receipt.jpg", {
+      type: "image/jpeg",
+    });
+    assert.equal(await prepareReceiptUpload(photo), photo);
+    assert.equal(closed, true);
+  } finally {
+    if (originalCreateImageBitmap) {
+      globalThis.createImageBitmap = originalCreateImageBitmap;
+    } else {
+      delete globalThis.createImageBitmap;
+    }
+  }
+});

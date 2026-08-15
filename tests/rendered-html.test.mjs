@@ -239,15 +239,18 @@ test("keeps the insights review form safe for receipt-only products", async () =
   assert.match(dashboardSource, /reviewRequestedReceiptItemId[\s\S]*onConfirmReceiptProduct/);
 });
 
-test("re-encodes large camera photos below the live multipart safety budget", async () => {
+test("preserves readable receipt width and prepares long-photo recovery evidence", async () => {
   const receiptFlowSource = await readFile(
     new URL("../app/receipt-review-flow.tsx", import.meta.url),
     "utf8",
   );
 
   assert.match(receiptFlowSource, /Math\.floor\(1\.5 \* 1024 \* 1024\)/);
-  assert.match(receiptFlowSource, /await encode\(1_600, 0\.7\)/);
-  assert.match(receiptFlowSource, /await encode\(1_280, 0\.66\)/);
+  assert.match(receiptFlowSource, /if \(file\.size <= LIVE_UPLOAD_SAFE_BYTES\)/);
+  assert.match(receiptFlowSource, /RECEIPT_MIN_READABLE_WIDTH = 1_200/);
+  assert.match(receiptFlowSource, /prepareReceiptRecoveryAssets/);
+  assert.match(receiptFlowSource, /contrast\(1\.38\)/);
+  assert.match(receiptFlowSource, /RECEIPT_RECOVERY_TILE_OVERLAP/);
   assert.match(receiptFlowSource, /compressed\.size > LIVE_UPLOAD_SAFE_BYTES\) return file/);
 });
 
@@ -296,7 +299,8 @@ test("receipt capture offers camera, photo-library, and Costco PDF actions", asy
   assert.match(source, /Choose photo or PDF/);
   assert.match(source, /accept="image\/\*,application\/pdf"/);
   assert.match(source, /Choose a Costco receipt photo or PDF from your library/);
-  assert.match(source, /image\/heic/);
+  assert.match(source, /isReceiptImageContentType/);
+  assert.match(source, /iPhone HEIC photos can be drafted automatically/);
   assert.match(source, /Enter Discounts as a positive total/);
   assert.match(source, /<option value="discount">Discount<\/option>/);
 });

@@ -140,6 +140,69 @@ test("a missing catalog line stays visible as needs-review evidence", () => {
   );
 });
 
+test("finalized returns reduce net spend and categories without becoming purchases", () => {
+  const source = buildDashboardViewData();
+  const productBefore = source.products.find((product) => product.itemNumber === "1868328");
+  const sourceLine = source.receiptLines.find((line) => line.itemNumber === "1868328");
+  assert.ok(productBefore);
+  assert.ok(sourceLine);
+
+  const returnTransaction = {
+    id: "ad-hoc-return-dashboard-test",
+    purchasedOn: "2026-08-15",
+    channel: "warehouse",
+    itemCount: 1,
+    receiptTotalCents: -1500,
+    householdFundedCents: -1500,
+    discountCents: 0,
+    merchandiseSubtotalCents: -1500,
+    taxCents: 0,
+    externalFundingCents: 0,
+    sourceType: "receipt_photo",
+    auditFlag: "ad_hoc_return_reconciled",
+    purchaseContext: "ad_hoc",
+    transactionKind: "return",
+  };
+  const returnLine = {
+    ...sourceLine,
+    id: "ad-hoc-return-line-dashboard-test",
+    transactionId: returnTransaction.id,
+    quantity: 1,
+    unitPriceCents: -1500,
+    grossAmountCents: -1500,
+    discountCents: 0,
+    netAmountCents: -1500,
+  };
+
+  const viewData = buildDashboardViewDataFromHistory({
+    through: "2026-08-15",
+    reconciliationIssueCount: source.audit.reconciliationIssueCount,
+    transactions: [...source.transactions, returnTransaction],
+    receiptLines: [...source.receiptLines, returnLine],
+  });
+  const productAfter = viewData.products.find((product) => product.itemNumber === "1868328");
+  const categoryBefore = source.productCategories.find(
+    (category) => category.key === sourceLine.categoryKey,
+  );
+  const categoryAfter = viewData.productCategories.find(
+    (category) => category.key === sourceLine.categoryKey,
+  );
+  assert.ok(categoryBefore);
+  assert.ok(categoryAfter);
+
+  assert.equal(
+    viewData.audit.householdFundedCents,
+    source.audit.householdFundedCents - 1500,
+  );
+  assert.equal(productAfter.purchaseCount, productBefore.purchaseCount);
+  assert.equal(productAfter.totalSpendCents, productBefore.totalSpendCents);
+  assert.equal(
+    categoryAfter.householdViewCents,
+    categoryBefore.householdViewCents - 1500,
+  );
+  assert.equal(viewData.recentTransactions[0].transactionKind, "return");
+});
+
 test("the second illustration batch covers purchase ranks 151 through 175", () => {
   const acceptedItems = new Set(
     productIllustrationManifest()

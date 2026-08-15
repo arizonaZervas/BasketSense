@@ -1,14 +1,8 @@
+import { isReceiptUploadContentType } from "../../receipt-upload-formats";
+
 export const dynamic = "force-dynamic";
 
 const MAX_RECEIPT_FILE_BYTES = 12 * 1024 * 1024;
-const ALLOWED_RECEIPT_FILE_TYPES = new Set([
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/heic",
-  "image/heif",
-  "image/webp",
-]);
 
 interface RuntimeEnv {
   DB?: D1Database;
@@ -170,7 +164,7 @@ export async function POST(request: Request) {
       throw new PhotoApiError(400, "file is required");
     }
     const contentType = receiptFile.type.toLowerCase();
-    if (!ALLOWED_RECEIPT_FILE_TYPES.has(contentType)) {
+    if (!isReceiptUploadContentType(contentType)) {
       throw new PhotoApiError(
         415,
         "Receipt file must be a PDF, JPEG, PNG, HEIC, or WebP"

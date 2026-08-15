@@ -64,6 +64,7 @@ export function emptyDashboardViewData(): DashboardViewData {
       taxCents: 0,
       externalFundingCents: 0,
       sourceType: "receipt_photo",
+      purchaseContext: "trip",
       auditFlag: "none",
     },
   };

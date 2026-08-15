@@ -3,7 +3,13 @@ import {
   AUDITED_RECEIPT_TRANSACTIONS_2026,
   RECURRING_PRODUCT_HISTORIES_2026,
 } from "../../basketsense-data";
+import { ensureBasketSenseSchemaUpgrades } from "../../database-schema-upgrades";
 import { buildSaturdayRecommendations } from "../../recommendation-engine";
+import {
+  isProductMemoryPreference,
+  productMemorySuppressesSuggestion,
+  type ProductMemoryPreference,
+} from "../../product-memory";
 import {
   classifyReceiptItem,
   type ClassificationStatus,
@@ -54,6 +60,7 @@ import type {
   TripIntentItemSummary,
   TripItemMatchSummary,
   TripListItemSummary,
+  TripReviewHistoryEntry,
   TripStatus,
   TripSummary,
 } from "./types";
@@ -79,6 +86,8 @@ const REVIEWABLE_PRODUCT_CATEGORIES = new Set<ProductCategoryKey>([
   "health_personal_care",
   "home_kitchen_seasonal",
   "toys_books_activities",
+  "automotive_tires",
+  "jewelry_precious_metals",
 ]);
 
 const LIST_ITEM_SOURCES = new Set<ListItemSource>([
@@ -367,6 +376,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     receipt_transaction_id TEXT,
     list_item_id TEXT,
     receipt_item_id TEXT,
+    product_id TEXT,
     kind TEXT NOT NULL,
     value TEXT NOT NULL,
     rating INTEGER,
@@ -378,6 +388,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE CASCADE,
     FOREIGN KEY (list_item_id) REFERENCES trip_list_items(id) ON DELETE SET NULL,
     FOREIGN KEY (receipt_item_id) REFERENCES receipt_items(id) ON DELETE SET NULL,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
     FOREIGN KEY (created_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
   )`,
   `CREATE INDEX IF NOT EXISTS feedback_household_created_idx
@@ -388,6 +399,8 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON feedback (receipt_transaction_id)`,
   `CREATE INDEX IF NOT EXISTS feedback_receipt_item_idx
     ON feedback (receipt_item_id)`,
+  `CREATE INDEX IF NOT EXISTS feedback_product_idx
+    ON feedback (product_id)`,
   `CREATE TABLE IF NOT EXISTS trip_intent_snapshots (
     id TEXT PRIMARY KEY NOT NULL,
     trip_id TEXT NOT NULL,
@@ -457,7 +470,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS receipt_ingestions (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
-    trip_id TEXT NOT NULL,
+    trip_id TEXT,
     requested_by_member_id TEXT,
     client_request_id TEXT NOT NULL,
     source_storage_key TEXT NOT NULL,
@@ -472,9 +485,14 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     model TEXT,
     prompt_version TEXT,
     schema_version TEXT,
+    recovery_manifest_key TEXT,
     extraction_artifact_key TEXT,
     receipt_transaction_id TEXT,
     error_code TEXT,
+    provider_response_id TEXT,
+    provider_finish_reason TEXT,
+    provider_duration_ms INTEGER,
+    extraction_pass INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
@@ -493,6 +511,62 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON receipt_ingestions (trip_id)`,
   `CREATE INDEX IF NOT EXISTS receipt_ingestions_receipt_idx
     ON receipt_ingestions (receipt_transaction_id)`,
+  `CREATE TABLE IF NOT EXISTS receipt_corrections (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    receipt_transaction_id TEXT NOT NULL,
+    ingestion_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'applied',
+    previous_receipt_json TEXT NOT NULL,
+    previous_items_json TEXT NOT NULL,
+    previous_matches_json TEXT NOT NULL,
+    previous_questions_json TEXT NOT NULL,
+    previous_upload_json TEXT,
+    replacement_storage_key TEXT NOT NULL,
+    applied_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE CASCADE,
+    FOREIGN KEY (ingestion_id) REFERENCES receipt_ingestions(id) ON DELETE RESTRICT,
+    FOREIGN KEY (applied_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_corrections_ingestion_unique
+    ON receipt_corrections (ingestion_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS receipt_corrections_receipt_revision_unique
+    ON receipt_corrections (receipt_transaction_id, revision)`,
+  `CREATE INDEX IF NOT EXISTS receipt_corrections_receipt_idx
+    ON receipt_corrections (receipt_transaction_id, applied_at)`,
+  `CREATE INDEX IF NOT EXISTS receipt_corrections_household_idx
+    ON receipt_corrections (household_id, applied_at)`,
+  `CREATE TABLE IF NOT EXISTS product_image_jobs (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    receipt_transaction_id TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    error_code TEXT,
+    locked_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (receipt_transaction_id) REFERENCES receipt_transactions(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_image_jobs_product_unique
+    ON product_image_jobs (product_id)`,
+  `CREATE INDEX IF NOT EXISTS product_image_jobs_status_idx
+    ON product_image_jobs (status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS product_image_jobs_household_status_idx
+    ON product_image_jobs (household_id, status, updated_at)`,
+  `CREATE INDEX IF NOT EXISTS product_image_jobs_receipt_idx
+    ON product_image_jobs (receipt_transaction_id)`,
   `CREATE TABLE IF NOT EXISTS email_outbox (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -670,6 +744,12 @@ interface ListItemRow {
   updated_at: string;
 }
 
+interface TripListEstimateRow {
+  estimated_total_cents: number;
+  priced_item_count: number;
+  unpriced_item_count: number;
+}
+
 interface AuthorizedListItemRow extends ListItemRow {
   trip_status: TripStatus;
   household_id: string;
@@ -697,8 +777,17 @@ interface ProductRow {
   latest_paid_unit_price_cents?: number | null;
   latest_discount_unit_cents?: number | null;
   receipt_purchase_count?: number | null;
+  memory_preference?: ProductMemoryPreference | null;
+  memory_note?: string | null;
+  memory_updated_at?: string | null;
+  memory_source_purchased_at?: string | null;
   image_id?: string | null;
-  image_source_type?: "household_upload" | "open_food_facts" | "manufacturer" | null;
+  image_source_type?:
+    | "household_upload"
+    | "ai_generated"
+    | "open_food_facts"
+    | "manufacturer"
+    | null;
   image_source_page_url?: string | null;
   image_attribution_text?: string | null;
   image_license_code?: string | null;
@@ -792,7 +881,7 @@ interface ProductAliasRow {
   normalized_description: string;
   costco_item_number: string | null;
   product_id: string;
-  confirmation_source: "historical" | "member";
+  confirmation_source: "historical" | "member" | "receipt";
 }
 
 interface TripItemMatchRow {
@@ -828,6 +917,7 @@ interface ReviewQuestionRow {
   list_item_id: string | null;
   intent_item_id: string | null;
   receipt_item_id: string | null;
+  product_id: string | null;
   priority: number;
   status: "open" | "answered" | "dismissed";
   answer_value: string | null;
@@ -859,6 +949,7 @@ interface FeedbackRow {
   receipt_transaction_id: string | null;
   list_item_id: string | null;
   receipt_item_id: string | null;
+  product_id: string | null;
   kind: FeedbackKind;
   value: string;
   rating: number | null;
@@ -914,8 +1005,10 @@ async function ensureSchema(db: D1Database) {
     return;
   }
 
-  const initialization = db
-    .batch(RUNTIME_SCHEMA_STATEMENTS.map((statement) => db.prepare(statement)))
+  const initialization = ensureBasketSenseSchemaUpgrades(db)
+    .then(() =>
+      db.batch(RUNTIME_SCHEMA_STATEMENTS.map((statement) => db.prepare(statement))),
+    )
     .then(() => undefined)
     .catch((error: unknown) => {
       schemaInitializations.delete(db);
@@ -927,6 +1020,7 @@ async function ensureSchema(db: D1Database) {
 }
 
 async function ensureReadableSchema(db: D1Database) {
+  await ensureBasketSenseSchemaUpgrades(db);
   try {
     await db.prepare("SELECT 1 FROM households LIMIT 1").first();
     await db.prepare("SELECT 1 FROM product_images LIMIT 1").first();
@@ -1187,10 +1281,42 @@ async function seedSaturdayList(
   trip: TripRow,
   now: string
 ) {
+  const latestMemories = await db
+    .prepare(
+      `SELECT product_id, preference FROM (
+         SELECT COALESCE(feedback.product_id, receipt_items.product_id) AS product_id,
+                feedback.value AS preference,
+                ROW_NUMBER() OVER (
+                  PARTITION BY COALESCE(feedback.product_id, receipt_items.product_id)
+                  ORDER BY feedback.created_at DESC, feedback.id DESC
+                ) AS memory_rank
+         FROM feedback
+         LEFT JOIN receipt_items ON receipt_items.id = feedback.receipt_item_id
+         WHERE feedback.household_id = ?
+           AND feedback.kind = 'product_experience'
+           AND COALESCE(feedback.product_id, receipt_items.product_id) IS NOT NULL
+       )
+       WHERE memory_rank = 1`
+    )
+    .bind(trip.household_id)
+    .all<{ product_id: string; preference: string }>();
+  const memoryByProductId = new Map(
+    latestMemories.results.map((memory) => [
+      memory.product_id,
+      isProductMemoryPreference(memory.preference)
+        ? memory.preference
+        : null,
+    ]),
+  );
   const recommendations = buildSaturdayRecommendations(
     RECURRING_PRODUCT_HISTORIES_2026,
     trip.scheduled_for,
-  );
+  ).filter((recommendation) => {
+    const productId = productIdFor(recommendation.itemNumber);
+    return !productMemorySuppressesSuggestion(
+      productId ? memoryByProductId.get(productId) : null,
+    );
+  });
   const statements: D1PreparedStatement[] = [];
 
   recommendations.forEach((recommendation, index) => {
@@ -1724,6 +1850,14 @@ function productSummary(row: ProductRow): ProductSummary {
     latestPaidUnitPriceCents: row.latest_paid_unit_price_cents ?? null,
     latestDiscountUnitCents: row.latest_discount_unit_cents ?? null,
     purchaseCount: row.receipt_purchase_count ?? 0,
+    memory: isProductMemoryPreference(row.memory_preference)
+      ? {
+          preference: row.memory_preference,
+          note: row.memory_note ?? null,
+          updatedAt: row.memory_updated_at ?? row.updated_at,
+          sourcePurchasedAt: row.memory_source_purchased_at ?? null,
+        }
+      : null,
     image: row.image_id
       ? {
           id: row.image_id,
@@ -1814,7 +1948,11 @@ async function readHouseholdCoreState(
                 latest.regular_unit_price_cents AS latest_regular_unit_price_cents,
                 latest.paid_unit_price_cents AS latest_paid_unit_price_cents,
                 latest.discount_unit_cents AS latest_discount_unit_cents,
-                latest.receipt_purchase_count AS receipt_purchase_count
+                latest.receipt_purchase_count AS receipt_purchase_count,
+                memory.preference AS memory_preference,
+                memory.note AS memory_note,
+                memory.updated_at AS memory_updated_at,
+                memory.source_purchased_at AS memory_source_purchased_at
          FROM products
          LEFT JOIN household_members AS reviewer
            ON reviewer.id = products.category_reviewed_by_member_id
@@ -1822,7 +1960,7 @@ async function readHouseholdCoreState(
            ON primary_image.product_id = products.id
           AND primary_image.status = 'approved'
           AND primary_image.is_primary = 1
-          AND primary_image.source_type = 'household_upload'
+          AND primary_image.source_type IN ('household_upload', 'ai_generated')
          LEFT JOIN (
            SELECT ranked.* FROM (
              SELECT receipt_items.product_id,
@@ -1875,10 +2013,32 @@ async function readHouseholdCoreState(
            ) AS ranked
            WHERE ranked.price_rank = 1
          ) AS latest ON latest.product_id = products.id
+         LEFT JOIN (
+           SELECT ranked.* FROM (
+             SELECT COALESCE(feedback.product_id, receipt_items.product_id) AS product_id,
+                    feedback.value AS preference,
+                    feedback.note,
+                    feedback.created_at AS updated_at,
+                    receipt_transactions.purchased_at AS source_purchased_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY COALESCE(feedback.product_id, receipt_items.product_id)
+                      ORDER BY feedback.created_at DESC, feedback.id DESC
+                    ) AS memory_rank
+             FROM feedback
+             LEFT JOIN receipt_items
+               ON receipt_items.id = feedback.receipt_item_id
+             INNER JOIN receipt_transactions
+               ON receipt_transactions.id = feedback.receipt_transaction_id
+             WHERE feedback.household_id = ?
+               AND feedback.kind = 'product_experience'
+               AND COALESCE(feedback.product_id, receipt_items.product_id) IS NOT NULL
+           ) AS ranked
+           WHERE ranked.memory_rank = 1
+         ) AS memory ON memory.product_id = products.id
          WHERE products.household_id = ? AND products.active = 1
          ORDER BY products.canonical_name COLLATE NOCASE ASC`
       )
-      .bind(context.household.id),
+      .bind(context.household.id, context.household.id),
     dashboardHistoryRevisionStatement(db, context.household.id),
   ]);
 
@@ -1955,7 +2115,7 @@ async function readHouseholdState(
 
 function requireHouseholdOwner(context: HouseholdContext) {
   if (context.member.role !== "owner") {
-    throw new ApiError(403, "Only the household owner can access Data Health");
+    throw new ApiError(403, "Only the household owner can make this change");
   }
 }
 
@@ -2929,6 +3089,97 @@ async function addFeedback(
   return json({ feedback: feedbackSummary(row) }, 201);
 }
 
+async function setProductMemory(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const productId = requiredString(body.productId, "productId", 128);
+  if (!isProductMemoryPreference(body.preference)) {
+    throw new ApiError(400, "preference is invalid");
+  }
+  const preference = body.preference;
+  const note =
+    body.note === undefined || body.note === null || body.note === ""
+      ? null
+      : requiredString(body.note, "note", 500);
+  const product = await db
+    .prepare(
+      `SELECT id FROM products
+       WHERE id = ? AND household_id = ? AND active = 1
+       LIMIT 1`
+    )
+    .bind(productId, context.household.id)
+    .first<{ id: string }>();
+  if (!product) throw new ApiError(404, "Product not found");
+
+  const source = await db
+    .prepare(
+      `SELECT receipt_items.id AS receipt_item_id,
+              receipt_transactions.id AS receipt_transaction_id,
+              receipt_transactions.trip_id,
+              receipt_transactions.purchased_at
+       FROM receipt_items
+       INNER JOIN receipt_transactions
+         ON receipt_transactions.id = receipt_items.receipt_transaction_id
+       WHERE receipt_items.product_id = ?
+         AND receipt_transactions.household_id = ?
+         AND receipt_items.is_return = 0
+         AND receipt_items.net_amount_cents > 0
+         AND receipt_transactions.parse_status = 'reconciled'
+       ORDER BY receipt_transactions.purchased_at DESC,
+                receipt_items.source_line_number DESC,
+                receipt_items.id DESC
+       LIMIT 1`
+    )
+    .bind(productId, context.household.id)
+    .first<{
+      receipt_item_id: string;
+      receipt_transaction_id: string;
+      trip_id: string | null;
+      purchased_at: string;
+    }>();
+  if (!source) {
+    throw new ApiError(
+      409,
+      "BasketSense needs a reconciled receipt purchase before it can remember this product"
+    );
+  }
+
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO feedback (
+        id, household_id, trip_id, receipt_transaction_id,
+        list_item_id, receipt_item_id, product_id, kind, value, rating, note,
+        created_by_member_id, created_at
+      ) VALUES (?, ?, ?, ?, NULL, ?, ?, 'product_experience', ?, NULL, ?, ?, ?)`
+    )
+    .bind(
+      crypto.randomUUID(),
+      context.household.id,
+      source.trip_id,
+      source.receipt_transaction_id,
+      source.receipt_item_id,
+      productId,
+      preference,
+      note,
+      context.member.id,
+      now
+    )
+    .run();
+
+  return json({
+    productId,
+    memory: {
+      preference,
+      note,
+      updatedAt: now,
+      sourcePurchasedAt: source.purchased_at,
+    },
+  });
+}
+
 async function setListItemBoolean(
   db: D1Database,
   context: HouseholdContext,
@@ -3778,7 +4029,7 @@ function validateDraftItems(
 }
 
 function isTotalsOnlyReceipt(receipt: Pick<ReceiptTransactionRow, "audit_flag">) {
-  return receipt.audit_flag.startsWith("closed_loop_totals_only");
+  return receipt.audit_flag.includes("_totals_only");
 }
 
 function aliasKeyFor(
@@ -3851,6 +4102,265 @@ async function resolveDraftProducts(
     }
     return { item, product: null, confidenceBps: 0 };
   });
+}
+
+async function promoteAdHocReceiptProducts(
+  db: D1Database,
+  context: HouseholdContext,
+  receiptId: string,
+  items: ReceiptItemRow[],
+) {
+  const [productsResult, aliasesResult] = await Promise.all([
+    db
+      .prepare(`SELECT * FROM products WHERE household_id = ? AND active = 1`)
+      .bind(context.household.id)
+      .all<ProductRow>(),
+    db
+      .prepare(`SELECT * FROM product_aliases WHERE household_id = ?`)
+      .bind(context.household.id)
+      .all<ProductAliasRow>(),
+  ]);
+  const productsById = new Map(
+    productsResult.results.map((product) => [product.id, product]),
+  );
+  const productsByNumber = new Map(
+    productsResult.results
+      .filter((product) => product.costco_item_number)
+      .map((product) => [product.costco_item_number as string, product]),
+  );
+  const productsByName = new Map(
+    productsResult.results.map((product) => [
+      normalizeReceiptDescription(product.canonical_name),
+      product,
+    ]),
+  );
+  const aliasesByKey = new Map(
+    aliasesResult.results.map((alias) => [alias.alias_key, alias]),
+  );
+  const linkedProductIds = new Set<string>();
+
+  for (const item of items) {
+    if (receiptItemKind(item) === "discount") continue;
+    const normalized = normalizeReceiptDescription(item.raw_description);
+    if (!normalized) continue;
+
+    let product = item.product_id ? productsById.get(item.product_id) : undefined;
+    let confidenceBps = product ? 10_000 : 0;
+    if (!product && item.costco_item_number) {
+      product = productsByNumber.get(item.costco_item_number);
+      if (product) confidenceBps = 10_000;
+    }
+    if (!product) {
+      const alias = aliasesByKey.get(
+        aliasKeyFor(item.costco_item_number, normalized),
+      );
+      product = alias ? productsById.get(alias.product_id) : undefined;
+      if (product) confidenceBps = 9_900;
+    }
+    if (!product) {
+      product = productsByName.get(normalized);
+      if (product) confidenceBps = 9_400;
+    }
+
+    if (!product) {
+      const canonicalName = item.raw_description.trim();
+      const classification = classifyReceiptItem({
+        channel: "warehouse",
+        itemNumber: item.costco_item_number ?? "",
+        rawDescription: item.raw_description,
+        canonicalName,
+        taxStatus: item.tax_status,
+      });
+      const productId = crypto.randomUUID();
+      const now = nowIso();
+      if (item.costco_item_number) {
+        await db
+          .prepare(
+            `INSERT INTO products (
+              id, household_id, costco_item_number, canonical_name,
+              category, category_status, catalog_revision,
+              active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ad-hoc-receipt-v1', 1, ?, ?)
+            ON CONFLICT(household_id, costco_item_number) DO NOTHING`,
+          )
+          .bind(
+            productId,
+            context.household.id,
+            item.costco_item_number,
+            canonicalName,
+            classification.key,
+            classification.status,
+            now,
+            now,
+          )
+          .run();
+        product = await db
+          .prepare(
+            `SELECT * FROM products
+             WHERE household_id = ? AND costco_item_number = ? AND active = 1
+             LIMIT 1`,
+          )
+          .bind(context.household.id, item.costco_item_number)
+          .first<ProductRow>() ?? undefined;
+      } else {
+        await db
+          .prepare(
+            `INSERT INTO products (
+              id, household_id, costco_item_number, canonical_name,
+              category, category_status, catalog_revision,
+              active, created_at, updated_at
+            )
+            SELECT ?, ?, NULL, ?, ?, ?, 'ad-hoc-receipt-v1', 1, ?, ?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM products
+              WHERE household_id = ? AND active = 1
+                AND lower(trim(canonical_name)) = lower(trim(?))
+            )`,
+          )
+          .bind(
+            productId,
+            context.household.id,
+            canonicalName,
+            classification.key,
+            classification.status,
+            now,
+            now,
+            context.household.id,
+            canonicalName,
+          )
+          .run();
+        product = await db
+          .prepare(
+            `SELECT * FROM products
+             WHERE household_id = ? AND active = 1
+               AND lower(trim(canonical_name)) = lower(trim(?))
+             ORDER BY created_at ASC, id ASC
+             LIMIT 1`,
+          )
+          .bind(context.household.id, canonicalName)
+          .first<ProductRow>() ?? undefined;
+      }
+      if (!product) {
+        throw new ApiError(500, "The receipt product could not be added to the catalog");
+      }
+      confidenceBps = 10_000;
+      productsById.set(product.id, product);
+      if (product.costco_item_number) {
+        productsByNumber.set(product.costco_item_number, product);
+      }
+      productsByName.set(normalized, product);
+    }
+
+    const now = nowIso();
+    const aliasKey = aliasKeyFor(item.costco_item_number, normalized);
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO product_aliases (
+            id, household_id, alias_key, raw_description,
+            normalized_description, costco_item_number, product_id,
+            confirmation_source, confirmed_by_member_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'receipt', NULL, ?, ?)
+          ON CONFLICT(household_id, alias_key) DO UPDATE SET
+            raw_description = excluded.raw_description,
+            normalized_description = excluded.normalized_description,
+            updated_at = excluded.updated_at`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          context.household.id,
+          aliasKey,
+          item.raw_description,
+          normalized,
+          item.costco_item_number,
+          product.id,
+          now,
+          now,
+        ),
+      db
+        .prepare(
+          `UPDATE receipt_items
+           SET product_id = ?, normalization_status = 'normalized_from_history',
+               match_confidence_bps = ?, updated_at = ?
+           WHERE id = ? AND receipt_transaction_id = ?`,
+        )
+        .bind(product.id, confidenceBps, now, item.id, receiptId),
+    ]);
+    aliasesByKey.set(aliasKey, {
+      id: "",
+      household_id: context.household.id,
+      alias_key: aliasKey,
+      raw_description: item.raw_description,
+      normalized_description: normalized,
+      costco_item_number: item.costco_item_number,
+      product_id: product.id,
+      confirmation_source: "receipt",
+    });
+    linkedProductIds.add(product.id);
+  }
+
+  for (const productId of linkedProductIds) {
+    const image = await db
+      .prepare(
+        `SELECT id FROM product_images
+         WHERE product_id = ? AND household_id = ?
+           AND status = 'approved' AND is_primary = 1
+         LIMIT 1`,
+      )
+      .bind(productId, context.household.id)
+      .first<{ id: string }>();
+    if (image) continue;
+    const now = nowIso();
+    await db
+      .prepare(
+        `INSERT INTO product_image_jobs (
+          id, household_id, product_id, receipt_transaction_id,
+          status, attempt_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)
+        ON CONFLICT(product_id) DO UPDATE SET
+          receipt_transaction_id = excluded.receipt_transaction_id,
+          status = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN 'queued'
+            ELSE product_image_jobs.status
+          END,
+          attempt_count = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN 0
+            ELSE product_image_jobs.attempt_count
+          END,
+          model = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN NULL
+            ELSE product_image_jobs.model
+          END,
+          error_code = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN NULL
+            ELSE product_image_jobs.error_code
+          END,
+          locked_at = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN NULL
+            ELSE product_image_jobs.locked_at
+          END,
+          completed_at = CASE
+            WHEN product_image_jobs.status IN ('generated', 'skipped', 'failed')
+              THEN NULL
+            ELSE product_image_jobs.completed_at
+          END,
+          updated_at = excluded.updated_at`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        context.household.id,
+        productId,
+        receiptId,
+        now,
+        now,
+      )
+      .run();
+  }
 }
 
 async function authorizedReceipt(
@@ -4007,9 +4517,42 @@ function receiptPaidCents(item: ReceiptItemRow): number {
   return item.net_amount_cents;
 }
 
+export async function readFinalTripListEstimate(
+  db: D1Database,
+  tripId: string,
+): Promise<TripListEstimateRow> {
+  const estimate = await db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(
+           CASE
+             WHEN included = 1 AND estimated_price_cents IS NOT NULL
+             THEN CAST((estimated_price_cents * quantity_milli + 500) / 1000 AS INTEGER)
+             ELSE 0
+           END
+         ), 0) AS estimated_total_cents,
+         COALESCE(SUM(
+           CASE WHEN included = 1 AND estimated_price_cents IS NOT NULL THEN 1 ELSE 0 END
+         ), 0) AS priced_item_count,
+         COALESCE(SUM(
+           CASE WHEN included = 1 AND estimated_price_cents IS NULL THEN 1 ELSE 0 END
+         ), 0) AS unpriced_item_count
+       FROM trip_list_items
+       WHERE trip_id = ?`,
+    )
+    .bind(tripId)
+    .first<TripListEstimateRow>();
+  return estimate ?? {
+    estimated_total_cents: 0,
+    priced_item_count: 0,
+    unpriced_item_count: 0,
+  };
+}
+
 function buildClosedLoopComparison(
   receipt: ReceiptTransactionRow,
   snapshot: IntentSnapshotRow,
+  finalListEstimate: TripListEstimateRow,
   intentItems: IntentItemRow[],
   receiptItems: ReceiptItemRow[],
   matches: TripItemMatchRow[],
@@ -4095,6 +4638,11 @@ function buildClosedLoopComparison(
     frozenEstimateCents: snapshot.estimated_total_cents,
     pricedIntentItemCount: snapshot.priced_item_count,
     unpricedIntentItemCount: snapshot.unpriced_item_count,
+    finalListEstimateCents: finalListEstimate.estimated_total_cents,
+    listEstimateChangeCents:
+      finalListEstimate.estimated_total_cents - snapshot.estimated_total_cents,
+    finalPricedItemCount: finalListEstimate.priced_item_count,
+    finalUnpricedItemCount: finalListEstimate.unpriced_item_count,
     actualMerchandiseCents: receipt.subtotal_cents,
     actualTotalCents: receipt.total_cents,
     matchedVarianceCents,
@@ -4443,50 +4991,83 @@ async function rebuildReviewQuestions(
     });
   }
 
-  const largestAddition = receiptItems
+  const latestMemoryRows = await db
+    .prepare(
+      `SELECT product_id, preference FROM (
+         SELECT COALESCE(feedback.product_id, receipt_items.product_id) AS product_id,
+                feedback.value AS preference,
+                ROW_NUMBER() OVER (
+                  PARTITION BY COALESCE(feedback.product_id, receipt_items.product_id)
+                  ORDER BY feedback.created_at DESC, feedback.id DESC
+                ) AS memory_rank
+         FROM feedback
+         LEFT JOIN receipt_items ON receipt_items.id = feedback.receipt_item_id
+         WHERE feedback.household_id = ?
+           AND feedback.kind = 'product_experience'
+           AND COALESCE(feedback.product_id, receipt_items.product_id) IS NOT NULL
+       )
+       WHERE memory_rank = 1`
+    )
+    .bind(householdId)
+    .all<{ product_id: string; preference: string }>();
+  const rememberedProductIds = new Set(
+    latestMemoryRows.results
+      .filter((row) => isProductMemoryPreference(row.preference))
+      .map((row) => row.product_id),
+  );
+  const memoryCandidateByProductId = new Map<string, ReceiptItemRow>();
+  receiptItems
     .filter(
       (item) =>
-        !matchedReceiptIds.has(item.id) &&
         Boolean(item.product_id) &&
+        !rememberedProductIds.has(item.product_id!) &&
         !item.is_return &&
         receiptItemKind(item) !== "discount" &&
-        Math.abs(item.net_amount_cents) >= materialThreshold
+        item.net_amount_cents > 0,
     )
-    .sort(
-      (left, right) =>
-        Math.abs(right.net_amount_cents) - Math.abs(left.net_amount_cents)
-    )[0];
-  if (largestAddition) {
-    const name = largestAddition.canonical_name ?? largestAddition.raw_description;
+    .sort((left, right) => {
+      const leftIsAddition = matchedReceiptIds.has(left.id) ? 1 : 0;
+      const rightIsAddition = matchedReceiptIds.has(right.id) ? 1 : 0;
+      return (
+        leftIsAddition - rightIsAddition ||
+        Math.abs(right.net_amount_cents) - Math.abs(left.net_amount_cents) ||
+        left.source_line_number - right.source_line_number
+      );
+    })
+    .forEach((item) => {
+      if (!memoryCandidateByProductId.has(item.product_id!)) {
+        memoryCandidateByProductId.set(item.product_id!, item);
+      }
+    });
+  [...memoryCandidateByProductId.values()].slice(0, 3).forEach((item, index) => {
+    const name = item.canonical_name ?? item.raw_description;
     candidates.push({
-      key: `receipt-only:${largestAddition.id}`,
-      purpose: "outcome",
-      prompt: `${name} (${moneyLabel(
-        largestAddition.net_amount_cents
-      )}) was not on the saved list. How should we remember it?`,
+      key: `product-memory:${item.product_id}`,
+      purpose: "product_experience",
+      prompt: `What should BasketSense remember about ${name}?`,
       options: [
         {
-          value: "worthwhile_discovery",
-          label: "Worthwhile discovery",
-          effect: "Adds a positive discovery signal to this product.",
+          value: "buy_again",
+          label: "Buy again",
+          effect: "Allows this product to appear when its receipt cadence suggests it may be due.",
         },
         {
-          value: "seasonal_or_exceptional",
-          label: "Seasonal or one-time",
-          effect: "Records a seasonal or one-time signal for future list decisions.",
+          value: "pause",
+          label: "Pause for now",
+          effect: "Keeps this product out of Saturday Prep until the household changes it.",
         },
         {
-          value: "regular_next_time",
-          label: "Add next time",
-          effect: "Adds it to the next planning trip.",
+          value: "not_for_us",
+          label: "Not for us",
+          effect: "Keeps this product out of future suggestions until the household changes it.",
         },
       ],
-      declaredEffect: "Updates the product insight or next Saturday list",
-      effectTarget: "product_insight",
-      receiptItemId: largestAddition.id,
-      priority: 40,
+      declaredEffect: "Updates this product's explicit household memory for future Saturday Prep suggestions",
+      effectTarget: "product_memory",
+      receiptItemId: item.id,
+      priority: 40 + index,
     });
-  }
+  });
 
   const now = nowIso();
   const statements = candidates
@@ -4525,6 +5106,69 @@ async function rebuildReviewQuestions(
   await runPreparedInChunks(db, statements);
 }
 
+async function readTripReviewHistory(
+  db: D1Database,
+  householdId: string,
+): Promise<TripReviewHistoryEntry[]> {
+  const result = await db
+    .prepare(
+      `SELECT trips.id AS trip_id,
+              trips.scheduled_for,
+              trips.completed_at,
+              receipt_transactions.id AS receipt_id,
+              receipt_transactions.purchased_at,
+              receipt_transactions.total_cents,
+              receipt_transactions.item_count,
+              receipt_transactions.parse_status,
+              receipt_transactions.audit_flag,
+              (SELECT COUNT(*) FROM review_questions
+               WHERE review_questions.receipt_transaction_id = receipt_transactions.id
+                 AND review_questions.status = 'open') AS open_question_count,
+              (SELECT COUNT(*) FROM receipt_corrections
+               WHERE receipt_corrections.receipt_transaction_id = receipt_transactions.id) AS correction_count
+       FROM trips
+       INNER JOIN receipt_transactions
+         ON receipt_transactions.trip_id = trips.id
+        AND receipt_transactions.household_id = trips.household_id
+       INNER JOIN trip_intent_snapshots
+         ON trip_intent_snapshots.trip_id = trips.id
+       WHERE trips.household_id = ?
+         AND trips.status = 'completed'
+         AND receipt_transactions.source_type = 'receipt_photo'
+         AND receipt_transactions.parse_status != 'rejected'
+       ORDER BY trips.completed_at DESC,
+                receipt_transactions.purchased_at DESC,
+                receipt_transactions.id DESC`,
+    )
+    .bind(householdId)
+    .all<{
+      trip_id: string;
+      scheduled_for: string;
+      completed_at: string | null;
+      receipt_id: string;
+      purchased_at: string;
+      total_cents: number;
+      item_count: number;
+      parse_status: TripReviewHistoryEntry["parseStatus"];
+      audit_flag: string;
+      open_question_count: number;
+      correction_count: number;
+    }>();
+  return result.results.map((row) => ({
+    tripId: row.trip_id,
+    scheduledFor: row.scheduled_for,
+    completedAt: row.completed_at,
+    receiptId: row.receipt_id,
+    purchasedAt: row.purchased_at,
+    totalCents: row.total_cents,
+    itemCount: row.item_count,
+    parseStatus: row.parse_status,
+    auditFlag: row.audit_flag,
+    openQuestionCount: row.open_question_count,
+    correctionCount: row.correction_count,
+  }));
+}
+
 async function readClosedLoopReview(
   db: D1Database,
   householdId: string,
@@ -4555,7 +5199,7 @@ async function readClosedLoopReview(
     .first<IntentSnapshotRow>();
   if (!snapshot) return null;
 
-  const [inputs, matchesResult, questionsResult, upload] = await Promise.all([
+  const [inputs, matchesResult, questionsResult, upload, finalListEstimate] = await Promise.all([
     matchingInputs(db, householdId, receipt.trip_id, receipt.id),
     db
       .prepare(
@@ -4581,6 +5225,7 @@ async function readClosedLoopReview(
       )
       .bind(receipt.id)
       .first<ReceiptUploadRow>(),
+    readFinalTripListEstimate(db, receipt.trip_id),
   ]);
   const matching = matchReceiptItemsToIntent({
     intentItems: inputs.intentRows.map(toLogicIntent),
@@ -4615,6 +5260,7 @@ async function readClosedLoopReview(
   const comparison = buildClosedLoopComparison(
     receipt,
     snapshot,
+    finalListEstimate,
     inputs.intentRows,
     inputs.receiptRows,
     matchesResult.results,
@@ -4738,6 +5384,7 @@ async function rebuildReceiptState(
   const comparison = buildClosedLoopComparison(
     receipt,
     snapshot,
+    await readFinalTripListEstimate(db, receipt.trip_id as string),
     rebuilt.intentRows,
     rebuilt.receiptRows,
     rebuilt.matches,
@@ -4763,6 +5410,23 @@ async function insertReceiptItems(
   receiptId: string,
   items: ValidatedDraftItem[],
   replaceExisting = false
+) {
+  const statements = await buildReceiptItemStatements(
+    db,
+    householdId,
+    receiptId,
+    items,
+    replaceExisting,
+  );
+  await runPreparedInChunks(db, statements);
+}
+
+async function buildReceiptItemStatements(
+  db: D1Database,
+  householdId: string,
+  receiptId: string,
+  items: ValidatedDraftItem[],
+  replaceExisting = false,
 ) {
   const resolved = await resolveDraftProducts(db, householdId, items);
   const now = nowIso();
@@ -4810,10 +5474,10 @@ async function insertReceiptItems(
           resolution.confidenceBps,
           now,
           now
-        )
+      )
     );
   }
-  await runPreparedInChunks(db, statements);
+  return statements;
 }
 
 function receiptMutationResponse(closedLoop: ClosedLoopReview) {
@@ -4824,6 +5488,404 @@ function receiptMutationResponse(closedLoop: ClosedLoopReview) {
     questions: closedLoop.questions,
     closedLoop,
   });
+}
+
+function adHocReceiptResponse(
+  receipt: ReceiptTransactionRow,
+  items: ReceiptItemRow[]
+) {
+  return json({
+    receiptId: receipt.id,
+    receipt: receiptSummary(receipt),
+    items: items.map(receiptItemSummary),
+    mode: "ad_hoc",
+  });
+}
+
+async function readAdHocReceipt(
+  db: D1Database,
+  householdId: string,
+  receiptId: string
+) {
+  const receipt = await authorizedReceipt(db, householdId, receiptId);
+  if (receipt.trip_id !== null || receipt.source_type !== "receipt_photo") {
+    throw new ApiError(404, "Standalone receipt not found");
+  }
+  const items = await db
+    .prepare(
+      `SELECT receipt_items.*, products.canonical_name, products.category
+       FROM receipt_items
+       LEFT JOIN products ON products.id = receipt_items.product_id
+       WHERE receipt_items.receipt_transaction_id = ?
+       ORDER BY receipt_items.source_line_number ASC`
+    )
+    .bind(receipt.id)
+    .all<ReceiptItemRow>();
+  return { receipt, items: items.results };
+}
+
+type AdHocTransactionType = "warehouse" | "return";
+
+function adHocTransactionType(
+  value: unknown,
+  fallback: AdHocTransactionType = "warehouse"
+): AdHocTransactionType {
+  if (value === undefined) return fallback;
+  if (value === "warehouse" || value === "return") return value;
+  throw new ApiError(400, "transactionType must be warehouse or return");
+}
+
+function assertAdHocReceiptShape(
+  transactionType: AdHocTransactionType,
+  items: readonly { isReturn: boolean; kind: "item" | "discount" }[],
+  subtotalCents: number,
+  taxCents: number,
+  totalCents: number,
+  discountCents: number
+) {
+  if (transactionType === "return") {
+    if (subtotalCents > 0 || taxCents > 0 || totalCents > 0) {
+      throw new ApiError(400, "Return amounts must be zero or negative");
+    }
+    if (discountCents !== 0 || items.some((item) => item.kind === "discount")) {
+      throw new ApiError(400, "Return receipts cannot contain purchase discounts");
+    }
+    if (items.some((item) => !item.isReturn)) {
+      throw new ApiError(400, "Every product on a return receipt must be a negative return line");
+    }
+    return;
+  }
+
+  if (subtotalCents < 0 || taxCents < 0 || totalCents < 0) {
+    throw new ApiError(400, "Purchase amounts cannot be negative; choose Return instead");
+  }
+  if (items.some((item) => item.isReturn)) {
+    throw new ApiError(400, "A purchase receipt cannot contain return lines; choose Return instead");
+  }
+}
+
+async function rebuildAdHocReceiptState(
+  db: D1Database,
+  context: HouseholdContext,
+  receiptId: string,
+  finalize = false
+) {
+  const standalone = await readAdHocReceipt(
+    db,
+    context.household.id,
+    receiptId
+  );
+  if (standalone.receipt.parse_status === "rejected") {
+    throw new ApiError(409, "Discarded receipts cannot be changed");
+  }
+  const arithmetic = reconcileReceipt({
+    items: standalone.items.map((item) => ({
+      lineSubtotalCents: item.line_subtotal_cents,
+      discountCents: item.discount_cents,
+      netAmountCents: item.net_amount_cents,
+    })),
+    subtotalCents: standalone.receipt.subtotal_cents,
+    taxCents: standalone.receipt.tax_cents,
+    totalCents: standalone.receipt.total_cents,
+    discountCents: standalone.receipt.discount_cents,
+    totalsOnly: isTotalsOnlyReceipt(standalone.receipt),
+  });
+  const totalsOnly = isTotalsOnlyReceipt(standalone.receipt);
+  const auditPrefix = standalone.receipt.transaction_type === "return"
+    ? "ad_hoc_return"
+    : "ad_hoc";
+  const now = nowIso();
+  const parseStatus = finalize && arithmetic.isReconciled
+    ? "reconciled"
+    : "needs_review";
+  const auditFlag = arithmetic.isReconciled
+    ? finalize
+      ? totalsOnly
+        ? `${auditPrefix}_totals_only_reconciled`
+        : `${auditPrefix}_reconciled`
+      : totalsOnly
+        ? `${auditPrefix}_totals_only_ready_to_finalize`
+        : `${auditPrefix}_ready_to_finalize`
+    : `${totalsOnly ? `${auditPrefix}_totals_only_delta` : `${auditPrefix}_delta`}:${
+        arithmetic.subtotalDeltaCents ?? "missing"
+      }:${arithmetic.totalDeltaCents ?? "missing"}`;
+  await db
+    .prepare(
+      `UPDATE receipt_transactions
+       SET item_gross_cents = ?, item_count = ?, parse_status = ?,
+           audit_flag = ?, updated_at = ?
+       WHERE id = ? AND household_id = ? AND trip_id IS NULL`
+    )
+    .bind(
+      standalone.items.reduce(
+        (sum, item) => sum + item.line_subtotal_cents,
+        0
+      ),
+      standalone.items.length,
+      parseStatus,
+      auditFlag,
+      now,
+      standalone.receipt.id,
+      context.household.id
+    )
+    .run();
+  return readAdHocReceipt(db, context.household.id, standalone.receipt.id);
+}
+
+async function createAdHocReceipt(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const transactionType = adHocTransactionType(body.transactionType);
+  const clientReceiptId = requiredString(body.clientReceiptId, "clientReceiptId", 128);
+  const sourceTransactionKey = `ad-hoc-receipt:${clientReceiptId}`;
+  const existing = await db
+    .prepare(
+      `SELECT * FROM receipt_transactions
+       WHERE household_id = ? AND source_transaction_key = ? LIMIT 1`
+    )
+    .bind(context.household.id, sourceTransactionKey)
+    .first<ReceiptTransactionRow>();
+  if (existing) {
+    if (existing.trip_id !== null || existing.source_type !== "receipt_photo") {
+      throw new ApiError(409, "This standalone receipt key is already in use");
+    }
+    const standalone = await readAdHocReceipt(db, context.household.id, existing.id);
+    return adHocReceiptResponse(standalone.receipt, standalone.items);
+  }
+
+  const purchasedAt = requiredDateTime(body.purchasedAt, "purchasedAt");
+  const subtotalCents = requiredInteger(body.subtotalCents, "subtotalCents", -100_000_000, 100_000_000);
+  const taxCents = requiredInteger(body.taxCents, "taxCents", -10_000_000, 10_000_000);
+  const totalCents = requiredInteger(body.totalCents, "totalCents", -100_000_000, 100_000_000);
+  const totalsOnly = body.captureMode === "totals_only";
+  const items = validateDraftItems(body.items, totalsOnly);
+  const discountCents = optionalInteger(body.discountCents, "discountCents", 0, 100_000_000)
+    ?? items.reduce((sum, item) => sum + item.discountCents, 0);
+  assertAdHocReceiptShape(
+    transactionType,
+    items,
+    subtotalCents,
+    taxCents,
+    totalCents,
+    discountCents
+  );
+  const receiptId = crypto.randomUUID();
+  const now = nowIso();
+  await db
+    .prepare(
+      `INSERT INTO receipt_transactions (
+        id, household_id, trip_id, source_transaction_key,
+        transaction_type, source_type, purchased_at, item_gross_cents,
+        item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
+        household_funded_cents, external_funding_cents, audit_flag,
+        parse_status, created_at, updated_at
+      ) VALUES (?, ?, NULL, ?, ?, 'receipt_photo', ?, ?, ?, ?, ?, ?, ?, ?,
+                0, ?, 'needs_review', ?, ?)`
+    )
+    .bind(
+      receiptId,
+      context.household.id,
+      sourceTransactionKey,
+      transactionType,
+      purchasedAt,
+      items.reduce((sum, item) => sum + item.lineSubtotalCents, 0),
+      items.length,
+      subtotalCents,
+      taxCents,
+      discountCents,
+      totalCents,
+      totalCents,
+      totalsOnly
+        ? `${transactionType === "return" ? "ad_hoc_return" : "ad_hoc"}_totals_only_draft`
+        : `${transactionType === "return" ? "ad_hoc_return" : "ad_hoc"}_draft`,
+      now,
+      now
+    )
+    .run();
+  await insertReceiptItems(db, context.household.id, receiptId, items);
+  const standalone = await rebuildAdHocReceiptState(db, context, receiptId);
+  return adHocReceiptResponse(standalone.receipt, standalone.items);
+}
+
+async function updateAdHocReceipt(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const standalone = await readAdHocReceipt(db, context.household.id, receiptId);
+  if (standalone.receipt.parse_status === "reconciled") {
+    throw new ApiError(409, "Finalized standalone receipts are immutable");
+  }
+  if (standalone.receipt.parse_status === "rejected") {
+    throw new ApiError(409, "Discarded receipts cannot be changed");
+  }
+  const purchasedAt = body.purchasedAt === undefined
+    ? standalone.receipt.purchased_at
+    : requiredDateTime(body.purchasedAt, "purchasedAt");
+  const subtotalCents = body.subtotalCents === undefined
+    ? standalone.receipt.subtotal_cents
+    : requiredInteger(body.subtotalCents, "subtotalCents", -100_000_000, 100_000_000);
+  const taxCents = body.taxCents === undefined
+    ? standalone.receipt.tax_cents
+    : requiredInteger(body.taxCents, "taxCents", -10_000_000, 10_000_000);
+  const totalCents = body.totalCents === undefined
+    ? standalone.receipt.total_cents
+    : requiredInteger(body.totalCents, "totalCents", -100_000_000, 100_000_000);
+  const discountCents = body.discountCents === undefined
+    ? standalone.receipt.discount_cents
+    : optionalInteger(body.discountCents, "discountCents", 0, 100_000_000) ?? 0;
+  const totalsOnly = body.captureMode === "totals_only" ||
+    (body.captureMode === undefined && isTotalsOnlyReceipt(standalone.receipt));
+  const items = body.items === undefined ? null : validateDraftItems(body.items, totalsOnly);
+  const transactionType = adHocTransactionType(
+    body.transactionType,
+    standalone.receipt.transaction_type === "return" ? "return" : "warehouse"
+  );
+  const shapeItems = items ?? standalone.items.map((item) => ({
+    isReturn: Boolean(item.is_return),
+    kind: receiptItemKind(item),
+  }));
+  assertAdHocReceiptShape(
+    transactionType,
+    shapeItems,
+    subtotalCents,
+    taxCents,
+    totalCents,
+    discountCents
+  );
+  const auditPrefix = transactionType === "return" ? "ad_hoc_return" : "ad_hoc";
+  const now = nowIso();
+  await db
+    .prepare(
+      `UPDATE receipt_transactions
+       SET transaction_type = ?, purchased_at = ?, subtotal_cents = ?, tax_cents = ?,
+           discount_cents = ?, total_cents = ?, household_funded_cents = ?,
+           item_gross_cents = ?, item_count = ?, parse_status = 'needs_review',
+           audit_flag = ?, updated_at = ?
+       WHERE id = ? AND household_id = ? AND trip_id IS NULL`
+    )
+    .bind(
+      transactionType,
+      purchasedAt,
+      subtotalCents,
+      taxCents,
+      discountCents,
+      totalCents,
+      totalCents,
+      items ? items.reduce((sum, item) => sum + item.lineSubtotalCents, 0) : standalone.receipt.item_gross_cents,
+      items?.length ?? standalone.receipt.item_count,
+      totalsOnly ? `${auditPrefix}_totals_only_draft` : `${auditPrefix}_corrected`,
+      now,
+      standalone.receipt.id,
+      context.household.id
+    )
+    .run();
+  if (items) {
+    await insertReceiptItems(db, context.household.id, standalone.receipt.id, items, true);
+  }
+  const rebuilt = await rebuildAdHocReceiptState(
+    db,
+    context,
+    standalone.receipt.id
+  );
+  return adHocReceiptResponse(rebuilt.receipt, rebuilt.items);
+}
+
+async function finalizeAdHocReceipt(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const standalone = await readAdHocReceipt(db, context.household.id, receiptId);
+  if (standalone.receipt.parse_status === "reconciled") {
+    await promoteAdHocReceiptProducts(
+      db,
+      context,
+      standalone.receipt.id,
+      standalone.items,
+    );
+    const promoted = await readAdHocReceipt(
+      db,
+      context.household.id,
+      standalone.receipt.id,
+    );
+    return adHocReceiptResponse(promoted.receipt, promoted.items);
+  }
+  if (standalone.receipt.parse_status === "rejected") {
+    throw new ApiError(409, "Discarded receipts cannot be finalized");
+  }
+  if (
+    (standalone.receipt.transaction_type === "return" && standalone.receipt.total_cents >= 0) ||
+    (standalone.receipt.transaction_type !== "return" && standalone.receipt.total_cents <= 0)
+  ) {
+    throw new ApiError(
+      409,
+      standalone.receipt.transaction_type === "return"
+        ? "A finalized return must have a negative total"
+        : "A finalized purchase must have a positive total"
+    );
+  }
+  const arithmetic = reconcileReceipt({
+    items: standalone.items.map((item) => ({
+      lineSubtotalCents: item.line_subtotal_cents,
+      discountCents: item.discount_cents,
+      netAmountCents: item.net_amount_cents,
+    })),
+    subtotalCents: standalone.receipt.subtotal_cents,
+    taxCents: standalone.receipt.tax_cents,
+    totalCents: standalone.receipt.total_cents,
+    discountCents: standalone.receipt.discount_cents,
+    totalsOnly: isTotalsOnlyReceipt(standalone.receipt),
+  });
+  if (!arithmetic.isReconciled) {
+    throw new ApiError(409, "Receipt totals must reconcile within five cents before finalizing");
+  }
+  const rebuilt = await rebuildAdHocReceiptState(
+    db,
+    context,
+    standalone.receipt.id,
+    true
+  );
+  await promoteAdHocReceiptProducts(
+    db,
+    context,
+    rebuilt.receipt.id,
+    rebuilt.items,
+  );
+  const promoted = await readAdHocReceipt(
+    db,
+    context.household.id,
+    rebuilt.receipt.id,
+  );
+  return adHocReceiptResponse(promoted.receipt, promoted.items);
+}
+
+async function discardAdHocReceipt(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>
+) {
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const standalone = await readAdHocReceipt(db, context.household.id, receiptId);
+  if (standalone.receipt.parse_status === "reconciled") {
+    throw new ApiError(409, "Finalized standalone receipts are immutable");
+  }
+  if (standalone.receipt.parse_status !== "rejected") {
+    await db
+      .prepare(
+        `UPDATE receipt_transactions
+         SET parse_status = 'rejected', audit_flag = 'ad_hoc_discarded', updated_at = ?
+         WHERE id = ? AND household_id = ? AND trip_id IS NULL`
+      )
+      .bind(nowIso(), standalone.receipt.id, context.household.id)
+      .run();
+  }
+  const discarded = await readAdHocReceipt(db, context.household.id, standalone.receipt.id);
+  return adHocReceiptResponse(discarded.receipt, discarded.items);
 }
 
 async function ingestReceiptDraft(
@@ -5010,6 +6072,12 @@ async function updateReceiptDraft(
       receipt.trip_id
     )
     : null;
+  if (!trip) {
+    throw new ApiError(
+      409,
+      "Use the standalone receipt workflow to edit an ad hoc receipt"
+    );
+  }
   if (trip) {
     if (trip.status === "completed") {
       throw new ApiError(
@@ -5109,6 +6177,229 @@ async function updateReceiptDraft(
   return receiptMutationResponse(closedLoop);
 }
 
+async function applyHistoricalReceiptCorrection(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>,
+) {
+  requireHouseholdOwner(context);
+  const receiptId = requiredString(body.receiptId, "receiptId", 128);
+  const ingestionId = requiredString(body.ingestionId, "ingestionId", 128);
+  const receipt = await authorizedReceipt(db, context.household.id, receiptId);
+  if (!receipt.trip_id || receipt.source_type !== "receipt_photo") {
+    throw new ApiError(409, "Only a completed trip receipt can be corrected here");
+  }
+  const trip = await authorizedTrip(db, context.household.id, receipt.trip_id);
+  if (trip.status !== "completed") {
+    throw new ApiError(409, "Use the current receipt flow until this trip is complete");
+  }
+
+  const priorCorrection = await db
+    .prepare(
+      `SELECT id FROM receipt_corrections
+       WHERE ingestion_id = ? AND receipt_transaction_id = ?
+       LIMIT 1`,
+    )
+    .bind(ingestionId, receipt.id)
+    .first<{ id: string }>();
+  if (priorCorrection) {
+    const existing = await readClosedLoopReview(db, context.household.id, receipt.id);
+    if (!existing) throw new ApiError(500, "The corrected review is unavailable");
+    return json({
+      receiptId: receipt.id,
+      correctionId: priorCorrection.id,
+      alreadyApplied: true,
+      closedLoop: existing,
+    });
+  }
+
+  const ingestion = await db
+    .prepare(
+      `SELECT * FROM receipt_ingestions
+       WHERE id = ? AND household_id = ? AND trip_id = ?
+         AND receipt_transaction_id = ? AND status IN ('awaiting_review', 'failed')
+       LIMIT 1`,
+    )
+    .bind(ingestionId, context.household.id, trip.id, receipt.id)
+    .first<{
+      id: string;
+      source_storage_key: string;
+      source_content_type: string;
+      source_byte_size: number;
+    }>();
+  if (!ingestion) {
+    throw new ApiError(409, "The proposed replacement receipt is not ready to apply");
+  }
+
+  const purchasedAt = receiptDateForTrip(body.purchasedAt, trip);
+  const subtotalCents = requiredInteger(
+    body.subtotalCents,
+    "subtotalCents",
+    -100_000_000,
+    100_000_000,
+  );
+  const taxCents = requiredInteger(
+    body.taxCents,
+    "taxCents",
+    -10_000_000,
+    10_000_000,
+  );
+  const totalCents = requiredInteger(
+    body.totalCents,
+    "totalCents",
+    -100_000_000,
+    100_000_000,
+  );
+  const totalsOnly = body.captureMode === "totals_only";
+  const items = validateDraftItems(body.items, totalsOnly);
+  if (items.some((item) => item.isReturn)) {
+    throw new ApiError(400, "Use the standalone Return flow for refund receipts");
+  }
+  const discountCents =
+    optionalInteger(body.discountCents, "discountCents", 0, 100_000_000) ??
+    items.reduce((sum, item) => sum + item.discountCents, 0);
+  const arithmetic = reconcileReceipt({
+    items: items.map((item) => ({
+      lineSubtotalCents: item.lineSubtotalCents,
+      discountCents: item.discountCents,
+      netAmountCents: item.netAmountCents,
+    })),
+    subtotalCents,
+    taxCents,
+    totalCents,
+    discountCents,
+    totalsOnly,
+  });
+  if (!arithmetic.isReconciled) {
+    throw new ApiError(409, "Replacement receipt totals must reconcile within five cents");
+  }
+
+  const [previousItems, previousMatches, previousQuestions, previousUpload, revisionRow] =
+    await Promise.all([
+      db.prepare(`SELECT * FROM receipt_items WHERE receipt_transaction_id = ? ORDER BY source_line_number ASC`)
+        .bind(receipt.id).all<ReceiptItemRow>(),
+      db.prepare(`SELECT * FROM trip_item_matches WHERE receipt_transaction_id = ? ORDER BY created_at ASC`)
+        .bind(receipt.id).all<TripItemMatchRow>(),
+      db.prepare(`SELECT * FROM review_questions WHERE receipt_transaction_id = ? ORDER BY created_at ASC`)
+        .bind(receipt.id).all<ReviewQuestionRow>(),
+      db.prepare(`SELECT * FROM receipt_uploads WHERE receipt_transaction_id = ? LIMIT 1`)
+        .bind(receipt.id).first<ReceiptUploadRow>(),
+      db.prepare(`SELECT COALESCE(MAX(revision), 0) + 1 AS revision FROM receipt_corrections WHERE receipt_transaction_id = ?`)
+        .bind(receipt.id).first<{ revision: number }>(),
+    ]);
+  const correctionId = crypto.randomUUID();
+  const revision = revisionRow?.revision ?? 1;
+  const now = nowIso();
+  const itemStatements = await buildReceiptItemStatements(
+    db,
+    context.household.id,
+    receipt.id,
+    items,
+    false,
+  );
+  await db.batch([
+    db.prepare(
+      `UPDATE receipt_corrections
+       SET status = 'superseded'
+       WHERE receipt_transaction_id = ? AND status = 'applied'`,
+    ).bind(receipt.id),
+    db.prepare(
+      `INSERT INTO receipt_corrections (
+        id, household_id, trip_id, receipt_transaction_id, ingestion_id,
+        revision, status, previous_receipt_json, previous_items_json,
+        previous_matches_json, previous_questions_json, previous_upload_json,
+        replacement_storage_key, applied_by_member_id, created_at, applied_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'applied', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      correctionId,
+      context.household.id,
+      trip.id,
+      receipt.id,
+      ingestion.id,
+      revision,
+      JSON.stringify(receipt),
+      JSON.stringify(previousItems.results),
+      JSON.stringify(previousMatches.results),
+      JSON.stringify(previousQuestions.results),
+      previousUpload ? JSON.stringify(previousUpload) : null,
+      ingestion.source_storage_key,
+      context.member.id,
+      now,
+      now,
+    ),
+    db.prepare(`DELETE FROM review_questions WHERE receipt_transaction_id = ?`).bind(receipt.id),
+    db.prepare(`DELETE FROM trip_item_matches WHERE receipt_transaction_id = ?`).bind(receipt.id),
+    db.prepare(`DELETE FROM receipt_items WHERE receipt_transaction_id = ?`).bind(receipt.id),
+    ...itemStatements,
+    db.prepare(
+      `UPDATE receipt_transactions
+       SET purchased_at = ?, item_gross_cents = ?, item_count = ?,
+           subtotal_cents = ?, tax_cents = ?, discount_cents = ?,
+           total_cents = ?, household_funded_cents = ?, parse_status = 'needs_review',
+           audit_flag = ?, updated_at = ?
+       WHERE id = ? AND household_id = ? AND trip_id = ?`,
+    ).bind(
+      purchasedAt,
+      items.reduce((sum, item) => sum + item.lineSubtotalCents, 0),
+      items.length,
+      subtotalCents,
+      taxCents,
+      discountCents,
+      totalCents,
+      totalCents,
+      totalsOnly ? "closed_loop_totals_only_historical_correction" : "closed_loop_historical_correction",
+      now,
+      receipt.id,
+      context.household.id,
+      trip.id,
+    ),
+    db.prepare(
+      `INSERT INTO receipt_uploads (
+        id, household_id, receipt_transaction_id, storage_key, original_filename,
+        content_type, byte_size, status, uploaded_by_member_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'costco-receipt-correction', ?, ?, 'stored', ?, ?, ?)
+      ON CONFLICT(receipt_transaction_id) DO UPDATE SET
+        storage_key = excluded.storage_key,
+        original_filename = excluded.original_filename,
+        content_type = excluded.content_type,
+        byte_size = excluded.byte_size,
+        status = 'stored',
+        uploaded_by_member_id = excluded.uploaded_by_member_id,
+        updated_at = excluded.updated_at`,
+    ).bind(
+      previousUpload?.id ?? crypto.randomUUID(),
+      context.household.id,
+      receipt.id,
+      ingestion.source_storage_key,
+      ingestion.source_content_type,
+      ingestion.source_byte_size,
+      context.member.id,
+      previousUpload?.created_at ?? now,
+      now,
+    ),
+    db.prepare(
+      `UPDATE receipt_ingestions
+       SET status = 'complete', completed_at = ?, updated_at = ?
+       WHERE id = ? AND household_id = ?`,
+    ).bind(now, now, ingestion.id, context.household.id),
+  ]);
+
+  const closedLoop = await rebuildReceiptState(db, context, receipt.id);
+  if (!closedLoop) throw new ApiError(500, "Unable to rebuild the corrected trip review");
+  const refreshedItems = await db
+    .prepare(`SELECT * FROM receipt_items WHERE receipt_transaction_id = ? ORDER BY source_line_number ASC`)
+    .bind(receipt.id)
+    .all<ReceiptItemRow>();
+  await promoteAdHocReceiptProducts(db, context, receipt.id, refreshedItems.results);
+  const promoted = await readClosedLoopReview(db, context.household.id, receipt.id);
+  return json({
+    receiptId: receipt.id,
+    correctionId,
+    revision,
+    closedLoop: promoted ?? closedLoop,
+  });
+}
+
 async function finalizeReceipt(
   db: D1Database,
   context: HouseholdContext,
@@ -5148,7 +6439,9 @@ async function finalizeReceipt(
   if (!closedLoop) {
     throw new ApiError(500, "Unable to finalize the receipt");
   }
-  return receiptMutationResponse(closedLoop);
+  await promoteAdHocReceiptProducts(db, context, receipt.id, items.results);
+  const promoted = await readClosedLoopReview(db, context.household.id, receipt.id);
+  return receiptMutationResponse(promoted ?? closedLoop);
 }
 
 async function followingPlanningTrip(
@@ -5890,6 +7183,38 @@ export async function handleHouseholdGet(
     if (view === "data-health") {
       return json(await readDataHealth(db, context));
     }
+    if (view === "ad-hoc-receipt") {
+      const receiptId = requiredString(
+        url.searchParams.get("receiptId"),
+        "receiptId",
+        128
+      );
+      const standalone = await readAdHocReceipt(
+        db,
+        context.household.id,
+        receiptId
+      );
+      return adHocReceiptResponse(standalone.receipt, standalone.items);
+    }
+    if (view === "review-history") {
+      return json({
+        history: await readTripReviewHistory(db, context.household.id),
+      });
+    }
+    if (view === "trip-review") {
+      const receiptId = requiredString(
+        url.searchParams.get("receiptId"),
+        "receiptId",
+        128,
+      );
+      const closedLoop = await readClosedLoopReview(
+        db,
+        context.household.id,
+        receiptId,
+      );
+      if (!closedLoop) throw new ApiError(404, "Trip review not found");
+      return json({ closedLoop });
+    }
     if (view === "export") {
       return await householdExportResponse(
         db,
@@ -5923,8 +7248,14 @@ export async function handleHouseholdPost(
     if (action === "add_feedback") {
       return await addFeedback(db, context, body);
     }
+    if (action === "set_product_memory") {
+      return await setProductMemory(db, context, body);
+    }
     if (action === "ingest_receipt_draft") {
       return await ingestReceiptDraft(db, context, body);
+    }
+    if (action === "create_ad_hoc_receipt") {
+      return await createAdHocReceipt(db, context, body);
     }
     if (action === "answer_review_question") {
       return await answerReviewQuestion(db, context, body);
@@ -5965,8 +7296,20 @@ export async function handleHouseholdPatch(
     if (action === "update_receipt_draft") {
       return await updateReceiptDraft(db, context, body);
     }
+    if (action === "update_ad_hoc_receipt") {
+      return await updateAdHocReceipt(db, context, body);
+    }
     if (action === "finalize_receipt") {
       return await finalizeReceipt(db, context, body);
+    }
+    if (action === "apply_receipt_correction") {
+      return await applyHistoricalReceiptCorrection(db, context, body);
+    }
+    if (action === "finalize_ad_hoc_receipt") {
+      return await finalizeAdHocReceipt(db, context, body);
+    }
+    if (action === "discard_ad_hoc_receipt") {
+      return await discardAdHocReceipt(db, context, body);
     }
     if (action === "confirm_product_metadata") {
       return await confirmProductMetadata(db, context, body);

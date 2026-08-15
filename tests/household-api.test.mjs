@@ -9,6 +9,7 @@ import {
   handleHouseholdGet,
   handleHouseholdPatch,
   handleHouseholdPost,
+  readFinalTripListEstimate,
 } from "../app/api/household/route.ts";
 import {
   buildSaturdayRecommendations,
@@ -173,6 +174,10 @@ async function responseJson(response) {
   const body = await response.json();
   assert.ok(body && typeof body === "object");
   return body;
+}
+
+function receiptTimestampForTrip(trip, time = "10:30:00") {
+  return `${trip.scheduledFor}T${time}-07:00`;
 }
 
 test("D1 dashboard matches the audited historical view before client cutover", async () => {
@@ -521,6 +526,67 @@ test("ready household writes avoid repeating runtime schema DDL", async () => {
   }
 });
 
+test("product memory is explicit, receipt-backed, and newest-choice wins", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const owner = "product-memory-owner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(owner), db),
+    );
+    const product = initial.products.find(
+      (candidate) => candidate.latestPurchasedAt !== null,
+    );
+    assert.ok(product, "expected a receipt-backed household product");
+    assert.equal(product.memory, null);
+
+    const pausedResponse = await handleHouseholdPost(
+      householdRequest(owner, "POST", {
+        action: "set_product_memory",
+        productId: product.id,
+        preference: "pause",
+        note: "Smaller package next time",
+      }),
+      db,
+    );
+    assert.equal(pausedResponse.status, 200);
+    const paused = await responseJson(pausedResponse);
+    assert.equal(paused.memory.preference, "pause");
+    assert.equal(paused.memory.note, "Smaller package next time");
+    assert.ok(paused.memory.sourcePurchasedAt);
+
+    const changedResponse = await handleHouseholdPost(
+      householdRequest(owner, "POST", {
+        action: "set_product_memory",
+        productId: product.id,
+        preference: "buy_again",
+      }),
+      db,
+    );
+    assert.equal(changedResponse.status, 200);
+
+    const refreshed = await responseJson(
+      await handleHouseholdGet(householdRequest(owner), db),
+    );
+    const remembered = refreshed.products.find(
+      (candidate) => candidate.id === product.id,
+    );
+    assert.equal(remembered.memory.preference, "buy_again");
+    assert.equal(remembered.memory.note, null);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE household_id = ? AND kind = 'product_experience'`,
+        )
+        .get(initial.household.id).count,
+      2,
+      "memory changes remain auditable events instead of overwriting history",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("Data Health is owner-only, household-scoped, and exportable without a SQL console", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -632,7 +698,7 @@ test("owner-only test sandbox is isolated from shared history and inaccessible t
           sandbox: true,
           clientDraftId: "sandbox-finalized-receipt",
           tripId: sandbox.currentTrip.id,
-          purchasedAt: "2026-07-25T10:30:00-07:00",
+          purchasedAt: receiptTimestampForTrip(sandbox.currentTrip),
           subtotalCents: 1000,
           taxCents: 0,
           totalCents: 1000,
@@ -864,6 +930,123 @@ test("receipt-integrity migration adds the asynchronous-ingestion boundary and r
       .map((column) => column.name);
     assert.ok(reviewColumns.includes("answer_claim_token"));
     assert.ok(reviewColumns.includes("answer_claimed_at"));
+  } finally {
+    db.close();
+  }
+});
+
+test("standalone receipt migration preserves ingestion rows and indexes while making trip optional", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE trips (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE household_members (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE receipt_transactions (id TEXT PRIMARY KEY NOT NULL, household_id TEXT NOT NULL, trip_id TEXT, source_type TEXT NOT NULL);
+      CREATE TABLE review_questions (id TEXT PRIMARY KEY NOT NULL);
+    `);
+    const boundaryMigration = readFileSync(
+      new URL("../drizzle/0004_magical_patriot.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of boundaryMigration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    db.database.prepare(`INSERT INTO households (id) VALUES (?)`)
+      .run("household-before-nullable-trip");
+    db.database.prepare(`INSERT INTO trips (id) VALUES (?)`)
+      .run("trip-before-nullable-trip");
+    db.database.prepare(`INSERT INTO receipt_ingestions (
+      id, household_id, trip_id, client_request_id, source_storage_key,
+      source_content_type, source_byte_size, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)`)
+      .run(
+        "ingestion-before-nullable-trip",
+        "household-before-nullable-trip",
+        "trip-before-nullable-trip",
+        "request-before-nullable-trip",
+        "source-before-nullable-trip",
+        "image/jpeg",
+        12,
+        "2026-08-15T00:00:00.000Z",
+        "2026-08-15T00:00:00.000Z",
+      );
+    const migration = readFileSync(
+      new URL("../drizzle/0009_fantastic_white_tiger.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    const tripColumn = db.database
+      .prepare(`PRAGMA table_info(receipt_ingestions)`)
+      .all()
+      .find((column) => column.name === "trip_id");
+    assert.equal(tripColumn.notnull, 0);
+    assert.equal(
+      db.database.prepare(`SELECT trip_id FROM receipt_ingestions WHERE id = ?`)
+        .get("ingestion-before-nullable-trip").trip_id,
+      "trip-before-nullable-trip",
+    );
+    const indexNames = db.database
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'receipt_ingestions'`)
+      .all()
+      .map((row) => row.name)
+      .filter((name) => !name.startsWith("sqlite_autoindex"));
+    assert.deepEqual(indexNames.sort(), [
+      "receipt_ingestions_household_client_request_unique",
+      "receipt_ingestions_household_status_idx",
+      "receipt_ingestions_receipt_idx",
+      "receipt_ingestions_source_storage_key_unique",
+      "receipt_ingestions_trip_idx",
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("product image job migration adds a durable one-job-per-product outbox", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE products (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE receipt_transactions (id TEXT PRIMARY KEY NOT NULL);
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0010_fluffy_cannonball.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+    const columns = db.database
+      .prepare(`PRAGMA table_info(product_image_jobs)`)
+      .all()
+      .map((column) => column.name);
+    for (const expected of [
+      "household_id",
+      "product_id",
+      "receipt_transaction_id",
+      "status",
+      "attempt_count",
+      "locked_at",
+      "completed_at",
+    ]) {
+      assert.ok(columns.includes(expected), `Expected ${expected} in image jobs`);
+    }
+    const indexes = db.database
+      .prepare(`PRAGMA index_list(product_image_jobs)`)
+      .all()
+      .map((index) => index.name);
+    for (const expected of [
+      "product_image_jobs_product_unique",
+      "product_image_jobs_status_idx",
+      "product_image_jobs_household_status_idx",
+      "product_image_jobs_receipt_idx",
+    ]) {
+      assert.ok(indexes.includes(expected), `Expected ${expected}`);
+    }
   } finally {
     db.close();
   }
@@ -1762,6 +1945,19 @@ test("a productless manual estimate updates the trip total, freezes, and then lo
     assert.equal(atta.includedAtFreeze, false);
     assert.equal(atta.addedAfterFreeze, true);
     assert.equal(atta.estimatedPriceCents, 1800);
+    const finalListEstimate = await readFinalTripListEstimate(db, tripId);
+    assert.equal(
+      finalListEstimate.estimated_total_cents,
+      expectedTotalCents + 1800,
+      "The checkout baseline includes priced items added while shopping",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT estimated_total_cents FROM trip_intent_snapshots WHERE trip_id = ?`)
+        .get(tripId).estimated_total_cents,
+      expectedTotalCents,
+      "The pre-shopping intent estimate remains immutable",
+    );
   } finally {
     db.close();
   }
@@ -2812,6 +3008,444 @@ test("receipt ingestion rejects a date far from the linked trip", async () => {
   }
 });
 
+test("standalone receipt lifecycle is isolated until explicit finalization", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "ad-hoc-receipt-owner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const product = initial.products.find(
+      (entry) => entry.costcoItemNumber === "1868328",
+    );
+    assert.ok(product, "Expected a seeded product for standalone purchase history");
+    const beforeDashboard = initial.dashboard;
+    const sideEffectCounts = () => ({
+      trips: db.database.prepare(`SELECT COUNT(*) AS count FROM trips`).get().count,
+      listItems: db.database.prepare(`SELECT COUNT(*) AS count FROM trip_list_items`).get().count,
+      intents: db.database.prepare(`SELECT COUNT(*) AS count FROM trip_intent_items`).get().count,
+      matches: db.database.prepare(`SELECT COUNT(*) AS count FROM trip_item_matches`).get().count,
+      questions: db.database.prepare(`SELECT COUNT(*) AS count FROM review_questions`).get().count,
+      feedback: db.database.prepare(`SELECT COUNT(*) AS count FROM feedback`).get().count,
+      outbox: db.database.prepare(`SELECT COUNT(*) AS count FROM email_outbox`).get().count,
+      recommendations: db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_list_items WHERE source IN ('recurring', 'predicted', 'consider')`)
+        .get().count,
+    });
+    const beforeEffects = sideEffectCounts();
+    const draftRequest = {
+      action: "create_ad_hoc_receipt",
+      clientReceiptId: "ad-hoc-tires-001",
+      purchasedAt: "2026-08-14T11:00:00-07:00",
+      subtotalCents: 3500,
+      taxCents: 0,
+      totalCents: 3500,
+      discountCents: 0,
+      items: [
+        receiptDraftLine({
+          sourceLineNumber: 1,
+          costcoItemNumber: product.costcoItemNumber,
+          rawDescription: "AD HOC COSTCO PURCHASE",
+          unitPriceCents: 1500,
+          lineSubtotalCents: 1500,
+        }),
+        receiptDraftLine({
+          sourceLineNumber: 2,
+          costcoItemNumber: "99999990",
+          rawDescription: "NEW AD HOC TIRES",
+          unitPriceCents: 2000,
+          lineSubtotalCents: 2000,
+        }),
+      ],
+    };
+    const createdResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", draftRequest),
+      db,
+    );
+    assert.equal(createdResponse.status, 200);
+    const created = await responseJson(createdResponse);
+    assert.equal(created.mode, "ad_hoc");
+    assert.equal(created.receipt.tripId, null);
+    assert.equal(created.receipt.parseStatus, "needs_review");
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM products WHERE costco_item_number = ?`)
+        .get("99999990").count,
+      0,
+      "Standalone drafts must not pollute the household catalog",
+    );
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM product_image_jobs`).get().count,
+      0,
+      "Image work starts only after explicit finalization",
+    );
+    assert.deepEqual(
+      (await responseJson(await handleHouseholdGet(householdRequest(email), db))).dashboard,
+      beforeDashboard,
+      "A standalone draft must not change official spend before finalization",
+    );
+    assert.deepEqual(sideEffectCounts(), beforeEffects);
+
+    const read = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          email,
+          "GET",
+          undefined,
+          `?view=ad-hoc-receipt&receiptId=${encodeURIComponent(created.receiptId)}`,
+        ),
+        db,
+      ),
+    );
+    assert.equal(read.receipt.id, created.receiptId);
+    assert.equal(read.items.length, 2);
+
+    const retry = await responseJson(
+      await handleHouseholdPost(householdRequest(email, "POST", draftRequest), db),
+    );
+    assert.equal(retry.receiptId, created.receiptId, "Create retry must be idempotent");
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM receipt_transactions WHERE source_transaction_key = ?`)
+        .get("ad-hoc-receipt:ad-hoc-tires-001").count,
+      1,
+    );
+
+    assert.equal(
+      (await handleHouseholdGet(
+        householdRequest("ad-hoc-receipt-second@example.test"),
+        db,
+      )).status,
+      200,
+    );
+    const unauthorized = await handleHouseholdGet(
+      householdRequest(
+        "ad-hoc-receipt-third@example.test",
+        "GET",
+        undefined,
+        `?view=ad-hoc-receipt&receiptId=${encodeURIComponent(created.receiptId)}`,
+      ),
+      db,
+    );
+    assert.equal(unauthorized.status, 403);
+
+    db.database.prepare(
+      `INSERT INTO product_images (
+        id, household_id, product_id, source_type, storage_key,
+        status, is_primary, created_at, updated_at
+      ) VALUES (?, ?, ?, 'household_upload', ?, 'approved', 1, ?, ?)`,
+    ).run(
+      "existing-household-photo",
+      initial.household.id,
+      product.id,
+      `households/${initial.household.id}/product-images/${product.id}/existing.jpg`,
+      "2026-08-15T00:00:00.000Z",
+      "2026-08-15T00:00:00.000Z",
+    );
+
+    const finalizedResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: created.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedResponse.status, 200);
+    const finalized = await responseJson(finalizedResponse);
+    assert.equal(finalized.receipt.parseStatus, "reconciled");
+    const promotedProduct = db.database
+      .prepare(`SELECT * FROM products WHERE costco_item_number = ?`)
+      .get("99999990");
+    assert.ok(promotedProduct, "A new finalized receipt product must enter the catalog");
+    assert.equal(promotedProduct.category, "automotive_tires");
+    assert.equal(promotedProduct.category_status, "rule_based");
+    assert.equal(
+      db.database.prepare(
+        `SELECT product_id FROM receipt_items
+         WHERE receipt_transaction_id = ? AND costco_item_number = ?`,
+      ).get(created.receiptId, "99999990").product_id,
+      promotedProduct.id,
+    );
+    assert.equal(
+      db.database.prepare(
+        `SELECT confirmation_source FROM product_aliases
+         WHERE household_id = ? AND product_id = ?`,
+      ).get(initial.household.id, promotedProduct.id).confirmation_source,
+      "receipt",
+    );
+    assert.deepEqual(
+      { ...db.database.prepare(
+        `SELECT status, attempt_count, receipt_transaction_id
+         FROM product_image_jobs WHERE product_id = ?`,
+      ).get(promotedProduct.id) },
+      {
+        status: "queued",
+        attempt_count: 0,
+        receipt_transaction_id: created.receiptId,
+      },
+    );
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM product_image_jobs WHERE product_id = ?`)
+        .get(product.id).count,
+      0,
+      "A household photo must suppress background generation",
+    );
+    const afterFinalization = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.ok(afterFinalization.dashboard.transactions.some(
+      (transaction) => transaction.id === created.receiptId,
+    ));
+    const beforeProduct = beforeDashboard.products.find(
+      (entry) => entry.itemNumber === product.costcoItemNumber,
+    );
+    const afterProduct = afterFinalization.dashboard.products.find(
+      (entry) => entry.itemNumber === product.costcoItemNumber,
+    );
+    assert.equal(afterProduct.purchaseCount, beforeProduct.purchaseCount + 1);
+    assert.deepEqual(sideEffectCounts(), beforeEffects);
+
+    const catalogProductAfterFinalization = afterFinalization.products.find(
+      (entry) => entry.id === product.id,
+    );
+    assert.equal(catalogProductAfterFinalization.image.sourceType, "household_upload");
+    const automotiveReview = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "confirm_product_metadata",
+        productId: product.id,
+        canonicalName: catalogProductAfterFinalization.canonicalName,
+        category: "automotive_tires",
+        expectedUpdatedAt: catalogProductAfterFinalization.updatedAt,
+      }),
+      db,
+    );
+    assert.equal(
+      automotiveReview.status,
+      200,
+      "The new ad hoc purchase categories must be accepted by household review",
+    );
+
+    const activeImageLock = "2026-08-15T00:05:00.000Z";
+    db.database.prepare(
+      `UPDATE product_image_jobs
+       SET status = 'processing', attempt_count = 1, locked_at = ?
+       WHERE product_id = ?`,
+    ).run(activeImageLock, promotedProduct.id);
+    const finalizeRetry = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: created.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizeRetry.status, 200, "Finalization retry must be idempotent");
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM products WHERE costco_item_number = ?`)
+        .get("99999990").count,
+      1,
+    );
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM product_image_jobs WHERE product_id = ?`)
+        .get(promotedProduct.id).count,
+      1,
+    );
+    assert.deepEqual(
+      { ...db.database.prepare(
+        `SELECT status, attempt_count, locked_at
+         FROM product_image_jobs WHERE product_id = ?`,
+      ).get(promotedProduct.id) },
+      {
+        status: "processing",
+        attempt_count: 1,
+        locked_at: activeImageLock,
+      },
+      "A finalization retry must not steal or strand an active image job",
+    );
+    const immutableEdit = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "update_ad_hoc_receipt",
+        receiptId: created.receiptId,
+        totalCents: 1,
+      }),
+      db,
+    );
+    assert.equal(immutableEdit.status, 409);
+
+    const beforeReturn = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const beforeReturnProduct = beforeReturn.dashboard.products.find(
+      (entry) => entry.itemNumber === product.costcoItemNumber,
+    );
+    const returnDraftRequest = {
+      action: "create_ad_hoc_receipt",
+      clientReceiptId: "ad-hoc-return-001",
+      transactionType: "return",
+      purchasedAt: "2026-08-15T11:00:00-07:00",
+      subtotalCents: -1500,
+      taxCents: 0,
+      totalCents: -1500,
+      discountCents: 0,
+      items: [
+        receiptDraftLine({
+          sourceLineNumber: 1,
+          costcoItemNumber: product.costcoItemNumber,
+          rawDescription: "AD HOC COSTCO RETURN",
+          unitPriceCents: -1500,
+          lineSubtotalCents: -1500,
+        }),
+      ],
+    };
+    const returnDraftResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", returnDraftRequest),
+      db,
+    );
+    assert.equal(returnDraftResponse.status, 200);
+    const returnDraft = await responseJson(returnDraftResponse);
+    assert.equal(returnDraft.receipt.transactionType, "return");
+    assert.equal(returnDraft.receipt.parseStatus, "needs_review");
+    assert.deepEqual(
+      (await responseJson(await handleHouseholdGet(householdRequest(email), db))).dashboard,
+      beforeReturn.dashboard,
+      "A return draft must not reduce official spend before finalization",
+    );
+
+    const finalizedReturnResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: returnDraft.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedReturnResponse.status, 200);
+    const finalizedReturn = await responseJson(finalizedReturnResponse);
+    assert.equal(finalizedReturn.receipt.parseStatus, "reconciled");
+    assert.equal(finalizedReturn.items[0].productId, product.id);
+
+    const afterReturn = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.equal(
+      afterReturn.dashboard.audit.householdFundedCents,
+      beforeReturn.dashboard.audit.householdFundedCents - 1500,
+      "A finalized return must reduce net Costco spending",
+    );
+    const returnTransaction = afterReturn.dashboard.transactions.find(
+      (transaction) => transaction.id === returnDraft.receiptId,
+    );
+    assert.deepEqual(
+      {
+        channel: returnTransaction.channel,
+        householdFundedCents: returnTransaction.householdFundedCents,
+        receiptTotalCents: returnTransaction.receiptTotalCents,
+        purchaseContext: returnTransaction.purchaseContext,
+        transactionKind: returnTransaction.transactionKind,
+      },
+      {
+        channel: "warehouse",
+        householdFundedCents: -1500,
+        receiptTotalCents: -1500,
+        purchaseContext: "ad_hoc",
+        transactionKind: "return",
+      },
+    );
+    const afterReturnProduct = afterReturn.dashboard.products.find(
+      (entry) => entry.itemNumber === product.costcoItemNumber,
+    );
+    assert.equal(
+      afterReturnProduct.purchaseCount,
+      beforeReturnProduct.purchaseCount,
+      "A return must not be learned as another purchase",
+    );
+    assert.equal(
+      afterReturnProduct.totalSpendCents,
+      beforeReturnProduct.totalSpendCents,
+      "Product purchase history remains a purchase-only evidence stream",
+    );
+    assert.deepEqual(sideEffectCounts(), beforeEffects);
+
+    const finalizedReturnRetry = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: returnDraft.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedReturnRetry.status, 200);
+    assert.equal(
+      (await responseJson(
+        await handleHouseholdGet(householdRequest(email), db),
+      )).dashboard.audit.householdFundedCents,
+      afterReturn.dashboard.audit.householdFundedCents,
+      "A finalization retry must not subtract the return twice",
+    );
+
+    const totalsOnlyReturn = await responseJson(
+      await handleHouseholdPost(
+        householdRequest(email, "POST", {
+          action: "create_ad_hoc_receipt",
+          clientReceiptId: "ad-hoc-return-totals-only",
+          transactionType: "return",
+          purchasedAt: "2026-08-15T12:00:00-07:00",
+          subtotalCents: -500,
+          taxCents: 0,
+          totalCents: -500,
+          discountCents: 0,
+          captureMode: "totals_only",
+          items: [],
+        }),
+        db,
+      ),
+    );
+    assert.equal(totalsOnlyReturn.receipt.parseStatus, "needs_review");
+    const totalsOnlyFinalized = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: totalsOnlyReturn.receiptId,
+      }),
+      db,
+    );
+    assert.equal(totalsOnlyFinalized.status, 200);
+    assert.equal(
+      (await responseJson(
+        await handleHouseholdGet(householdRequest(email), db),
+      )).dashboard.audit.householdFundedCents,
+      afterReturn.dashboard.audit.householdFundedCents - 500,
+      "A totals-only return must still reduce net spend without inventing products",
+    );
+
+    const invalidPositiveReturn = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        ...returnDraftRequest,
+        clientReceiptId: "ad-hoc-return-positive",
+        subtotalCents: 1500,
+        totalCents: 1500,
+        items: [
+          receiptDraftLine({
+            sourceLineNumber: 1,
+            rawDescription: "INVALID POSITIVE RETURN",
+            lineSubtotalCents: 1500,
+          }),
+        ],
+      }),
+      db,
+    );
+    assert.equal(invalidPositiveReturn.status, 400);
+    assert.match((await responseJson(invalidPositiveReturn)).error, /return amounts|negative return line/i);
+
+    const invalidNegativePurchase = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        ...returnDraftRequest,
+        clientReceiptId: "ad-hoc-purchase-negative",
+        transactionType: "warehouse",
+      }),
+      db,
+    );
+    assert.equal(invalidNegativePurchase.status, 400);
+    assert.match((await responseJson(invalidNegativePurchase)).error, /purchase amounts cannot be negative/i);
+  } finally {
+    db.close();
+  }
+});
+
 test("receipt discounts fold into the product paid price and stay out of additions", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -2842,7 +3476,7 @@ test("receipt discounts fold into the product paid price and stay out of additio
         action: "ingest_receipt_draft",
         clientDraftId: "discounted-recap",
         tripId,
-        purchasedAt: "2026-07-25T10:30:00-07:00",
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip),
         subtotalCents: 6800,
         taxCents: 0,
         totalCents: 6800,
@@ -2942,7 +3576,7 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
           action: "ingest_receipt_draft",
           clientDraftId: "learn-alias",
           tripId,
-          purchasedAt: "2026-07-25T10:30:00-07:00",
+          purchasedAt: receiptTimestampForTrip(initial.currentTrip),
           subtotalCents: 8000,
           taxCents: 0,
           totalCents: 8000,
@@ -3063,7 +3697,7 @@ test("a totals-only receipt preserves exact spending without inventing product e
         action: "ingest_receipt_draft",
         clientDraftId: "totals-only-july-25",
         tripId,
-        purchasedAt: "2026-07-25T10:15:00-07:00",
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip, "10:15:00"),
         subtotalCents: 21508,
         taxCents: 337,
         totalCents: 21845,
@@ -3131,7 +3765,7 @@ test("only a finalized trip receipt can change official totals, and one trip can
         action: "ingest_receipt_draft",
         clientDraftId: "finality-first-draft",
         tripId,
-        purchasedAt: "2026-07-25T10:30:00-07:00",
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip),
         subtotalCents: 1000,
         taxCents: 0,
         totalCents: 1000,
@@ -3158,7 +3792,7 @@ test("only a finalized trip receipt can change official totals, and one trip can
         action: "ingest_receipt_draft",
         clientDraftId: "finality-second-draft",
         tripId,
-        purchasedAt: "2026-07-25T10:30:00-07:00",
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip),
         subtotalCents: 1000,
         taxCents: 0,
         totalCents: 1000,
@@ -3359,7 +3993,7 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
       action: "ingest_receipt_draft",
       clientDraftId: "reconciled-july-25",
       tripId,
-      purchasedAt: "2026-07-25T10:15:00-07:00",
+      purchasedAt: receiptTimestampForTrip(initial.currentTrip, "10:15:00"),
       subtotalCents: 4846,
       taxCents: 217,
       totalCents: 5063,
@@ -3528,7 +4162,10 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
     assert.equal(refreshed.closedLoop.receipt.id, ingested.receiptId);
     assert.equal(refreshed.closedLoop.comparison.arithmetic.isReconciled, true);
     assert.equal(refreshed.closedLoop.comparison.isProvisional, false);
-    assert.equal(refreshed.dashboard.audit.through, "2026-07-25");
+    assert.equal(
+      refreshed.dashboard.audit.through,
+      initial.currentTrip.scheduledFor,
+    );
     assert.equal(
       refreshed.dashboard.audit.transactionCount,
       initial.dashboard.audit.transactionCount + 1,
@@ -3543,7 +4180,7 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
       refreshed.dashboard.products.find(
         (product) => product.itemNumber === milkProduct.costcoItemNumber,
       )?.lastPurchasedOn,
-      "2026-07-25",
+      initial.currentTrip.scheduledFor,
       "The new receipt also updates the product's purchase history",
     );
   } finally {
@@ -3580,7 +4217,7 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
           action: "ingest_receipt_draft",
           clientDraftId: "confirm-once-rice",
           tripId,
-          purchasedAt: "2026-07-25T10:30:00-07:00",
+          purchasedAt: receiptTimestampForTrip(initial.currentTrip),
           subtotalCents: 2400,
           taxCents: 0,
           totalCents: 2400,
@@ -3730,7 +4367,7 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
   }
 });
 
-test("declining optional catalog enrichment does not block a reviewed receipt", async () => {
+test("finalizing a receipt promotes a new product even when optional review is declined", async () => {
   const db = new D1DatabaseAdapter();
   try {
     const initial = await responseJson(
@@ -3756,7 +4393,7 @@ test("declining optional catalog enrichment does not block a reviewed receipt", 
           action: "ingest_receipt_draft",
           clientDraftId: "optional-catalog-line",
           tripId,
-          purchasedAt: "2026-08-01T10:30:00-07:00",
+          purchasedAt: receiptTimestampForTrip(initial.currentTrip),
           subtotalCents: 1799,
           taxCents: 0,
           totalCents: 1799,
@@ -3807,11 +4444,15 @@ test("declining optional catalog enrichment does not block a reviewed receipt", 
     assert.equal(refreshed.closedLoop.comparison.isProvisional, false);
     assert.equal(refreshed.closedLoop.comparison.buckets.unresolved.length, 0);
     assert.equal(refreshed.closedLoop.comparison.buckets.receiptOnly.length, 1);
+    const promotedProductId = db.database
+      .prepare(`SELECT product_id FROM receipt_items WHERE receipt_transaction_id = ?`)
+      .get(ingest.receiptId).product_id;
+    assert.ok(promotedProductId);
     assert.equal(
       db.database
-        .prepare(`SELECT product_id FROM receipt_items WHERE receipt_transaction_id = ?`)
-        .get(ingest.receiptId).product_id,
-      null,
+        .prepare(`SELECT costco_item_number FROM products WHERE id = ?`)
+        .get(promotedProductId).costco_item_number,
+      "1122334",
     );
   } finally {
     db.close();
@@ -3850,7 +4491,7 @@ test("a provisional receipt refuses finalization and review answers have bounded
         action: "ingest_receipt_draft",
         clientDraftId: "provisional-july-25",
         tripId,
-        purchasedAt: "2026-07-25T10:30:00-07:00",
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip),
         subtotalCents: 6203,
         taxCents: 217,
         totalCents: 6420,
@@ -3900,7 +4541,7 @@ test("a provisional receipt refuses finalization and review answers have bounded
     assert.equal(draft.questions.length, 3);
     assert.deepEqual(
       draft.questions.map((question) => question.purpose),
-      ["data_quality", "intent", "outcome"],
+      ["data_quality", "intent", "product_experience"],
     );
 
     const finalizeResponse = await handleHouseholdPatch(

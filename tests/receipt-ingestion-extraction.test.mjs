@@ -38,6 +38,15 @@ test("Gemini receipt drafts remain advisory, integer-cent evidence", () => {
   assert.equal(parsed.totalCents, 21845);
 });
 
+test("a totals-only draft remains usable when no product lines are readable", () => {
+  const draft = validDraft();
+  draft.lines = [];
+  draft.warnings = ["Product lines were not readable; verify the printed totals."];
+  const parsed = parseExtractedReceiptDraft(draft);
+  assert.equal(parsed.lines.length, 0);
+  assert.equal(parsed.totalCents, 21845);
+});
+
 test("attached Costco discount lines fold into the preceding matching product", () => {
   const draft = validDraft();
   draft.lines.push({
@@ -112,6 +121,24 @@ test("Gemini request uses inline document data and a strict JSON field contract"
   assert.match(parts[1].text, /"rawDescription"/);
   assert.equal(request.generationConfig.responseMimeType, "application/json");
   assert.equal("responseJsonSchema" in request.generationConfig, false);
+});
+
+test("Gemini receives PDF and image receipt bytes with their original MIME type", () => {
+  for (const contentType of [
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+  ]) {
+    const request = buildGeminiGenerateContentRequest({
+      contentType,
+      bytes: new Uint8Array([1, 2, 3]).buffer,
+    });
+    assert.equal(request.contents[0].parts[0].inlineData.mimeType, contentType);
+    assert.equal(request.contents[0].parts[0].inlineData.data, "AQID");
+  }
 });
 
 test("receipt extraction rejects floats, unsupported tax labels, and invented empty names", () => {

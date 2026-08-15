@@ -1,6 +1,34 @@
 export const RECEIPT_EXTRACTION_SCHEMA_VERSION = "costco-receipt-v1";
 export const MAX_RECEIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 
+export type ReceiptExtractionErrorCode =
+  | "provider_http"
+  | "empty_output"
+  | "invalid_json"
+  | "schema_validation"
+  | "unreadable_image"
+  | "source_missing"
+  | "unknown";
+
+export class ReceiptExtractionError extends Error {
+  constructor(
+    readonly code: ReceiptExtractionErrorCode,
+    message: string,
+    readonly details: {
+      responseId?: string | null;
+      finishReason?: string | null;
+      durationMs?: number | null;
+    } = {},
+  ) {
+    super(message);
+    this.name = "ReceiptExtractionError";
+  }
+}
+
+export function receiptExtractionErrorCode(error: unknown): ReceiptExtractionErrorCode {
+  return error instanceof ReceiptExtractionError ? error.code : "unknown";
+}
+
 export type ExtractedReceiptLine = {
   itemNumber: string | null;
   rawDescription: string;
@@ -224,7 +252,14 @@ function geminiOutputText(response: GeminiGenerateContentResponse) {
     .join("");
   if (!text) {
     const reason = response.promptFeedback?.blockReason ?? response.candidates?.[0]?.finishReason;
-    throw new Error(`Gemini returned no structured receipt draft${reason ? ` (${reason})` : ""}`);
+    throw new ReceiptExtractionError(
+      "empty_output",
+      "Receipt provider returned no structured draft",
+      {
+        responseId: response.responseId ?? null,
+        finishReason: reason ?? null,
+      },
+    );
   }
   return text;
 }
@@ -232,23 +267,28 @@ function geminiOutputText(response: GeminiGenerateContentResponse) {
 export function buildGeminiGenerateContentRequest({
   contentType,
   bytes,
+  sources,
+  recovery = false,
 }: {
   contentType: string;
   bytes: ArrayBuffer;
+  sources?: Array<{ contentType: string; bytes: ArrayBuffer }>;
+  recovery?: boolean;
 }) {
+  const receiptSources = sources?.length ? sources : [{ contentType, bytes }];
   return {
     contents: [
       {
         role: "user",
         parts: [
-          {
+          ...receiptSources.map((source) => ({
             inlineData: {
-              mimeType: contentType,
-              data: arrayBufferToBase64(bytes),
+              mimeType: source.contentType,
+              data: arrayBufferToBase64(source.bytes),
             },
-          },
+          })),
           {
-            text: `${instructions}\n\nReturn one JSON object with exactly this contract:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco receipt into that contract. Return empty lines and warnings when the file is not a readable Costco receipt.`,
+            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nReturn one JSON object with exactly this contract:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco receipt into that contract. Return empty lines and warnings when the file is not a readable Costco receipt.`,
           },
         ],
       },
@@ -265,15 +305,29 @@ export async function extractReceiptWithGemini({
   model,
   contentType,
   bytes,
+  sources,
+  recovery = false,
 }: {
   apiKey: string;
   model: string;
   contentType: string;
   bytes: ArrayBuffer;
-}): Promise<{ draft: ExtractedReceiptDraft; responseId: string | null }> {
-  if (bytes.byteLength > MAX_RECEIPT_SOURCE_BYTES) {
-    throw new Error("Receipt exceeds the 8 MB BasketSense extraction limit");
+  sources?: Array<{ contentType: string; bytes: ArrayBuffer }>;
+  recovery?: boolean;
+}): Promise<{
+  draft: ExtractedReceiptDraft;
+  responseId: string | null;
+  finishReason: string | null;
+  durationMs: number;
+}> {
+  const receiptSources = sources?.length ? sources : [{ contentType, bytes }];
+  if (receiptSources.some((source) => source.bytes.byteLength > MAX_RECEIPT_SOURCE_BYTES)) {
+    throw new ReceiptExtractionError(
+      "schema_validation",
+      "Receipt exceeds the BasketSense extraction limit",
+    );
   }
+  const startedAt = Date.now();
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
     {
@@ -282,7 +336,12 @@ export async function extractReceiptWithGemini({
       "x-goog-api-key": apiKey,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(buildGeminiGenerateContentRequest({ contentType, bytes })),
+    body: JSON.stringify(buildGeminiGenerateContentRequest({
+      contentType,
+      bytes,
+      sources: receiptSources,
+      recovery,
+    })),
     signal: AbortSignal.timeout(90_000),
     }
   );
@@ -297,15 +356,64 @@ export async function extractReceiptWithGemini({
       typeof body?.error?.message === "string"
         ? body.error.message.replace(/[\r\n]+/g, " ").slice(0, 240)
         : "";
-    throw new Error(
-      `Gemini extraction failed with HTTP ${response.status}` +
+    throw new ReceiptExtractionError(
+      "provider_http",
+      `Receipt provider failed with HTTP ${response.status}` +
         (providerCode ? ` (${providerCode.slice(0, 120)})` : "") +
-        (providerMessage ? `: ${providerMessage}` : "")
+        (providerMessage ? `: ${providerMessage}` : ""),
+      { durationMs: Date.now() - startedAt },
     );
   }
   const body = (await response.json()) as GeminiGenerateContentResponse;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(geminiOutputText(body));
+  } catch (error) {
+    if (error instanceof ReceiptExtractionError) throw error;
+    throw new ReceiptExtractionError(
+      "invalid_json",
+      "Receipt provider returned invalid structured data",
+      {
+        responseId: body.responseId ?? null,
+        finishReason: body.candidates?.[0]?.finishReason ?? null,
+        durationMs: Date.now() - startedAt,
+      },
+    );
+  }
+  let draft: ExtractedReceiptDraft;
+  try {
+    draft = parseExtractedReceiptDraft(parsed);
+  } catch {
+    throw new ReceiptExtractionError(
+      "schema_validation",
+      "Receipt provider draft did not match the safe receipt contract",
+      {
+        responseId: body.responseId ?? null,
+        finishReason: body.candidates?.[0]?.finishReason ?? null,
+        durationMs: Date.now() - startedAt,
+      },
+    );
+  }
+  if (
+    draft.lines.length === 0 &&
+    draft.subtotalCents === null &&
+    draft.taxCents === null &&
+    draft.totalCents === null
+  ) {
+    throw new ReceiptExtractionError(
+      "unreadable_image",
+      "No receipt totals or product lines were readable",
+      {
+        responseId: body.responseId ?? null,
+        finishReason: body.candidates?.[0]?.finishReason ?? null,
+        durationMs: Date.now() - startedAt,
+      },
+    );
+  }
   return {
-    draft: parseExtractedReceiptDraft(JSON.parse(geminiOutputText(body))),
+    draft,
     responseId: typeof body.responseId === "string" ? body.responseId : null,
+    finishReason: body.candidates?.[0]?.finishReason ?? null,
+    durationMs: Date.now() - startedAt,
   };
 }

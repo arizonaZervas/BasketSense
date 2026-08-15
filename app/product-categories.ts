@@ -7,6 +7,8 @@ export type ProductCategoryKey =
   | "health_personal_care"
   | "home_kitchen_seasonal"
   | "toys_books_activities"
+  | "automotive_tires"
+  | "jewelry_precious_metals"
   | "fuel"
   | "optical_services"
   | "needs_review";
@@ -52,6 +54,18 @@ export const PRODUCT_CATEGORY_PRESENTATION = [
     label: "Toys, books & activities",
     shortLabel: "Toys & books",
     color: "var(--rose)",
+  },
+  {
+    key: "automotive_tires",
+    label: "Automotive & tires",
+    shortLabel: "Auto & tires",
+    color: "var(--slate)",
+  },
+  {
+    key: "jewelry_precious_metals",
+    label: "Jewelry & precious metals",
+    shortLabel: "Jewelry & metals",
+    color: "var(--sand)",
   },
   {
     key: "fuel",
@@ -207,6 +221,10 @@ const HOME_PATTERN =
   /(?:TUPPERWARE|FLATWARE|BATH MAT|TOWEL|BLANKET|BLNKT|CANDLE|FLOOR|TOOLS?|MICROFBR|PILLOW|GREENMADE)/i;
 const TOYS_PATTERN =
   /(?:BUBBLE BLAST|HUGALUMPS|PAINT SET|FOAM BLASTER|ACTIVITY|PANORAMA|20PC BUCKET|BOB REUSE|\bBOOK\b)/i;
+const AUTOMOTIVE_PATTERN =
+  /(?:\bTIRE|TYRE|MICHELIN|BRIDGESTONE|GOODYEAR|WIPER|BATTERY|AUTO(?:MOTIVE)?\b)/i;
+const JEWELRY_PRECIOUS_METALS_PATTERN =
+  /(?:\bGOLD\b|\bSILVER\b|\bPLATINUM\b|\bBULLION\b|\bJEWEL|RING\b|NECKLACE|BRACELET|EARRING|DIAMOND)/i;
 const TAXABLE_GROCERY_PATTERN =
   /(?:COKE|WATER|WTR40|ENERGY12|CHI ?FOREST|HONEST K)/i;
 
@@ -222,7 +240,7 @@ export function classifyReceiptItem(input: {
   itemNumber: string;
   rawDescription: string;
   canonicalName: string;
-  taxStatus: TaxStatus;
+  taxStatus: TaxStatus | "unknown";
 }): { key: ProductCategoryKey; status: ClassificationStatus } {
   if (input.channel === "gas") {
     return { key: "fuel", status: "reviewed" };
@@ -254,6 +272,12 @@ export function classifyReceiptItem(input: {
   }
   if (TOYS_PATTERN.test(text)) {
     return { key: "toys_books_activities", status: "rule_based" };
+  }
+  if (AUTOMOTIVE_PATTERN.test(text)) {
+    return { key: "automotive_tires", status: "rule_based" };
+  }
+  if (JEWELRY_PRECIOUS_METALS_PATTERN.test(text)) {
+    return { key: "jewelry_precious_metals", status: "rule_based" };
   }
   if (input.taxStatus === "non_taxable" || TAXABLE_GROCERY_PATTERN.test(text)) {
     return { key: "groceries_beverages", status: "rule_based" };

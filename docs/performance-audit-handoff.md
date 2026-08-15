@@ -6,7 +6,29 @@ Authenticated production baseline: 2026-08-09
 
 Scope: private BasketSense only. Good Cart Day is explicitly out of scope.
 
-## Conclusions first
+## Final-state conclusions
+
+1. **Pause the performance refactor.** The felt List problem is fixed, the
+   List-first/lazy Insights slice is deployed, and the updated app feels good
+   in normal household use.
+2. **Harden receipt capture before introducing an asynchronous architecture.**
+   The documented reliability trigger occurred on 2026-08-15: a real phone
+   photo produced no usable lines and retry state was unclear. Local Receipt
+   Capture Hardening v1 now preserves tall-image resolution, creates private
+   de-shadowed/overlapping recovery evidence, performs an automatic second read,
+   exposes honest stages, and records content-free diagnostics. The request is
+   still synchronous; a queue remains deferred until waiting itself is painful.
+3. **Do not window Products or add thumbnail infrastructure now.** The stress
+   measurements remain useful scaling evidence, but neither household member
+   experiences Products as slow. Revisit only when real-device experience or
+   catalog growth crosses the documented triggers.
+4. **Keep the remaining work measurable and reversible.** Two-phone List
+   measurement, server timing instrumentation, and mobile CLS localization are
+   evidence gaps; they are not reasons to begin another architectural refactor.
+
+The detailed implementation status and reopen conditions are recorded below.
+
+## Audit conclusions at baseline
 
 1. **List mutation responsiveness is the first implementation ticket.** Adding,
    removing, and checking items are the household's most frequent, time-sensitive
@@ -53,24 +75,46 @@ mutation responses and add revision-aware recovery polling**. This priority uses
 the household's reported experience to rank the measured inefficiencies:
 foreground List actions come first; Products remains a documented scaling risk.
 
+## Final implementation state and household decision
+
+Final state recorded 2026-08-09 after the authenticated audit, List release,
+lazy-read release, and household use of the updated production app.
+
+| Audit opportunity | Final state | Revisit condition |
+| --- | --- | --- |
+| List revisions and authoritative mutation responses | **Implemented and deployed.** Successful mutations merge the authoritative item and revision directly; unchanged recovery polls can return 204. | Complete the remaining two-phone add/remove/check latency and partner-convergence measurement if List delay is felt again. |
+| Monolithic household/read-render model | **Partially implemented and deployed.** The app now loads a List-first core response and calculates Insights/Products history only on demand. Intent prefetch and faster history-revision checks improved the visible Insights transition. | Reopen only if initial/core payloads or deferred-tab timing become user-visible problems. Separate Products, receipt-history, and feedback pagination remains future work. |
+| Request-time schema/bootstrap/seeding | **Partially implemented.** Ready connections avoid repeated runtime schema DDL, and normal reads no longer rewrite audited seed/history rows. Full household context still enters bootstrap and seed-presence checks. | Instrument Worker/D1 statement timing before doing more cleanup; do not refactor this path based on structure alone. |
+| Asynchronous receipt extraction | **Architecture still deferred; reliability hardening implemented locally.** A real failed phone-photo parse crossed the reliability trigger, so the synchronous reader now has preserved resolution, enhanced long-receipt sections, automatic pass 2, exact totals-only fallback, honest progress, and safe diagnostics. | Reopen asynchronous dispatch when waiting itself is painful, processing regularly exceeds roughly 5–10 seconds, leaving the page loses work, or retry recovery still proves unreliable after release. |
+| Products windowing and thumbnail variants | **Deliberately deferred.** The constrained-device laboratory result remains valid, but neither household member experiences Products search or scrolling as slow. Virtualization and image-variant complexity would currently add more product risk than household value. | Reopen when lag is perceived, the catalog grows beyond roughly 500 products, real-device Products INP repeatedly exceeds 200 ms, or image transfer/memory becomes noticeable on normal phones. |
+
+The performance refactor pauses here. The two remaining unstarted architectural
+changes are documented scaling/reliability options, not active product defects.
+If a dashboard cache is revisited, prefer a revision-keyed cache-aside snapshot
+with D1 as the source of truth; do not use write-back caching for household
+history.
+
+Mobile/narrow CLS remains a measured gap outside the five numbered code
+opportunities. It should be reopened if the household notices controls moving
+during load or a fresh trace still exceeds the 0.10 budget.
+
 ## What this means for the household experience
 
 The app does not feel uniformly slow. The normal List screen and Insights are
-already responsive. The problems are concentrated in a few moments: searching
-or scrolling the full product catalog, waiting for receipt processing, seeing
-the mobile layout settle after load, and doing background synchronization that
-users mostly do not see.
+responsive, and the household does not currently perceive Products or receipt
+processing as slow. The table preserves the audit evidence and the improvement
+shape if those areas become real problems later; it is not an active backlog.
 
 | Household moment | What happens today | What the improvement should feel like |
 | --- | --- | --- |
 | Open the shopping List | The useful screen appears quickly. On narrow/mobile layouts, some content shifts after it first appears. | The List should still appear quickly, but remain visually fixed so controls do not move as the page settles. |
 | Check an item | The item checks immediately because the UI is optimistic, even though the save plus confirmation takes about 1.25 seconds in the background. | The tap should feel equally immediate. The gain is quieter, safer synchronization: less background work, faster acknowledgement, and less chance that a slow refresh delays reconciliation. |
 | See a partner's change | The other device discovers the change on its next five-second poll, so the expected delay is zero to five seconds. Every unchanged poll still downloads and processes another snapshot. | Revision checks make “nothing changed” almost free. Adding push later would make partner changes appear nearly immediately; revisions would remain the recovery mechanism after sleep or disconnection. |
-| Search Products | Desktop search has a noticeable pause. The 4× CPU mobile stress trace froze processing for almost nine seconds while the full catalog was reconsidered and laid out. | Search results should track typing without visible lag because only a small window of rows is rendered. The 8.9-second figure is a constrained-device lab result, not a claim that every phone always waits nine seconds. |
-| Scroll Products | Dozens of large source images download for tiny row thumbnails; the sampled bottom scroll added about 7 MB. | Rows should stay smooth while scrolling and download only small, screen-sized thumbnails. The full image should load only when someone opens the preview. |
+| Search Products | The 4× CPU mobile stress trace froze processing for almost nine seconds, but neither household member perceives normal Products search as slow. | No change is planned. If real-device lag appears, windowing should make search track typing by rendering only a small row window. |
+| Scroll Products | The sampled full-list stress scroll downloaded about 7 MB, but normal household scrolling currently feels responsive. | No change is planned. If transfer, memory, or scrolling becomes noticeable, small row thumbnails should replace large source images while full previews retain full resolution. |
 | Open a product image | The preview itself is close to the interaction budget and can reuse an already-downloaded full image. | Preview behavior should remain unchanged; optimization should target list thumbnails without making the full preview blurry. |
 | Open Insights | Navigation and chart/category interaction are already fast in the sampled flow. | It should continue to feel the same. Chart optimization should not displace higher-impact work. |
-| Add a receipt | The capture dialog appears promptly, but even a blank 68-byte sandbox image held the request for about three seconds while extraction completed. | After upload, the app should acknowledge immediately and show a durable “processing” state. The household can leave the screen and return without losing the job. |
+| Add a receipt | A blank sandbox image held the request for about three seconds, while two real household uploads completed without a felt wait or reliability problem. | No architecture change is planned. If processing becomes slow or fragile, acknowledge after durable upload and continue extraction in a recoverable background state. |
 
 ### Collaboration: revision ledger versus real-time doorbell
 
@@ -96,7 +140,10 @@ partner delay while removing most unchanged transfer, rerendering, and
 post-mutation refresh work. Push can be added afterward if the five-second delay
 is noticeable in real household use; none of the revision work is discarded.
 
-### User-perceived priority
+### Historical user-perceived priority at audit time
+
+The following ranking guided the first implementation choices. The final-state
+decision now pauses work after List and the first lazy-read slice.
 
 1. **List mutations:** the most frequent in-store actions should settle without
    a second household download, while preserving the immediate optimistic feel.
@@ -312,7 +359,12 @@ not: both narrow and mobile are just above the 0.10 CLS threshold.
 - Verdict: **strongest laboratory scaling opportunity, deferred behind List
   responsiveness based on household usage**.
 
-## Revised priority order
+## Historical revised priority order
+
+This order guided implementation immediately after the audit. The final
+household decision above supersedes it: List and the first lazy-read slice
+shipped, while asynchronous receipts and Products work are intentionally
+deferred.
 
 1. **Add List revisions, authoritative mutation responses, and conditional
    recovery polling.** Preserve optimistic UI, eliminate successful
@@ -456,7 +508,7 @@ sandbox sample, and do not touch Good Cart Day storage.
 - Exit: initial List API ≤75 kB encoded / ≤400 kB decoded; Products and histories
   paginate; direct tab URLs recover correctly.
 
-Implementation checkpoint, 2026-08-09: the first local, undeployed slice keeps
+Implementation checkpoint, 2026-08-09: the first released slice keeps
 the legacy full household response for compatibility but moves the app onto a
 List-first `view=core` response. Historical dashboard construction now runs
 only through `view=insights`, requested when Insights, Products, or the data
@@ -470,14 +522,24 @@ reduction**. The locally built authenticated document measured **19,195 decoded
 bytes**; compare that directionally, not one-to-one, with the 483,924-byte
 production baseline because the environments and transfer encoding differ.
 The production build, 27 dashboard/List/render tests, and four focused API/List
-tests pass. The broader receipt-heavy API suite still has unrelated existing
+tests passed for the initial slice. The follow-up retry-loop, Insights prefetch,
+history-revision, and read-seeding fixes were also released. Production Sites
+version 69 contains that work plus the later non-performance discount-category
+correction. The broader receipt-heavy API suite still has unrelated existing
 failures and was not used as a release gate for this slice.
 
-Remaining before release: authenticated browser verification of List →
-Insights → Products → List navigation; production encoded-size/timing evidence;
-versioned view contracts; and later separation/pagination of the catalog,
-receipt review, and feedback payloads. Receipt ingestion and its synchronous
-processing path are explicitly unchanged.
+Released behavior was verified through authenticated List → Insights → Products
+→ List navigation. Remaining future work is versioned view contracts and later
+separation/pagination of the catalog, receipt review, and feedback payloads.
+Receipt ingestion remains synchronous, but the local unreleased hardening work
+now separates original and recovery evidence, performs at most two explicit
+reader passes, and makes failures diagnosable without logging receipt contents.
+Historical correction can re-read the saved private original or inspect a new
+image/PDF while the old receipt remains authoritative. The local production
+build and 45 focused receipt/history/rendering tests pass. The broader
+BasketSense-only run is 118/127; its nine failures are the existing
+receipt/sandbox household-test boundary and are not claimed as green for this
+unreleased feature.
 
 ### Checkpoint 5 — request-path bootstrap cleanup (Terra, Luna regression)
 
@@ -493,7 +555,7 @@ Each checkpoint ends with a fresh authenticated desktop/mobile trace, budget
 comparison, BasketSense-only diff review, and a written handoff before the next
 checkpoint starts.
 
-## Recommended first implementation ticket
+## Historical recommended first implementation ticket — completed
 
 **Title:** Apply authoritative List mutations with a revision-aware recovery poll
 
@@ -514,6 +576,10 @@ checkpoint starts.
 6. Measure add, remove, and check from tap to settled UI on both authenticated
    household devices. Mutation acknowledgement p95 must be ≤300 ms, with zero
    immediate full household GETs.
+
+Implementation status: criteria 1–5 shipped through the List revision release
+and trigger-count hotfix. Criterion 6 remains a measurement gap rather than an
+active implementation ticket.
 
 ## Remaining measurement gaps
 
