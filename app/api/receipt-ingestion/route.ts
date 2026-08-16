@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_RECEIPT_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_GEMINI_RECOVERY_MODEL = "gemini-3.5-flash";
 interface RuntimeEnv {
   DB?: D1Database;
   RECEIPTS?: R2Bucket;
@@ -96,8 +97,7 @@ async function runtime() {
     geminiModel: workersRuntime.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
     geminiRecoveryModel:
       workersRuntime.env.GEMINI_RECOVERY_MODEL?.trim() ||
-      workersRuntime.env.GEMINI_MODEL?.trim() ||
-      DEFAULT_GEMINI_MODEL,
+      DEFAULT_GEMINI_RECOVERY_MODEL,
   };
 }
 
@@ -296,6 +296,7 @@ function publicIngestion(row: IngestionRow, draft?: unknown) {
     provider_http: "The private receipt reader was temporarily unavailable.",
     empty_output: "The receipt reader returned no usable draft.",
     invalid_json: "The receipt reader returned an incomplete draft.",
+    output_truncated: "The receipt reader ran out of room while reading this long receipt.",
     schema_validation: "The receipt reader could not safely validate the extracted values.",
     unreadable_image: "No reliable totals or product lines were readable from this file.",
     source_missing: "The saved private receipt file could not be reopened.",

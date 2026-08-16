@@ -1,10 +1,12 @@
 export const RECEIPT_EXTRACTION_SCHEMA_VERSION = "costco-receipt-v1";
 export const MAX_RECEIPT_SOURCE_BYTES = 8 * 1024 * 1024;
+export const MAX_RECEIPT_OUTPUT_TOKENS = 65_536;
 
 export type ReceiptExtractionErrorCode =
   | "provider_http"
   | "empty_output"
   | "invalid_json"
+  | "output_truncated"
   | "schema_validation"
   | "unreadable_image"
   | "source_missing"
@@ -288,14 +290,15 @@ export function buildGeminiGenerateContentRequest({
             },
           })),
           {
-            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nReturn one JSON object with exactly this contract:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco receipt into that contract. Return empty lines and warnings when the file is not a readable Costco receipt.`,
+            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nExtract this Costco receipt into the supplied JSON schema. Return one compact JSON object with no prose or markdown. Return empty lines and warnings when the file is not a readable Costco receipt.`,
           },
         ],
       },
     ],
     generationConfig: {
       responseMimeType: "application/json",
-      maxOutputTokens: 3000,
+      responseJsonSchema: receiptDraftSchema,
+      maxOutputTokens: MAX_RECEIPT_OUTPUT_TOKENS,
     },
   };
 }
@@ -370,12 +373,15 @@ export async function extractReceiptWithGemini({
     parsed = JSON.parse(geminiOutputText(body));
   } catch (error) {
     if (error instanceof ReceiptExtractionError) throw error;
+    const finishReason = body.candidates?.[0]?.finishReason ?? null;
     throw new ReceiptExtractionError(
-      "invalid_json",
-      "Receipt provider returned invalid structured data",
+      finishReason === "MAX_TOKENS" ? "output_truncated" : "invalid_json",
+      finishReason === "MAX_TOKENS"
+        ? "Receipt provider ran out of output room before completing the draft"
+        : "Receipt provider returned invalid structured data",
       {
         responseId: body.responseId ?? null,
-        finishReason: body.candidates?.[0]?.finishReason ?? null,
+        finishReason,
         durationMs: Date.now() - startedAt,
       },
     );

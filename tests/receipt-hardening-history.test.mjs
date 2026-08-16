@@ -73,6 +73,33 @@ test("receipt provider failures are classified without returning receipt content
   }
 });
 
+test("token-limited receipt output is classified as truncation without accepting partial JSON", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({
+      responseId: "response-safe-id",
+      candidates: [{
+        finishReason: "MAX_TOKENS",
+        content: { parts: [{ text: '{"purchasedAt":null,"lines":[' }] },
+      }],
+    });
+    await assert.rejects(
+      () => extractReceiptWithGemini({
+        apiKey: "test-key",
+        model: "test-model",
+        contentType: "image/jpeg",
+        bytes: new Uint8Array([1]).buffer,
+      }),
+      (error) =>
+        error instanceof ReceiptExtractionError &&
+        error.code === "output_truncated" &&
+        error.details.finishReason === "MAX_TOKENS",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("long receipt recovery creates a shadow-resistant full view and overlapping sections", async () => {
   const originalCreateImageBitmap = globalThis.createImageBitmap;
   const originalDocument = globalThis.document;
@@ -230,6 +257,12 @@ test("receipt ingestion stores recovery evidence separately and records safe dia
   assert.match(source, /provider_finish_reason/);
   assert.match(source, /provider_duration_ms/);
   assert.match(source, /unreadable_image/);
+  assert.match(source, /DEFAULT_GEMINI_MODEL = "gemini-3\.5-flash-lite"/);
+  assert.match(source, /DEFAULT_GEMINI_RECOVERY_MODEL = "gemini-3\.5-flash"/);
+  assert.match(
+    source,
+    /GEMINI_RECOVERY_MODEL\?\.trim\(\) \|\|\s+DEFAULT_GEMINI_RECOVERY_MODEL/,
+  );
   assert.doesNotMatch(source, /console\.error\([^\n]*draft/);
 });
 
