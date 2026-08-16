@@ -381,6 +381,22 @@ function buildProducts(
   return products;
 }
 
+function merchandiseAfterReceiptDiscounts(
+  transaction: DashboardTransaction,
+): number {
+  const totalWithoutSeparateDiscount =
+    transaction.merchandiseSubtotalCents +
+    transaction.taxCents -
+    transaction.receiptTotalCents;
+  const totalWithSeparateDiscount =
+    totalWithoutSeparateDiscount - transaction.discountCents;
+
+  return transaction.discountCents > 0 &&
+    Math.abs(totalWithSeparateDiscount) < Math.abs(totalWithoutSeparateDiscount)
+    ? transaction.merchandiseSubtotalCents - transaction.discountCents
+    : transaction.merchandiseSubtotalCents;
+}
+
 function buildProductCategories(
   receiptLines: readonly DashboardReceiptLine[],
   transactions: readonly DashboardTransaction[],
@@ -438,7 +454,7 @@ function buildProductCategories(
     (transaction) => transaction.channel === "warehouse",
   );
   const warehouseMerchandiseCents = warehouseTransactions.reduce(
-    (sum, transaction) => sum + transaction.merchandiseSubtotalCents,
+    (sum, transaction) => sum + merchandiseAfterReceiptDiscounts(transaction),
     0,
   );
   const warehouseTaxCents = warehouseTransactions.reduce(

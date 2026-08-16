@@ -203,6 +203,66 @@ test("finalized returns reduce net spend and categories without becoming purchas
   assert.equal(viewData.recentTransactions[0].transactionKind, "return");
 });
 
+test("an online-order discount reduces category spend without breaking Insights", () => {
+  const source = buildDashboardViewData();
+  const sourceLine = source.receiptLines.find(
+    (line) => line.categoryKey === "automotive",
+  ) ?? source.receiptLines[0];
+  assert.ok(sourceLine);
+
+  const transaction = {
+    id: "ad-hoc-online-order-dashboard-test",
+    purchasedOn: "2026-08-03",
+    channel: "warehouse",
+    itemCount: 5,
+    receiptTotalCents: 132876,
+    householdFundedCents: 132876,
+    discountCents: 8000,
+    merchandiseSubtotalCents: 131292,
+    taxCents: 9584,
+    externalFundingCents: 0,
+    sourceType: "receipt_photo",
+    auditFlag: "ad_hoc_reconciled",
+    purchaseContext: "ad_hoc",
+    transactionKind: "purchase",
+  };
+  const amounts = [119196, 2000, 1196, 900, 0];
+  const grossAmounts = [127196, 2000, 1196, 900, 0];
+  const lines = amounts.map((netAmountCents, index) => ({
+    ...sourceLine,
+    id: `ad-hoc-online-order-line-${index}`,
+    transactionId: transaction.id,
+    itemNumber: `online-order-${index}`,
+    name: `Online order item ${index + 1}`,
+    rawDescription: `ONLINE ORDER ITEM ${index + 1}`,
+    quantity: 1,
+    unitPriceCents: grossAmounts[index],
+    grossAmountCents: grossAmounts[index],
+    discountCents: index === 0 ? 8000 : 0,
+    netAmountCents,
+    categoryKey: "automotive_tires",
+    categoryLabel: "Automotive & tires",
+    classificationStatus: "reviewed",
+  }));
+
+  const viewData = buildDashboardViewDataFromHistory({
+    through: source.audit.through,
+    reconciliationIssueCount: source.audit.reconciliationIssueCount,
+    transactions: [...source.transactions, transaction],
+    receiptLines: [...source.receiptLines, ...lines],
+  });
+
+  assert.equal(
+    viewData.audit.householdFundedCents,
+    source.audit.householdFundedCents + 132876,
+  );
+  assert.equal(
+    viewData.classifiedWarehouseCents + viewData.needsReviewWarehouseCents,
+    source.classifiedWarehouseCents + source.needsReviewWarehouseCents + 123292,
+  );
+  assert.equal(viewData.needsReviewWarehouseCents, source.needsReviewWarehouseCents);
+});
+
 test("the second illustration batch covers purchase ranks 151 through 175", () => {
   const acceptedItems = new Set(
     productIllustrationManifest()
