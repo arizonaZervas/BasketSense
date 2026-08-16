@@ -865,6 +865,7 @@ interface IntentItemRow {
   recommendation_reason: string | null;
   confidence_bps: number | null;
   included: number;
+  added_after_freeze: number;
   quantity_milli: number;
   estimated_price_cents: number | null;
   sort_order: number;
@@ -4425,6 +4426,7 @@ function intentItemSummary(row: IntentItemRow): TripIntentItemSummary {
     recommendationReason: row.recommendation_reason,
     confidenceBps: row.confidence_bps,
     included: Boolean(row.included),
+    addedAfterFreeze: Boolean(row.added_after_freeze),
     quantityMilli: row.quantity_milli,
     estimatedPriceCents: row.estimated_price_cents,
     sortOrder: row.sort_order,
@@ -4488,6 +4490,7 @@ function toLogicIntent(row: IntentItemRow): ReceiptIntentItem {
     section: row.section,
     source: row.source,
     includedAtFreeze: Boolean(row.included),
+    addedAfterFreeze: Boolean(row.added_after_freeze),
     quantityMilli: row.quantity_milli,
     estimatedPriceCents: row.estimated_price_cents,
   };
@@ -4571,6 +4574,7 @@ function buildClosedLoopComparison(
   let skippedEstimateCents = 0;
   let unresolvedCents = 0;
   const matched: ClosedLoopComparison["buckets"]["matched"] = [];
+  const addedDuringTrip: ClosedLoopComparison["buckets"]["addedDuringTrip"] = [];
   const unpricedPlanned: ClosedLoopComparison["buckets"]["unpricedPlanned"] = [];
 
   for (const match of matches) {
@@ -4578,6 +4582,14 @@ function buildClosedLoopComparison(
     const item = receiptById.get(match.receipt_item_id);
     if (!intent || !item) continue;
     const paidCents = receiptPaidCents(item);
+    if (Boolean(intent.added_after_freeze)) {
+      additionsCents += paidCents;
+      addedDuringTrip.push({
+        intentItemId: intent.id,
+        receiptItemId: item.id,
+      });
+      continue;
+    }
     if (!Boolean(intent.included)) {
       additionsCents += paidCents;
       continue;
@@ -4598,7 +4610,12 @@ function buildClosedLoopComparison(
   }
 
   const skippedPlanned = intentItems
-    .filter((item) => Boolean(item.included) && !matchedIntentIds.has(item.id))
+    .filter(
+      (item) =>
+        Boolean(item.included) &&
+        !Boolean(item.added_after_freeze) &&
+        !matchedIntentIds.has(item.id)
+    )
     .map((item) => {
       if (item.estimated_price_cents !== null) {
         skippedEstimateCents += Math.round(
@@ -4654,6 +4671,7 @@ function buildClosedLoopComparison(
     unresolvedCents,
     buckets: {
       matched,
+      addedDuringTrip,
       unpricedPlanned,
       skippedPlanned,
       receiptOnly,
@@ -4672,15 +4690,48 @@ async function matchingInputs(
   tripId: string,
   receiptId: string
 ) {
-  const [intentResult, receiptResult, aliasResult] = await Promise.all([
+  const [intentResult, shoppingAdditionResult, receiptResult, aliasResult] = await Promise.all([
     db
       .prepare(
-        `SELECT trip_intent_items.*, products.costco_item_number,
+        `SELECT trip_intent_items.*, 0 AS added_after_freeze,
+                products.costco_item_number,
                 products.category AS product_category
          FROM trip_intent_items
          LEFT JOIN products ON products.id = trip_intent_items.product_id
          WHERE trip_intent_items.trip_id = ?
          ORDER BY trip_intent_items.sort_order ASC`
+      )
+      .bind(tripId)
+      .all<IntentItemRow>(),
+    db
+      .prepare(
+        `SELECT
+           'shopping:' || trip_list_items.id AS id,
+           trip_intent_snapshots.id AS snapshot_id,
+           trip_list_items.trip_id,
+           trip_list_items.id AS list_item_id,
+           trip_list_items.product_id,
+           trip_list_items.label,
+           trip_list_items.section,
+           trip_list_items.source,
+           trip_list_items.recommendation_reason,
+           trip_list_items.confidence_bps,
+           1 AS included,
+           1 AS added_after_freeze,
+           trip_list_items.quantity_milli,
+           trip_list_items.estimated_price_cents,
+           trip_list_items.sort_order,
+           trip_list_items.created_at,
+           products.costco_item_number,
+           products.category AS product_category
+         FROM trip_list_items
+         INNER JOIN trip_intent_snapshots
+           ON trip_intent_snapshots.trip_id = trip_list_items.trip_id
+         LEFT JOIN products ON products.id = trip_list_items.product_id
+         WHERE trip_list_items.trip_id = ?
+           AND trip_list_items.included = 1
+           AND trip_list_items.added_after_freeze = 1
+         ORDER BY trip_list_items.sort_order ASC`
       )
       .bind(tripId)
       .all<IntentItemRow>(),
@@ -4705,11 +4756,82 @@ async function matchingInputs(
     costcoItemNumber: alias.costco_item_number,
     confirmed: true,
   }));
+  const shoppingListItemIds = new Set(
+    shoppingAdditionResult.results
+      .map((item) => item.list_item_id)
+      .filter((itemId): itemId is string => Boolean(itemId))
+  );
+  const intentRows = [
+    ...intentResult.results.filter(
+      (item) => !item.list_item_id || !shoppingListItemIds.has(item.list_item_id)
+    ),
+    ...shoppingAdditionResult.results,
+  ].sort((left, right) => left.sort_order - right.sort_order);
   return {
-    intentRows: intentResult.results,
+    intentRows,
     receiptRows: receiptResult.results,
     aliases,
   };
+}
+
+function persistedMatchType(
+  reason: ReceiptIntentMatch["reason"]
+): TripItemMatchRow["match_type"] {
+  return reason === "normalized_exact" ||
+    reason === "descriptive_subset" ||
+    reason === "fuzzy_candidate"
+    ? "exact_name"
+    : reason;
+}
+
+function projectShoppingAdditionMatches({
+  householdId,
+  tripId,
+  receiptId,
+  intentRows,
+  automaticMatches,
+  persistedMatches,
+}: {
+  householdId: string;
+  tripId: string;
+  receiptId: string;
+  intentRows: IntentItemRow[];
+  automaticMatches: ReceiptIntentMatch[];
+  persistedMatches: TripItemMatchRow[];
+}): TripItemMatchRow[] {
+  const shoppingIntentIds = new Set(
+    intentRows
+      .filter((item) => Boolean(item.added_after_freeze))
+      .map((item) => item.id)
+  );
+  const persistedIntentIds = new Set(
+    persistedMatches.map((match) => match.intent_item_id)
+  );
+  const persistedReceiptIds = new Set(
+    persistedMatches.map((match) => match.receipt_item_id)
+  );
+  const timestamp = nowIso();
+  return automaticMatches
+    .filter(
+      (match) =>
+        match.status === "auto_matched" &&
+        shoppingIntentIds.has(match.intentItemId) &&
+        !persistedIntentIds.has(match.intentItemId) &&
+        !persistedReceiptIds.has(match.receiptItemId)
+    )
+    .map((match) => ({
+      id: `shopping-match:${receiptId}:${match.receiptItemId}`,
+      household_id: householdId,
+      trip_id: tripId,
+      receipt_transaction_id: receiptId,
+      intent_item_id: match.intentItemId,
+      receipt_item_id: match.receiptItemId,
+      match_type: persistedMatchType(match.reason),
+      confidence_bps: match.confidenceBps,
+      resolution_source: "system",
+      created_at: timestamp,
+      updated_at: timestamp,
+    }));
 }
 
 async function rebuildTripItemMatches(
@@ -4743,9 +4865,15 @@ async function rebuildTripItemMatches(
       !manualIntentIds.has(match.intentItemId) &&
       !manualReceiptIds.has(match.receiptItemId)
   );
+  const frozenIntentIds = new Set(
+    inputs.intentRows
+      .filter((item) => !Boolean(item.added_after_freeze))
+      .map((item) => item.id)
+  );
   const candidates = matching.matches.filter(
     (match) =>
       match.status === "candidate" &&
+      frozenIntentIds.has(match.intentItemId) &&
       !manualIntentIds.has(match.intentItemId) &&
       !manualReceiptIds.has(match.receiptItemId)
   );
@@ -4758,35 +4886,31 @@ async function rebuildTripItemMatches(
     .run();
 
   const now = nowIso();
-  const statements = automatic.map((match) => {
-    const matchType =
-      match.reason === "normalized_exact" || match.reason === "descriptive_subset"
-        ? "exact_name"
-        : match.reason === "fuzzy_candidate"
-          ? "exact_name"
-          : match.reason;
-    return db
-      .prepare(
-        `INSERT INTO trip_item_matches (
-          id, household_id, trip_id, receipt_transaction_id,
-          intent_item_id, receipt_item_id, match_type, confidence_bps,
-          resolution_source, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system', ?, ?)
-        ON CONFLICT(receipt_item_id) DO NOTHING`
-      )
-      .bind(
-        crypto.randomUUID(),
-        householdId,
-        tripId,
-        receiptId,
-        match.intentItemId,
-        match.receiptItemId,
-        matchType,
-        match.confidenceBps,
-        now,
-        now
-      );
-  });
+  const statements = automatic
+    .filter((match) => frozenIntentIds.has(match.intentItemId))
+    .map((match) => {
+      return db
+        .prepare(
+          `INSERT INTO trip_item_matches (
+            id, household_id, trip_id, receipt_transaction_id,
+            intent_item_id, receipt_item_id, match_type, confidence_bps,
+            resolution_source, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system', ?, ?)
+          ON CONFLICT(receipt_item_id) DO NOTHING`
+        )
+        .bind(
+          crypto.randomUUID(),
+          householdId,
+          tripId,
+          receiptId,
+          match.intentItemId,
+          match.receiptItemId,
+          persistedMatchType(match.reason),
+          match.confidenceBps,
+          now,
+          now
+        );
+    });
   await runPreparedInChunks(db, statements);
   const persisted = await db
     .prepare(
@@ -4796,7 +4920,19 @@ async function rebuildTripItemMatches(
     )
     .bind(receiptId)
     .all<TripItemMatchRow>();
-  return { ...inputs, matches: persisted.results, candidates };
+  const projectedShoppingMatches = projectShoppingAdditionMatches({
+    householdId,
+    tripId,
+    receiptId,
+    intentRows: inputs.intentRows,
+    automaticMatches: automatic,
+    persistedMatches: persisted.results,
+  });
+  return {
+    ...inputs,
+    matches: [...persisted.results, ...projectedShoppingMatches],
+    candidates,
+  };
 }
 
 interface QuestionCandidateInput {
@@ -5232,15 +5368,33 @@ async function readClosedLoopReview(
     receiptItems: inputs.receiptRows.map(toLogicReceipt),
     aliases: inputs.aliases,
   });
+  const projectedShoppingMatches = projectShoppingAdditionMatches({
+    householdId,
+    tripId: receipt.trip_id,
+    receiptId: receipt.id,
+    intentRows: inputs.intentRows,
+    automaticMatches: matching.matches,
+    persistedMatches: matchesResult.results,
+  });
+  const combinedMatches = [
+    ...matchesResult.results,
+    ...projectedShoppingMatches,
+  ];
+  const frozenIntentIds = new Set(
+    inputs.intentRows
+      .filter((item) => !Boolean(item.added_after_freeze))
+      .map((item) => item.id)
+  );
   const persistedIntentIds = new Set(
-    matchesResult.results.map((match) => match.intent_item_id)
+    combinedMatches.map((match) => match.intent_item_id)
   );
   const persistedReceiptIds = new Set(
-    matchesResult.results.map((match) => match.receipt_item_id)
+    combinedMatches.map((match) => match.receipt_item_id)
   );
   const possibleSubstitutions = matching.matches.filter(
     (match) =>
       match.status === "candidate" &&
+      frozenIntentIds.has(match.intentItemId) &&
       !persistedIntentIds.has(match.intentItemId) &&
       !persistedReceiptIds.has(match.receiptItemId)
   );
@@ -5263,7 +5417,7 @@ async function readClosedLoopReview(
     finalListEstimate,
     inputs.intentRows,
     inputs.receiptRows,
-    matchesResult.results,
+    combinedMatches,
     possibleSubstitutions,
     arithmetic
   );
@@ -5272,7 +5426,7 @@ async function readClosedLoopReview(
     receipt: receiptSummary(receipt),
     items: inputs.receiptRows.map(receiptItemSummary),
     intentItems: inputs.intentRows.map(intentItemSummary),
-    matches: matchesResult.results.map(matchSummary),
+    matches: combinedMatches.map(matchSummary),
     comparison,
     questions: questionsResult.results.map(questionSummary),
     upload: upload

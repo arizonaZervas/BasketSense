@@ -4047,7 +4047,20 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
     assert.equal(ingested.closedLoop.matches.length, 2);
     assert.equal(ingested.comparison.arithmetic.isReconciled, true);
     assert.equal(ingested.comparison.isProvisional, false);
+    assert.equal(ingested.comparison.buckets.matched.length, 2);
     assert.equal(ingested.comparison.buckets.receiptOnly.length, 1);
+    const projectedPostFreezeIntent = ingested.closedLoop.intentItems.find(
+      (item) => item.listItemId === postFreezeAdd.item.id,
+    );
+    assert.ok(projectedPostFreezeIntent);
+    assert.equal(projectedPostFreezeIntent.addedAfterFreeze, true);
+    assert.equal(
+      ingested.comparison.buckets.skippedPlanned.some(
+        (item) => item.intentItemId === projectedPostFreezeIntent.id,
+      ),
+      false,
+      "An unmatched shopping addition is not misreported as a skipped starting-list item",
+    );
     assert.ok(ingested.questions.length <= 3);
 
     const undoWithReceipt = await handleHouseholdPatch(
@@ -4183,6 +4196,132 @@ test("a reconciled receipt closes the frozen intent loop idempotently", async ()
       initial.currentTrip.scheduledFor,
       "The new receipt also updates the product's purchase history",
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("a receipt matches items added during shopping without mutating the frozen snapshot", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "shopping-addition-match@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "freeze_trip",
+            tripId,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const snapshot = db.database
+      .prepare(`SELECT id FROM trip_intent_snapshots WHERE trip_id = ?`)
+      .get(tripId);
+    assert.ok(snapshot?.id);
+
+    const addResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "water",
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 899,
+      }),
+      db,
+    );
+    assert.equal(addResponse.status, 201);
+    const addition = (await responseJson(addResponse)).item;
+    assert.equal(addition.addedAfterFreeze, true);
+    assert.equal(addition.source, "in_store");
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_intent_items
+           WHERE snapshot_id = ? AND list_item_id = ?`,
+        )
+        .get(snapshot.id, addition.id).count,
+      0,
+      "The immutable starting snapshot must not gain the shopping addition",
+    );
+
+    const ingestResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "shopping-addition-water-receipt",
+        tripId,
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip, "12:15:00"),
+        subtotalCents: 949,
+        taxCents: 0,
+        totalCents: 949,
+        discountCents: 0,
+        items: [
+          receiptDraftLine({
+            sourceLineNumber: 1,
+            costcoItemNumber: null,
+            rawDescription: "KS WATER 8OZ",
+            unitPriceCents: 949,
+            lineSubtotalCents: 949,
+          }),
+        ],
+      }),
+      db,
+    );
+    assert.equal(ingestResponse.status, 200);
+    const ingested = await responseJson(ingestResponse);
+    const shoppingIntent = ingested.closedLoop.intentItems.find(
+      (item) => item.listItemId === addition.id,
+    );
+    assert.ok(shoppingIntent);
+    assert.equal(shoppingIntent.addedAfterFreeze, true);
+    assert.equal(ingested.closedLoop.matches.length, 1);
+    assert.equal(ingested.comparison.buckets.matched.length, 0);
+    assert.equal(ingested.comparison.buckets.addedDuringTrip.length, 1);
+    assert.equal(ingested.comparison.buckets.receiptOnly.length, 0);
+    assert.equal(ingested.comparison.additionsCents, 949);
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM trip_item_matches
+           WHERE receipt_transaction_id = ?`,
+        )
+        .get(ingested.receiptId).count,
+      0,
+      "The live-addition projection must not create a foreign-key row in the frozen match table",
+    );
+
+    const finalizeResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_receipt",
+        receiptId: ingested.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizeResponse.status, 200);
+
+    const historicalResponse = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?view=trip-review&receiptId=${encodeURIComponent(ingested.receiptId)}`,
+      ),
+      db,
+    );
+    assert.equal(historicalResponse.status, 200);
+    const historical = (await responseJson(historicalResponse)).closedLoop;
+    assert.equal(historical.comparison.buckets.addedDuringTrip.length, 1);
+    assert.equal(historical.comparison.buckets.receiptOnly.length, 0);
+    assert.equal(historical.comparison.additionsCents, 949);
   } finally {
     db.close();
   }
