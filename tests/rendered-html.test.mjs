@@ -251,7 +251,13 @@ test("preserves readable receipt width and prepares long-photo recovery evidence
   assert.match(receiptFlowSource, /prepareReceiptRecoveryAssets/);
   assert.match(receiptFlowSource, /contrast\(1\.38\)/);
   assert.match(receiptFlowSource, /RECEIPT_RECOVERY_TILE_OVERLAP/);
-  assert.match(receiptFlowSource, /compressed\.size > LIVE_UPLOAD_SAFE_BYTES\) return file/);
+  assert.match(receiptFlowSource, /decodeReceiptImage/);
+  assert.match(receiptFlowSource, /Preparing this large photo without shrinking the receipt text/);
+  assert.doesNotMatch(receiptFlowSource, /compressed\.size > LIVE_UPLOAD_SAFE_BYTES\) return file/);
+  assert.doesNotMatch(
+    receiptFlowSource,
+    /Promise\.all\(\[\s*prepareReceiptUpload\(file\),\s*prepareReceiptRecoveryAssets\(file\)/,
+  );
 });
 
 test("reflows every primary surface from the available content width", async () => {

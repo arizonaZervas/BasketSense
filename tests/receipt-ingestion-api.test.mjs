@@ -80,27 +80,24 @@ test("receipt upload contract accepts PDFs and the supported image formats", () 
   assert.equal(isReceiptUploadContentType("image/svg+xml"), false);
 });
 
-test("receipt preparation passes PDFs through and preserves safe images", async () => {
+test("receipt preparation passes PDFs and safe images through without decoding", async () => {
   const pdf = new File(["%PDF synthetic"], "costco-order.pdf", {
     type: "application/pdf",
   });
   assert.equal(await prepareReceiptUpload(pdf), pdf);
 
   const originalCreateImageBitmap = globalThis.createImageBitmap;
-  let closed = false;
-  globalThis.createImageBitmap = async () => ({
-    width: 1_200,
-    height: 5_000,
-    close() {
-      closed = true;
-    },
-  });
+  let decodeCalls = 0;
+  globalThis.createImageBitmap = async () => {
+    decodeCalls += 1;
+    throw new Error("safe images should not be decoded");
+  };
   try {
     const photo = new File([new Uint8Array(1_024)], "costco-receipt.jpg", {
       type: "image/jpeg",
     });
     assert.equal(await prepareReceiptUpload(photo), photo);
-    assert.equal(closed, true);
+    assert.equal(decodeCalls, 0);
   } finally {
     if (originalCreateImageBitmap) {
       globalThis.createImageBitmap = originalCreateImageBitmap;

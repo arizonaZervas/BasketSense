@@ -250,21 +250,79 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
   });
 }
 
+type ReceiptImageSource = {
+  drawable: CanvasImageSource;
+  width: number;
+  height: number;
+  release: () => void;
+};
+
+async function decodeReceiptImage(file: File): Promise<ReceiptImageSource> {
+  if (typeof globalThis.createImageBitmap === "function") {
+    try {
+      let bitmap: ImageBitmap;
+      try {
+        bitmap = await globalThis.createImageBitmap(file, {
+          imageOrientation: "from-image",
+        });
+      } catch {
+        // Some iOS WebKit versions implement createImageBitmap but reject the
+        // options object. The default still honors the file's orientation.
+        bitmap = await globalThis.createImageBitmap(file);
+      }
+      return {
+        drawable: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        release: () => bitmap.close(),
+      };
+    } catch {
+      // Fall through to the broadly supported HTMLImageElement decoder.
+    }
+  }
+
+  if (typeof Image === "undefined") {
+    throw new Error("This browser could not decode the selected receipt photo.");
+  }
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.decoding = "async";
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("The selected receipt photo could not be decoded."));
+      image.src = objectUrl;
+    });
+    if (!image.naturalWidth || !image.naturalHeight) {
+      throw new Error("The selected receipt photo has no readable dimensions.");
+    }
+    return {
+      drawable: image,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      release: () => URL.revokeObjectURL(objectUrl),
+    };
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
 export async function prepareReceiptUpload(file: File) {
   const contentType = file.type.toLowerCase();
   if (!isReceiptImageContentType(contentType)) {
     return file;
   }
 
+  // Preserve already-uploadable photos byte-for-byte and avoid a large image
+  // decode on memory-constrained phones.
+  if (file.size <= LIVE_UPLOAD_SAFE_BYTES) {
+    return file;
+  }
+
   try {
-    const source = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const source = await decodeReceiptImage(file);
     try {
-      // A tall iPhone crop can already be safely uploadable. Downscaling it
-      // merely because its height exceeds 2,000 px made narrow receipt text
-      // unreadable, so byte size is the first and decisive preservation gate.
-      if (file.size <= LIVE_UPLOAD_SAFE_BYTES) {
-        return file;
-      }
       const encode = async (targetWidth: number, quality: number) => {
         const scale = Math.min(1, targetWidth / source.width);
         const canvas = document.createElement("canvas");
@@ -272,8 +330,15 @@ export async function prepareReceiptUpload(file: File) {
         canvas.height = Math.max(1, Math.round(source.height * scale));
         const context = canvas.getContext("2d");
         if (!context) return null;
-        context.drawImage(source, 0, 0, canvas.width, canvas.height);
-        return canvasToJpeg(canvas, quality);
+        try {
+          context.drawImage(source.drawable, 0, 0, canvas.width, canvas.height);
+          return await canvasToJpeg(canvas, quality);
+        } finally {
+          // Explicitly release tall canvas backing stores before the recovery
+          // pass decodes the image again on iOS.
+          canvas.width = 1;
+          canvas.height = 1;
+        }
       };
 
       // First reduce JPEG weight without throwing away pixels. Only then
@@ -291,17 +356,23 @@ export async function prepareReceiptUpload(file: File) {
       if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
         compressed = await encode(Math.min(1_050, source.width), 0.52);
       }
-      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) return file;
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        throw new Error("BasketSense could not create a safe-size copy of this receipt photo.");
+      }
       return new File([compressed], compressedReceiptFilename(file.name), {
         type: "image/jpeg",
         lastModified: file.lastModified,
       });
     } finally {
-      source.close();
+      source.release();
     }
-  } catch {
-    // Browsers that cannot decode a selected image keep the original upload path.
-    return file;
+  } catch (error) {
+    // Never send the oversized original: the Sites gateway would reject it
+    // before the receipt route could save it, and Retry would repeat the same
+    // opaque 413 failure.
+    throw error instanceof Error
+      ? error
+      : new Error("BasketSense could not prepare this large receipt photo.");
   }
 }
 
@@ -313,7 +384,7 @@ export async function prepareReceiptUpload(file: File) {
 export async function prepareReceiptRecoveryAssets(file: File) {
   if (!isReceiptImageContentType(file.type.toLowerCase())) return [] as File[];
   try {
-    const source = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const source = await decodeReceiptImage(file);
     try {
       const assets: File[] = [];
       const stem = file.name.replace(/\.[^.]+$/, "").trim() || "costco-receipt";
@@ -330,22 +401,27 @@ export async function prepareReceiptRecoveryAssets(file: File) {
         const context = canvas.getContext("2d");
         if (!context) return null;
         context.filter = "grayscale(1) contrast(1.38) brightness(1.08)";
-        context.drawImage(
-          source,
-          0,
-          sourceY,
-          source.width,
-          sourceHeight,
-          0,
-          0,
-          canvas.width,
-          canvas.height,
-        );
-        let blob = await canvasToJpeg(canvas, quality);
-        if (blob && blob.size > LIVE_UPLOAD_SAFE_BYTES) {
-          blob = await canvasToJpeg(canvas, 0.46);
+        try {
+          context.drawImage(
+            source.drawable,
+            0,
+            sourceY,
+            source.width,
+            sourceHeight,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+          );
+          let blob = await canvasToJpeg(canvas, quality);
+          if (blob && blob.size > LIVE_UPLOAD_SAFE_BYTES) {
+            blob = await canvasToJpeg(canvas, 0.46);
+          }
+          return blob && blob.size <= LIVE_UPLOAD_SAFE_BYTES ? blob : null;
+        } finally {
+          canvas.width = 1;
+          canvas.height = 1;
         }
-        return blob && blob.size <= LIVE_UPLOAD_SAFE_BYTES ? blob : null;
       };
 
       const enhanced = await encodeRegion(
@@ -387,7 +463,7 @@ export async function prepareReceiptRecoveryAssets(file: File) {
       }
       return assets;
     } finally {
-      source.close();
+      source.release();
     }
   } catch {
     return [] as File[];
@@ -1273,10 +1349,17 @@ export function ReceiptFlowDialog({
     setOcrStatus("Saving and reading your receipt privately");
     setOcrProgress(0.16);
     try {
-      const [uploadFile, recoveryAssets] = await Promise.all([
-        prepareReceiptUpload(file),
-        prepareReceiptRecoveryAssets(file),
-      ]);
+      if (file.size > LIVE_UPLOAD_SAFE_BYTES && isReceiptImageContentType(file.type.toLowerCase())) {
+        setOcrStatus("Preparing this large photo without shrinking the receipt text");
+        setOcrProgress(0.08);
+      }
+      // Do not decode a long phone photo twice in parallel. Two 10-megapixel
+      // bitmaps plus tall canvases can exhaust iOS WebKit memory, causing the
+      // old path to silently send the oversized original and receive a 413.
+      const uploadFile = await prepareReceiptUpload(file);
+      setOcrStatus("Preparing clearer receipt sections for recovery");
+      setOcrProgress(0.13);
+      const recoveryAssets = await prepareReceiptRecoveryAssets(uploadFile);
       const form = new FormData();
       form.append("file", uploadFile);
       if ((standalone || correction) && targetReceiptId) {

@@ -8,7 +8,10 @@ import {
   extractReceiptWithGemini,
   ReceiptExtractionError,
 } from "../workers/receipt-ingestion/src/extraction.ts";
-import { prepareReceiptRecoveryAssets } from "../app/receipt-review-flow.tsx";
+import {
+  prepareReceiptRecoveryAssets,
+  prepareReceiptUpload,
+} from "../app/receipt-review-flow.tsx";
 
 test("recovery extraction accepts an enhanced image plus ordered overlapping sections", () => {
   const request = buildGeminiGenerateContentRequest({
@@ -107,6 +110,77 @@ test("long receipt recovery creates a shadow-resistant full view and overlapping
     else delete globalThis.createImageBitmap;
     if (originalDocument) globalThis.document = originalDocument;
     else delete globalThis.document;
+  }
+});
+
+test("large receipt preparation retries createImageBitmap without Safari-unsupported options", async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  let decodeCalls = 0;
+  let closed = false;
+  globalThis.createImageBitmap = async (_file, options) => {
+    decodeCalls += 1;
+    if (options) throw new TypeError("options unsupported");
+    return {
+      width: 1_842,
+      height: 5_709,
+      close() { closed = true; },
+    };
+  };
+  globalThis.document = {
+    createElement() {
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return { drawImage() {} };
+        },
+        toBlob(callback) {
+          callback(new Blob([new Uint8Array(900_000)], { type: "image/jpeg" }));
+        },
+      };
+    },
+  };
+  try {
+    const prepared = await prepareReceiptUpload(new File(
+      [new Uint8Array(5_236_522)],
+      "IMG_4797.jpg",
+      { type: "image/jpeg" },
+    ));
+    assert.equal(decodeCalls, 2);
+    assert.equal(prepared.type, "image/jpeg");
+    assert.equal(prepared.size, 900_000);
+    assert.ok(prepared.size < 1.5 * 1024 * 1024);
+    assert.equal(closed, true);
+  } finally {
+    if (originalCreateImageBitmap) globalThis.createImageBitmap = originalCreateImageBitmap;
+    else delete globalThis.createImageBitmap;
+    if (originalDocument) globalThis.document = originalDocument;
+    else delete globalThis.document;
+  }
+});
+
+test("large receipt preparation never falls back to an oversized original", async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalImage = globalThis.Image;
+  globalThis.createImageBitmap = async () => {
+    throw new Error("decoder unavailable");
+  };
+  delete globalThis.Image;
+  try {
+    await assert.rejects(
+      () => prepareReceiptUpload(new File(
+        [new Uint8Array(5_236_522)],
+        "IMG_4797.jpg",
+        { type: "image/jpeg" },
+      )),
+      /could not decode/i,
+    );
+  } finally {
+    if (originalCreateImageBitmap) globalThis.createImageBitmap = originalCreateImageBitmap;
+    else delete globalThis.createImageBitmap;
+    if (originalImage) globalThis.Image = originalImage;
+    else delete globalThis.Image;
   }
 });
 
