@@ -118,18 +118,10 @@ test("Gemini request uses inline document data and a strict JSON field contract"
   assert.equal(parts[0].inlineData.data, "c3ludGhldGljIHJlY2VpcHQ=");
   assert.match(parts[1].text, /Costco receipt/i);
   assert.match(parts[1].text, /Identify every visible coupon, instant saving, and discount/i);
-  assert.match(parts[1].text, /supplied JSON schema/i);
+  assert.match(parts[1].text, /"purchasedAt"/);
+  assert.match(parts[1].text, /"rawDescription"/);
   assert.equal(request.generationConfig.responseMimeType, "application/json");
-  assert.deepEqual(request.generationConfig.responseJsonSchema.required, [
-    "purchasedAt",
-    "subtotalCents",
-    "taxCents",
-    "totalCents",
-    "discountCents",
-    "lines",
-    "warnings",
-  ]);
-  assert.equal(request.generationConfig.responseJsonSchema.properties.lines.maxItems, 100);
+  assert.equal("responseJsonSchema" in request.generationConfig, false);
   assert.equal(request.generationConfig.maxOutputTokens, MAX_RECEIPT_OUTPUT_TOKENS);
 });
 

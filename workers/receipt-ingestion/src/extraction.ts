@@ -1,6 +1,6 @@
 export const RECEIPT_EXTRACTION_SCHEMA_VERSION = "costco-receipt-v1";
 export const MAX_RECEIPT_SOURCE_BYTES = 8 * 1024 * 1024;
-export const MAX_RECEIPT_OUTPUT_TOKENS = 65_536;
+export const MAX_RECEIPT_OUTPUT_TOKENS = 16_384;
 
 export type ReceiptExtractionErrorCode =
   | "provider_http"
@@ -290,14 +290,13 @@ export function buildGeminiGenerateContentRequest({
             },
           })),
           {
-            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nExtract this Costco receipt into the supplied JSON schema. Return one compact JSON object with no prose or markdown. Return empty lines and warnings when the file is not a readable Costco receipt.`,
+            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nReturn one compact JSON object with exactly this contract and no prose or markdown:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco receipt into that contract. Return empty lines and warnings when the file is not a readable Costco receipt.`,
           },
         ],
       },
     ],
     generationConfig: {
       responseMimeType: "application/json",
-      responseJsonSchema: receiptDraftSchema,
       maxOutputTokens: MAX_RECEIPT_OUTPUT_TOKENS,
     },
   };
@@ -364,7 +363,13 @@ export async function extractReceiptWithGemini({
       `Receipt provider failed with HTTP ${response.status}` +
         (providerCode ? ` (${providerCode.slice(0, 120)})` : "") +
         (providerMessage ? `: ${providerMessage}` : ""),
-      { durationMs: Date.now() - startedAt },
+      {
+        finishReason: [`HTTP_${response.status}`, providerCode]
+          .filter(Boolean)
+          .join(":")
+          .slice(0, 120),
+        durationMs: Date.now() - startedAt,
+      },
     );
   }
   const body = (await response.json()) as GeminiGenerateContentResponse;

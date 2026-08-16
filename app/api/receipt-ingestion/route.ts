@@ -11,7 +11,6 @@ export const dynamic = "force-dynamic";
 
 const MAX_RECEIPT_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
-const DEFAULT_GEMINI_RECOVERY_MODEL = "gemini-3.5-flash";
 interface RuntimeEnv {
   DB?: D1Database;
   RECEIPTS?: R2Bucket;
@@ -97,7 +96,8 @@ async function runtime() {
     geminiModel: workersRuntime.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
     geminiRecoveryModel:
       workersRuntime.env.GEMINI_RECOVERY_MODEL?.trim() ||
-      DEFAULT_GEMINI_RECOVERY_MODEL,
+      workersRuntime.env.GEMINI_MODEL?.trim() ||
+      DEFAULT_GEMINI_MODEL,
   };
 }
 
@@ -302,6 +302,9 @@ function publicIngestion(row: IngestionRow, draft?: unknown) {
     source_missing: "The saved private receipt file could not be reopened.",
     unknown: "The receipt reader could not produce a reliable draft.",
   };
+  const providerConfigurationRejected =
+    row.error_code === "provider_http" &&
+    row.provider_finish_reason?.startsWith("HTTP_400");
   return {
     id: row.id,
     tripId: row.trip_id,
@@ -311,7 +314,9 @@ function publicIngestion(row: IngestionRow, draft?: unknown) {
     canRetry: row.status === "failed",
     error:
       row.status === "failed"
-        ? errorMessages[row.error_code ?? "unknown"] ?? errorMessages.unknown
+        ? providerConfigurationRejected
+          ? "The receipt reader rejected its current configuration."
+          : errorMessages[row.error_code ?? "unknown"] ?? errorMessages.unknown
         : null,
     errorCode: row.status === "failed" ? row.error_code : null,
     extractionPass: row.extraction_pass,

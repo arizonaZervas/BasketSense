@@ -33,6 +33,23 @@ test("recovery extraction accepts an enhanced image plus ordered overlapping sec
 test("receipt provider failures are classified without returning receipt contents", async () => {
   const originalFetch = globalThis.fetch;
   try {
+    globalThis.fetch = async () => Response.json(
+      { error: { status: "INVALID_ARGUMENT", code: 400, message: "Request rejected" } },
+      { status: 400 },
+    );
+    await assert.rejects(
+      () => extractReceiptWithGemini({
+        apiKey: "test-key",
+        model: "test-model",
+        contentType: "image/jpeg",
+        bytes: new Uint8Array([1]).buffer,
+      }),
+      (error) =>
+        error instanceof ReceiptExtractionError &&
+        error.code === "provider_http" &&
+        error.details.finishReason === "HTTP_400:INVALID_ARGUMENT",
+    );
+
     globalThis.fetch = async () => Response.json({
       responseId: "response-safe-id",
       candidates: [{ finishReason: "STOP", content: { parts: [{ text: "not-json" }] } }],
@@ -258,10 +275,9 @@ test("receipt ingestion stores recovery evidence separately and records safe dia
   assert.match(source, /provider_duration_ms/);
   assert.match(source, /unreadable_image/);
   assert.match(source, /DEFAULT_GEMINI_MODEL = "gemini-3\.5-flash-lite"/);
-  assert.match(source, /DEFAULT_GEMINI_RECOVERY_MODEL = "gemini-3\.5-flash"/);
   assert.match(
     source,
-    /GEMINI_RECOVERY_MODEL\?\.trim\(\) \|\|\s+DEFAULT_GEMINI_RECOVERY_MODEL/,
+    /GEMINI_RECOVERY_MODEL\?\.trim\(\) \|\|\s+workersRuntime\.env\.GEMINI_MODEL\?\.trim\(\) \|\|\s+DEFAULT_GEMINI_MODEL/,
   );
   assert.doesNotMatch(source, /console\.error\([^\n]*draft/);
 });
