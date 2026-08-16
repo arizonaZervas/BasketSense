@@ -298,3 +298,32 @@ test("the third illustration batch covers purchase ranks 176 through 200", () =>
     assert.ok(acceptedItems.has(itemNumber), `missing illustration for ${itemNumber}`);
   }
 });
+
+test("the fourth illustration batch adds 30 current catalog fallbacks", () => {
+  const manifest = productIllustrationManifest();
+  const acceptedItems = new Set(
+    manifest
+      .filter((entry) => entry.acceptanceStatus === "accepted")
+      .map((entry) => entry.itemNumber),
+  );
+
+  for (const itemNumber of [
+    "1796317", "1801553", "1806649", "1831841", "1847239",
+    "1862839", "1875256", "1878401", "1908452", "1925186",
+    "1925833", "1946763", "1949713", "1954681", "1960946",
+    "1966263", "1966432", "1970759", "1973589", "1984805",
+    "1993851", "1998642", "2003025", "2030689", "2033625",
+    "2060112", "2068175", "3247022", "4165769", "9877788",
+  ]) {
+    assert.ok(acceptedItems.has(itemNumber), `missing illustration for ${itemNumber}`);
+  }
+
+  assert.equal(
+    manifest.filter((entry) => entry.acceptanceStatus === "accepted").length,
+    230,
+  );
+  assert.equal(
+    manifest.filter((entry) => entry.acceptanceStatus === "pending").length,
+    41,
+  );
+});

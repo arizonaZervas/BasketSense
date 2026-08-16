@@ -55,6 +55,36 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
+test("advertises a recognizable BasketSense icon across browser surfaces", async () => {
+  const response = await render();
+  const html = await response.text();
+  const manifest = JSON.parse(
+    await readFile(new URL("../public/site.webmanifest", import.meta.url), "utf8"),
+  );
+  const appleTouchIcon = await readFile(
+    new URL("../public/apple-touch-icon.png", import.meta.url),
+  );
+  const favicon = await readFile(new URL("../public/favicon.ico", import.meta.url));
+
+  assert.match(html, /<link rel="manifest" href="\/site\.webmanifest"/i);
+  assert.match(html, /<link rel="icon" href="\/favicon\.ico" sizes="any"/i);
+  assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml"/i);
+  assert.match(html, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png" sizes="180x180"/i);
+  assert.equal(manifest.name, "BasketSense");
+  assert.deepEqual(
+    manifest.icons.map(({ src, sizes }) => [src, sizes]),
+    [
+      ["/icon-192x192.png", "192x192"],
+      ["/icon-512x512.png", "512x512"],
+    ],
+  );
+  assert.equal(appleTouchIcon.subarray(1, 4).toString("ascii"), "PNG");
+  assert.equal(appleTouchIcon.readUInt32BE(16), 180);
+  assert.equal(appleTouchIcon.readUInt32BE(20), 180);
+  assert.equal(favicon.readUInt16LE(2), 1);
+  assert.equal(favicon.readUInt16LE(4), 3);
+});
+
 test("renders the four focused household destinations", async () => {
   const response = await render();
   const html = await response.text();
@@ -302,6 +332,10 @@ test("preserves readable receipt width and prepares long-photo recovery evidence
 });
 
 test("reflows every primary surface from the available content width", async () => {
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
   const styles = await readFile(
     new URL("../app/globals.css", import.meta.url),
     "utf8",
@@ -327,6 +361,26 @@ test("reflows every primary surface from the available content width", async () 
   assert.match(
     styles,
     /\.bars \{[\s\S]*?overflow-x: auto;[\s\S]*?overscroll-behavior-inline: contain;/,
+  );
+  assert.match(
+    dashboardSource,
+    /notation: "compact"[\s\S]*compactDisplay: "short"/,
+  );
+  assert.match(
+    dashboardSource,
+    /className="category-donut-center"[\s\S]*aria-label=\{currency\.format\(categoryTotalCents \/ 100\)\}[\s\S]*compactCurrency\.format\(categoryTotalCents \/ 100\)/,
+  );
+  assert.match(
+    styles,
+    /\.category-donut-wrap \{[\s\S]*?container-type: inline-size;/,
+  );
+  assert.match(
+    styles,
+    /\.category-donut-center \{[\s\S]*?inset: 23%;[\s\S]*?overflow: hidden;/,
+  );
+  assert.match(
+    styles,
+    /\.category-donut-center strong \{[\s\S]*?font-size: clamp\(13px, 8cqi, 20px\);[\s\S]*?text-overflow: ellipsis;/,
   );
 });
 

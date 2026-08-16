@@ -1,0 +1,21 @@
+{
+  "name": "BasketSense",
+  "short_name": "BasketSense",
+  "description": "A private household Costco companion.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8f1e5",
+  "theme_color": "#183429",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

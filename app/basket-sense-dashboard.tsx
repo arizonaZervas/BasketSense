@@ -201,7 +201,9 @@ const currency = new Intl.NumberFormat("en-US", {
 const compactCurrency = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
-  maximumFractionDigits: 0,
+  notation: "compact",
+  compactDisplay: "short",
+  maximumFractionDigits: 1,
 });
 
 const fullDate = new Intl.DateTimeFormat("en-US", {
@@ -3744,12 +3746,28 @@ function CategorySpendDonut({
             <>
               <span>{hoveredSlice.category.shortLabel}</span>
               <strong>{Math.round(hoveredSlice.share)}%</strong>
-              <small>{currency.format(hoveredSlice.category.householdViewCents / 100)}</small>
+              <small
+                aria-label={currency.format(
+                  hoveredSlice.category.householdViewCents / 100,
+                )}
+                title={currency.format(
+                  hoveredSlice.category.householdViewCents / 100,
+                )}
+              >
+                {compactCurrency.format(
+                  hoveredSlice.category.householdViewCents / 100,
+                )}
+              </small>
             </>
           ) : (
             <>
               <span>Categories</span>
-              <strong>{currency.format(categoryTotalCents / 100)}</strong>
+              <strong
+                aria-label={currency.format(categoryTotalCents / 100)}
+                title={currency.format(categoryTotalCents / 100)}
+              >
+                {compactCurrency.format(categoryTotalCents / 100)}
+              </strong>
             </>
           )}
         </div>

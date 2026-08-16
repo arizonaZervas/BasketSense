@@ -1134,13 +1134,14 @@ summary:focus-visible,
   position: relative;
   width: min(100%, 255px);
   margin: 0 auto;
+  container-type: inline-size;
 }
 
 .category-donut {
   display: block;
   width: 100%;
   height: auto;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .category-donut-track {
@@ -1167,33 +1168,51 @@ summary:focus-visible,
 
 .category-donut-center {
   position: absolute;
-  inset: 0;
+  inset: 23%;
   display: grid;
+  min-width: 0;
   align-content: center;
   justify-items: center;
+  border-radius: 50%;
+  overflow: hidden;
   pointer-events: none;
   text-align: center;
 }
 
 .category-donut-center span {
+  max-width: 100%;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  font-size: clamp(9px, 4.8cqi, 12px);
   font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .category-donut-center strong {
+  max-width: 100%;
   margin-top: 2px;
+  overflow: hidden;
   font-family: var(--font-geist-mono), monospace;
   font-size: 20px;
-  letter-spacing: -0.045em;
+  font-size: clamp(13px, 8cqi, 20px);
+  letter-spacing: -0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .category-donut-center small {
+  max-width: 100%;
   margin-top: 2px;
+  overflow: hidden;
   color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11px;
+  font-size: clamp(8px, 4.4cqi, 11px);
   font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .category-donut-legend {
