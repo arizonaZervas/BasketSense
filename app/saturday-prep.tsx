@@ -24,7 +24,24 @@ function prepDateLabel(value: string) {
 }
 
 function evidenceLabel(item: SaturdayPrepItem) {
-  if (item.recommendationReason) return item.recommendationReason;
+  if (item.recommendationReason) {
+    const purchases = item.recommendationReason.match(/(\d+) purchases?/i)?.[1];
+    const interval = item.recommendationReason.match(/median interval (\d+) days?/i)?.[1];
+    const cue = item.recommendationReason.startsWith("Check supply:")
+      ? "Check at home"
+      : item.recommendationReason.startsWith("Optional seasonal favorite:")
+        ? "Seasonal favorite"
+        : item.recommendationReason.startsWith("Seasonal consider:")
+          ? "Seasonal pick"
+          : item.recommendationReason.startsWith("Recurring essential:")
+            ? "Likely due"
+            : "Receipt rhythm";
+    return [
+      cue,
+      purchases ? `${purchases} past ${purchases === "1" ? "purchase" : "purchases"}` : null,
+      interval ? `about every ${interval} days` : null,
+    ].filter(Boolean).join(" · ");
+  }
   if (item.confidenceBps !== null && item.confidenceBps >= 8_000) {
     return "Strong recurring receipt cadence";
   }
@@ -76,6 +93,7 @@ export function SaturdayPrepExperience({
     () => sourceItems.filter((item) => item.section === "check_first").slice(0, 3),
     [sourceItems],
   );
+  const quickPickCount = likelyDue.length + checkAtHome.length;
   const addedCount = Object.values(decisions).filter((value) => value === "add").length;
   const homeCheckedCount = Object.values(decisions).filter((value) =>
     value === "have_enough" || value === "not_sure",
@@ -123,17 +141,14 @@ export function SaturdayPrepExperience({
     return (
       <section className="saturday-prep-card" aria-labelledby="saturday-prep-title">
         <div className="saturday-prep-card-copy">
-          <p className="section-label">{prepDateLabel(scheduledFor)} · about 2 minutes</p>
-          <h2 id="saturday-prep-title">A quick check before Costco?</h2>
-          <p>
-            Review a few likely-due and check-at-home ideas. Nothing joins the
-            shared list until you choose it.
+          <p className="section-label">
+            {prepDateLabel(scheduledFor)} · {quickPickCount}{" "}
+            {quickPickCount === 1 ? "pick" : "picks"} · 2 min
           </p>
-          <div className="saturday-prep-counts" aria-label="Prep overview">
-            <span>{likelyDue.length} likely due</span>
-            <span>{checkAtHome.length} check at home</span>
-            {suppressedCount ? <span>{suppressedCount} remembered choice</span> : null}
-          </div>
+          <h2 id="saturday-prep-title">Quick picks before Costco</h2>
+          {suppressedCount ? (
+            <span className="sr-only">{suppressedCount} remembered household choice</span>
+          ) : null}
         </div>
         <div className="saturday-prep-card-actions">
           <button
@@ -142,14 +157,14 @@ export function SaturdayPrepExperience({
             className="primary-button prep-start-button"
             onClick={startPrep}
           >
-            Start Saturday Prep
+            Review picks
           </button>
           <button
             type="button"
             className="text-button prep-dismiss-button"
             onClick={() => rememberStatus("dismissed")}
           >
-            Not this week
+            Skip
           </button>
         </div>
       </section>
@@ -160,8 +175,8 @@ export function SaturdayPrepExperience({
   const currentTitle = step === 0 ? "May be worth adding" : "Do you have enough?";
   const currentCopy =
     step === 0
-      ? "The evidence is shown with every idea. Skip and Later do not change future suggestions."
-      : "BasketSense is asking—not claiming to know what is in the house.";
+      ? "Only Add changes the shared list."
+      : "A quick check at home keeps the list useful.";
 
   return (
     <section className="saturday-prep-flow" aria-labelledby="saturday-prep-step-title">
@@ -174,7 +189,7 @@ export function SaturdayPrepExperience({
           <p>
             {step < 2
               ? currentCopy
-              : "You made the useful choices. There is no target to beat and no score to improve."}
+              : "Done. The shared list stays editable until shopping starts."}
           </p>
         </div>
         <button
@@ -189,7 +204,7 @@ export function SaturdayPrepExperience({
         </button>
       </div>
       <div className="saturday-prep-progress" aria-hidden="true">
-        <span style={{ width: `${((step + 1) / 3) * 100}%` }} />
+        <span style={{ transform: `scaleX(${(step + 1) / 3})` }} />
       </div>
 
       {step < 2 ? (

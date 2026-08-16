@@ -56,7 +56,7 @@ import {
   type ClosedLoopSnapshot,
   type ReceiptStep,
 } from "./receipt-review-flow";
-import { topDownConfettiStyle } from "./top-down-confetti";
+import { ConfettiCanvas } from "./confetti-canvas";
 import {
   productMemoryLabel,
   productMemorySuppressesSuggestion,
@@ -2655,14 +2655,7 @@ function ThisWeekTab({
         <div className="weekly-list-stack">
           {showListComplete ? (
             <section className="shopping-complete" role="status" aria-live="polite">
-              <div className="shopping-complete-confetti" aria-hidden="true">
-                {Array.from({ length: 120 }, (_, index) => (
-                  <span
-                    key={index}
-                    style={topDownConfettiStyle(index)}
-                  />
-                ))}
-              </div>
+              <ConfettiCanvas />
               <span className="shopping-complete-mark" aria-hidden="true">✓</span>
               <div>
                 <strong>List complete — nice work.</strong>

@@ -181,13 +181,17 @@ test("keeps sandbox review answers in the owner-only test household", async () =
   assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
 });
 
-test("uses a smooth, top-down celebration without converging particle paths", async () => {
+test("uses a smooth fullscreen canvas celebration with bounded mobile work", async () => {
   const dashboardSource = await readFile(
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
   );
+  const reviewSource = await readFile(
+    new URL("../app/receipt-review-flow.tsx", import.meta.url),
+    "utf8",
+  );
   const confettiSource = await readFile(
-    new URL("../app/top-down-confetti.ts", import.meta.url),
+    new URL("../app/confetti-canvas.tsx", import.meta.url),
     "utf8",
   );
   const styles = await readFile(
@@ -195,22 +199,22 @@ test("uses a smooth, top-down celebration without converging particle paths", as
     "utf8",
   );
 
-  assert.match(dashboardSource, /Array\.from\(\{ length: 120 \}/);
-  assert.match(dashboardSource, /topDownConfettiStyle/);
+  assert.match(dashboardSource, /<ConfettiCanvas \/>/);
+  assert.match(reviewSource, /<ConfettiCanvas \/>/);
+  assert.doesNotMatch(dashboardSource, /Array\.from\(\{ length: 120 \}/);
   assert.match(dashboardSource, /const completesList =[\s\S]*activeIncluded\.length === 1/);
   assert.match(dashboardSource, /onToggleChecked\(item\)\.then\(\(saved\) =>/);
-  assert.match(confettiSource, /--confetti-drift-mid/);
-  assert.match(confettiSource, /--confetti-drift-late/);
-  assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;/);
-  assert.match(styles, /left: var\(--confetti-start-x\);/);
-  assert.match(styles, /top: -10dvh;/);
-  assert.match(styles, /animation: shopping-confetti-shower var\(--confetti-duration\)/);
-  assert.match(styles, /var\(--confetti-drift-mid\)/);
-  assert.match(styles, /var\(--confetti-drift-late\)/);
-  assert.match(styles, /var\(--confetti-drift-x\)/);
-  assert.match(styles, /var\(--confetti-fall\)/);
-  assert.doesNotMatch(styles, /--confetti-sway-a|--confetti-sway-b/);
-  assert.match(styles, /clip-path: polygon/);
+  assert.match(confettiSource, /Math\.min\(420, Math\.max\(220,/);
+  assert.match(confettiSource, /window\.requestAnimationFrame\(drawFrame\)/);
+  assert.match(confettiSource, /window\.cancelAnimationFrame\(frameId\)/);
+  assert.match(confettiSource, /window\.removeEventListener\("resize", resize\)/);
+  assert.match(confettiSource, /prefers-reduced-motion: reduce/);
+  assert.match(confettiSource, /Math\.min\(window\.devicePixelRatio \|\| 1, 1\.5\)/);
+  assert.match(confettiSource, /particle\.velocityY \+= 0\.028/);
+  assert.match(confettiSource, /Math\.sin\(particle\.y \/ 30 \+ particle\.phase\)/);
+  assert.match(confettiSource, /context\.scale\(1, Math\.cos\(particle\.rotation\)\)/);
+  assert.match(styles, /\.shopping-complete-confetti \{[\s\S]*position: fixed;[\s\S]*width: 100vw;[\s\S]*height: 100dvh;/);
+  assert.doesNotMatch(styles, /shopping-confetti-shower|--confetti-drift/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.shopping-complete-confetti/);
   assert.match(styles, /:root\[data-theme="warm"\]/);
   assert.match(styles, /--card-shadow: 0 2px 6px/);
@@ -279,6 +283,47 @@ test("reflows every primary surface from the available content width", async () 
     styles,
     /@container basket-main \(max-width: 680px\) \{[\s\S]*\.detail-metrics,[\s\S]*\.question-options[\s\S]*grid-template-columns: 1fr;/,
   );
+  assert.match(
+    styles,
+    /\.spend-card,\s*\.category-card \{[\s\S]*?min-width: 0;/,
+  );
+});
+
+test("Saturday Prep is compact and inherits readable theme colors", async () => {
+  const source = await readFile(
+    new URL("../app/saturday-prep.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const cardStyles = styles.match(/\.saturday-prep-card \{([\s\S]*?)\n\}/)?.[1] ?? "";
+
+  assert.match(source, /Quick picks before Costco/);
+  assert.match(source, /Review picks/);
+  assert.match(source, />\s*Skip\s*</);
+  assert.doesNotMatch(source, /Review a few likely-due|Nothing joins the shared list/);
+  assert.match(source, /Only Add changes the shared list/);
+  assert.match(source, /about every \$\{interval\} days/);
+  assert.doesNotMatch(source, /if \(item\.recommendationReason\) return item\.recommendationReason/);
+  assert.match(cardStyles, /background: color-mix\([^;]*var\(--forest-soft\)[^;]*var\(--paper-strong\)/);
+  assert.match(cardStyles, /color: var\(--ink\)/);
+  assert.doesNotMatch(cardStyles, /var\(--forest-dark\)|var\(--on-forest\)/);
+  assert.match(source, /transform: `scaleX\(\$\{\(step \+ 1\) \/ 3\}\)`/);
+  assert.match(styles, /\.saturday-prep-progress span \{[\s\S]*transition: transform 180ms/);
+  assert.doesNotMatch(styles, /\.saturday-prep-progress span \{[\s\S]*?transition: width/);
+});
+
+test("keeps receipt and Recap focus, alignment, and narrow headers polished", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\[tabindex="-1"\]:focus \{\s*outline: 0;/);
+  assert.doesNotMatch(styles, /\[tabindex="-1"\]:focus-visible/);
+  assert.match(styles, /\.review-section-heading \{\s*display: block;/);
+  assert.match(styles, /\.receipt-check-card \{[\s\S]*?margin-left: 0;/);
+  assert.match(styles, /@media \(max-width: 360px\) \{[\s\S]*?\.theme-control-swatch \{\s*display: none;/);
+  assert.match(
+    styles,
+    /@media \(min-width: 761px\) and \(max-width: 900px\),[\s\S]*?\.topbar {[\s\S]*?padding-inline: 20px;[\s\S]*?\.week-page > \.page-heading\.with-controls::after \{\s*display: none;/,
+  );
 });
 
 test("preserves an optimistic check while a stale list refresh is in flight", async () => {
@@ -307,7 +352,10 @@ test("receipt capture offers camera, photo-library, and Costco PDF actions", asy
   assert.match(source, /Choose a Costco receipt photo or PDF from your library/);
   assert.match(source, /isReceiptImageContentType/);
   assert.match(source, /iPhone HEIC photos can be drafted automatically/);
-  assert.match(source, /Enter Discounts as a positive total/);
+  assert.match(
+    source,
+    /Enter \{standalone \? "order discounts" : "discounts"\} as a positive total/,
+  );
   assert.match(source, /<option value="discount">Discount<\/option>/);
 });
 
