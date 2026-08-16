@@ -267,10 +267,15 @@ select:focus-visible,
 textarea:focus-visible,
 [open] > summary:focus-visible,
 summary:focus-visible,
-[tabindex="0"]:focus-visible,
-[tabindex="-1"]:focus-visible {
+[tabindex="0"]:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 3px;
+}
+
+/* Programmatically focused headings announce a new view to assistive
+   technology. They are not controls, so a control-sized outline is noisy. */
+[tabindex="-1"]:focus {
+  outline: 0;
 }
 
 .sr-only {
@@ -1569,23 +1574,6 @@ td small {
 .product-image-library-copy > small {
   color: var(--muted);
   font-size: 12px;
-}
-
-.product-image-progress {
-  width: min(420px, 100%);
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--surface-hover);
-}
-
-.product-image-progress > span {
-  display: block;
-  min-width: 2px;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--forest);
-  transition: width 200ms cubic-bezier(0.25, 1, 0.5, 1);
 }
 
 .product-layout {
@@ -3090,67 +3078,11 @@ button.price-point:hover {
   position: fixed;
   inset: 0;
   z-index: 30;
-  overflow: hidden;
+  display: block;
+  width: 100vw;
+  height: 100dvh;
+  contain: strict;
   pointer-events: none;
-}
-
-.shopping-complete-confetti span {
-  position: absolute;
-  left: var(--confetti-start-x);
-  top: -10dvh;
-  width: var(--confetti-size);
-  height: var(--confetti-height);
-  border-radius: 2px;
-  background: var(--apricot);
-  opacity: 0;
-  will-change: transform, opacity;
-  animation: shopping-confetti-shower var(--confetti-duration)
-    linear var(--confetti-delay) both;
-}
-
-.shopping-complete-confetti span:nth-child(5n) { background: var(--forest); }
-.shopping-complete-confetti span:nth-child(5n + 1) { background: var(--apricot); }
-.shopping-complete-confetti span:nth-child(5n + 2) { background: var(--lilac); }
-.shopping-complete-confetti span:nth-child(5n + 3) { background: var(--sky); }
-.shopping-complete-confetti span:nth-child(5n + 4) { background: var(--rose); }
-.shopping-complete-confetti span:nth-child(4n) { border-radius: 50%; }
-.shopping-complete-confetti span:nth-child(7n) {
-  clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
-
-@keyframes shopping-confetti-shower {
-  0% {
-    opacity: 0;
-    transform: translate3d(-50%, -8dvh, 0) scale(0.82) rotate(0deg);
-  }
-  7% {
-    opacity: 1;
-    transform: translate3d(-50%, 0dvh, 0) scale(1) rotate(0deg);
-  }
-  48% {
-    opacity: 1;
-    transform: translate3d(
-      calc(-50% + var(--confetti-drift-mid)),
-      49dvh,
-      0
-    ) rotate(var(--confetti-spin-a));
-  }
-  82% {
-    opacity: 1;
-    transform: translate3d(
-      calc(-50% + var(--confetti-drift-late)),
-      92dvh,
-      0
-    ) rotate(var(--confetti-spin-b));
-  }
-  100% {
-    opacity: 0;
-    transform: translate3d(
-      calc(-50% + var(--confetti-drift-x)),
-      var(--confetti-fall),
-      0
-    ) rotate(var(--confetti-spin-c));
-  }
 }
 
 .suggestion-dot {
@@ -4151,6 +4083,40 @@ button.price-point:hover {
   .receipt-check-card .primary-button,
   .receipt-check-card .secondary-button {
     width: 100%;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 900px),
+  (max-height: 500px) and (max-width: 1100px) {
+  .topbar {
+    gap: 12px;
+    padding-inline: 20px;
+  }
+
+  .topbar-actions {
+    flex: 0 0 auto;
+    gap: 8px;
+  }
+
+  .topbar .avatar-stack {
+    display: none;
+  }
+
+  .theme-control {
+    flex: 0 0 auto;
+  }
+
+  .mobile-receipt-button {
+    white-space: nowrap;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls {
+    min-height: 0;
+    padding: 24px;
+  }
+
+  :root[data-theme="warm"] .week-page > .page-heading.with-controls::after {
+    display: none;
   }
 }
 
@@ -5391,8 +5357,7 @@ button.price-point:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .checked-off-arrival,
-  .shopping-complete-confetti span {
+  .checked-off-arrival {
     animation: none;
   }
 
@@ -6399,10 +6364,7 @@ button.price-point:hover {
 }
 
 .review-section-heading {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
+  display: block;
 }
 
 .review-section-heading h2,
@@ -6436,7 +6398,7 @@ button.price-point:hover {
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-left: 56px;
+  margin-left: 0;
   padding: 18px;
 }
 
@@ -6483,7 +6445,7 @@ button.price-point:hover {
 }
 
 .review-bridge-card {
-  margin-left: 56px;
+  margin-left: 0;
   padding: 20px;
 }
 
@@ -6499,7 +6461,7 @@ button.price-point:hover {
 .review-complete-card,
 .review-section > .receipt-flow-note,
 .resolved-review-answers {
-  margin-left: 56px;
+  margin-left: 0;
 }
 
 .evidence-questions {
@@ -6700,7 +6662,7 @@ button.price-point:hover {
 }
 
 .ritual-guardrail {
-  margin-left: 56px;
+  margin-left: 0;
   border-top: 1px solid var(--line);
   padding: 16px 2px 0;
 }
@@ -6975,11 +6937,6 @@ button.price-point:hover {
   .receipt-spotlight-controls .primary-button {
     min-width: 0;
     font-size: 12px;
-  }
-
-  .review-section-heading {
-    grid-template-columns: 38px minmax(0, 1fr);
-    gap: 10px;
   }
 
   .review-section-number {
@@ -7287,56 +7244,67 @@ button.price-point:hover {
   }
 }
 
+@media (max-width: 360px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+
+  .topbar-actions {
+    gap: 5px;
+  }
+
+  .theme-control {
+    gap: 3px;
+    padding-inline: 6px;
+  }
+
+  .theme-control-swatch {
+    display: none;
+  }
+
+  .theme-select {
+    width: 54px;
+  }
+
+  .mobile-receipt-button {
+    padding-inline: 12px;
+  }
+
+  .topbar-sign-out {
+    font-size: 11px;
+  }
+}
+
 /* Saturday Prep and explicit household Product Memory */
 .saturday-prep-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 28px;
+  gap: 24px;
   margin: 18px 0;
-  padding: 22px 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--success-border);
   border-radius: var(--radius-card);
-  background: var(--forest-dark);
-  color: var(--on-forest);
+  background: color-mix(in srgb, var(--forest-soft) 46%, var(--paper-strong));
+  color: var(--ink);
 }
 
 .saturday-prep-card .section-label {
-  margin-bottom: 7px;
-  color: color-mix(in srgb, var(--on-forest) 78%, var(--forest-soft));
+  margin-bottom: 6px;
+  color: var(--forest);
 }
 
 .saturday-prep-card h2,
 .saturday-prep-flow h2 {
   margin: 0;
-  font-size: 22px;
+  font-size: 21px;
   line-height: 1.15;
   letter-spacing: -0.025em;
 }
 
-.saturday-prep-card-copy > p:last-of-type,
 .saturday-prep-flow-header p:last-child {
   max-width: 68ch;
   margin: 7px 0 0;
-}
-
-.saturday-prep-card-copy > p:last-of-type {
-  color: color-mix(in srgb, var(--on-forest) 86%, transparent);
-}
-
-.saturday-prep-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 14px;
-  margin-top: 15px;
-  color: color-mix(in srgb, var(--on-forest) 80%, transparent);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.saturday-prep-counts span::before {
-  content: "•";
-  margin-right: 6px;
-  color: var(--apricot);
 }
 
 .saturday-prep-card-actions {
@@ -7348,14 +7316,15 @@ button.price-point:hover {
 
 .saturday-prep-card .prep-start-button {
   min-height: 44px;
-  border-color: var(--on-forest);
-  background: var(--on-forest);
-  color: var(--forest-dark);
 }
 
 .saturday-prep-card .prep-dismiss-button {
   min-height: 44px;
-  color: color-mix(in srgb, var(--on-forest) 84%, transparent);
+  color: var(--muted);
+}
+
+.saturday-prep-card .prep-dismiss-button:hover {
+  color: var(--ink);
 }
 
 .saturday-prep-flow {
@@ -7389,10 +7358,12 @@ button.price-point:hover {
 
 .saturday-prep-progress span {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: var(--forest);
-  transition: width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: left center;
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .saturday-prep-items {
@@ -7658,17 +7629,17 @@ button.price-point:hover {
   .saturday-prep-card {
     align-items: stretch;
     flex-direction: column;
-    gap: 16px;
-    padding: 18px;
+    gap: 14px;
+    padding: 16px;
   }
 
   .saturday-prep-card-actions {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    width: 100%;
   }
 
-  .saturday-prep-card-actions button {
-    width: 100%;
+  .saturday-prep-card-actions .prep-start-button {
+    flex: 1;
   }
 
   .saturday-prep-flow {

@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { topDownConfettiStyle } from "./top-down-confetti";
+import { ConfettiCanvas } from "./confetti-canvas";
 import { reconcileReceipt } from "./receipt-logic";
 import {
   PRODUCT_CATEGORY_PRESENTATION,
@@ -177,6 +177,7 @@ const bucketLabels: Record<string, string> = {
   planned_not_purchased: "Saved list, not found on receipt",
   in_store: "Added during trip + purchased",
   added_during_trip: "Added during trip + purchased",
+  addedduringtrip: "Added during trip + purchased",
   optional: "Check-first or consider item purchased",
   consider: "Check-first or consider item purchased",
   receipt_only: "Not on saved list",
@@ -200,6 +201,8 @@ function bucketSpotlightCopy(key: string) {
       return "These saved-list items do not appear on this receipt.";
     case "in_store":
     case "added_during_trip":
+    case "addedduringtrip":
+      return "These receipt lines match items added after shopping began.";
     case "receipt_only":
     case "receiptonly":
     case "unplanned":
@@ -883,11 +886,7 @@ export function ReceiptNextStepCard({
       <>
         {showBudgetCelebration ? (
           <section className="shopping-complete receipt-celebration" role="status" aria-live="polite">
-            <div className="shopping-complete-confetti" aria-hidden="true">
-              {Array.from({ length: 120 }, (_, index) => (
-                <span key={index} style={topDownConfettiStyle(index)} />
-              ))}
-            </div>
+            <ConfettiCanvas />
             <span className="shopping-complete-mark" aria-hidden="true">✦</span>
             <div>
               <strong>
