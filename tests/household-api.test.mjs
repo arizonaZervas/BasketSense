@@ -1958,6 +1958,68 @@ test("a productless manual estimate updates the trip total, freezes, and then lo
       expectedTotalCents,
       "The pre-shopping intent estimate remains immutable",
     );
+
+    const catalogProductId = "catalog-product-without-price";
+    db.database
+      .prepare(
+        `INSERT INTO products (
+          id, household_id, costco_item_number, canonical_name,
+          category, active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      )
+      .run(
+        catalogProductId,
+        initial.household.id,
+        "NEW-NO-PRICE",
+        "New catalog item",
+        "groceries_other",
+        "2026-08-15T12:00:00.000Z",
+        "2026-08-15T12:00:00.000Z",
+      );
+    const addUnpricedCatalogItem = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "New catalog item",
+        productId: catalogProductId,
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(addUnpricedCatalogItem.status, 201);
+    const unpricedCatalogItem = (await responseJson(addUnpricedCatalogItem)).item;
+    assert.equal(unpricedCatalogItem.addedAfterFreeze, true);
+    assert.equal(unpricedCatalogItem.estimatedPriceCents, null);
+
+    const priceCatalogItemDuringShopping = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId,
+        label: "New catalog item",
+        productId: catalogProductId,
+        source: "in_store",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 2599,
+      }),
+      db,
+    );
+    assert.equal(priceCatalogItemDuringShopping.status, 200);
+    const pricedCatalogItem = (await responseJson(priceCatalogItemDuringShopping)).item;
+    assert.equal(pricedCatalogItem.estimatedPriceCents, 2599);
+    assert.equal(
+      (await readFinalTripListEstimate(db, tripId)).estimated_total_cents,
+      expectedTotalCents + 1800 + 2599,
+      "An estimate added to a catalog item during shopping changes only the final baseline",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT estimated_total_cents FROM trip_intent_snapshots WHERE trip_id = ?`)
+        .get(tripId).estimated_total_cents,
+      expectedTotalCents,
+    );
   } finally {
     db.close();
   }

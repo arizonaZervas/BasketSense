@@ -124,6 +124,35 @@ test("renders accessible catalog and device theme controls", async () => {
   assert.match(html, /aria-controls="household-product-catalog"/i);
   assert.match(html, /Search all past warehouse products or add a new item/i);
   assert.doesNotMatch(html, /<datalist/i);
+
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(dashboardSource, /className=\{`mobile-nav-trigger/);
+  assert.match(dashboardSource, /aria-controls="mobile-navigation"/);
+  assert.match(
+    dashboardSource,
+    /window\.location\.assign\(sandboxMode \? "\/" : "\/\?sandbox=1"\)/,
+  );
+  assert.match(styles, /--line-strong:/);
+  assert.match(
+    styles,
+    /\.theme-select option,[\s\S]*background: var\(--paper-strong\);[\s\S]*color: var\(--ink\);/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 900px\)[\s\S]*\.mobile-nav-trigger[\s\S]*\.mobile-nav\.open/,
+  );
+  assert.match(styles, /transform: translate3d\(-104%, 0, 0\)/);
+  assert.match(
+    styles,
+    /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.mobile-nav/,
+  );
 });
 
 test("keeps shopping undo and catalog keyboard focus behavior wired", async () => {
@@ -151,6 +180,10 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(source, /household estimate/);
   assert.match(source, /parseManualEstimateDollars/);
   assert.match(source, /item\.includedAtFreeze !== true/);
+  assert.match(
+    source,
+    /isHouseholdEstimate \|\| item\.estimatedPriceCents === null/,
+  );
 
   const reviewSource = await readFile(
     new URL("../app/receipt-review-flow.tsx", import.meta.url),
@@ -286,6 +319,10 @@ test("reflows every primary surface from the available content width", async () 
   assert.match(
     styles,
     /\.spend-card,\s*\.category-card \{[\s\S]*?min-width: 0;/,
+  );
+  assert.match(
+    styles,
+    /\.bars \{[\s\S]*?overflow-x: auto;[\s\S]*?overscroll-behavior-inline: contain;/,
   );
 });
 

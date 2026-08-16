@@ -488,6 +488,7 @@ export function BasketSenseDashboard({
     useState<ThemePreference>("system");
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>("light");
   const [themeReady, setThemeReady] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const refreshPromise = useRef<Promise<void> | null>(null);
   const insightsRefreshPromise = useRef<Promise<void> | null>(null);
   const reviewHistoryPromise = useRef<Promise<void> | null>(null);
@@ -499,6 +500,8 @@ export function BasketSenseDashboard({
   const checkedAnimationTimer = useRef<number | null>(null);
   const dialogReturnFocus = useRef<HTMLElement | null>(null);
   const receiptFlowReturnFocus = useRef<HTMLElement | null>(null);
+  const mobileNavTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobileNavFirstLinkRef = useRef<HTMLButtonElement | null>(null);
   const productReturnFocus = useRef<string | null>(null);
   const listMoveFocus = useRef<{
     fallbackItemId: string | null;
@@ -924,6 +927,21 @@ export function BasketSenseDashboard({
     return () => window.cancelAnimationFrame(frame);
   }, [activeTab, household?.listItems]);
 
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const frame = window.requestAnimationFrame(() => mobileNavFirstLinkRef.current?.focus());
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMobileNavOpen(false);
+      window.requestAnimationFrame(() => mobileNavTriggerRef.current?.focus());
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [mobileNavOpen]);
+
   function flash(message: string) {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast(message);
@@ -933,12 +951,18 @@ export function BasketSenseDashboard({
   function changeTab(tab: Tab) {
     prepareDeferredTab(tab);
     setActiveTab(tab);
+    setMobileNavOpen(false);
     if (tab === "products") {
       setProductOrigin("products");
       setProductDetailOpen(false);
       productReturnFocus.current = null;
     }
     window.scrollTo({ top: 0 });
+  }
+
+  function changeSandboxMode(event: ReactMouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    window.location.assign(sandboxMode ? "/" : "/?sandbox=1");
   }
 
   function prepareDeferredTab(tab: Tab) {
@@ -1631,7 +1655,11 @@ export function BasketSenseDashboard({
             Data &amp; privacy
           </button>
           {household?.currentUser.role === "owner" ? (
-            <a className="text-button" href={sandboxMode ? "/" : "/?sandbox=1"}>
+            <a
+              className="text-button"
+              href={sandboxMode ? "/" : "/?sandbox=1"}
+              onClick={changeSandboxMode}
+            >
               {sandboxMode ? "Leave test sandbox" : "Receipt test sandbox"}
             </a>
           ) : null}
@@ -1836,26 +1864,90 @@ export function BasketSenseDashboard({
 
       </main>
 
-      <nav className="mobile-nav" aria-label="Primary navigation">
-        {visibleTabs.map((tab) => (
+      <button
+        type="button"
+        ref={mobileNavTriggerRef}
+        className={`mobile-nav-trigger ${mobileNavOpen ? "open" : ""}`}
+        onClick={() => setMobileNavOpen((open) => !open)}
+        aria-expanded={mobileNavOpen}
+        aria-controls="mobile-navigation"
+        aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+      >
+        <span className="mobile-nav-trigger-glyph" aria-hidden="true">
+          {mobileNavOpen ? "×" : "B"}
+        </span>
+        <span>{mobileNavOpen ? "Close" : primaryTabs.find((tab) => tab.id === activeTab)?.label}</span>
+      </button>
+
+      <button
+        type="button"
+        className={`mobile-nav-scrim ${mobileNavOpen ? "open" : ""}`}
+        onClick={() => setMobileNavOpen(false)}
+        aria-label="Close navigation"
+        tabIndex={mobileNavOpen ? 0 : -1}
+      />
+
+      <aside
+        id="mobile-navigation"
+        className={`mobile-nav ${mobileNavOpen ? "open" : ""}`}
+        aria-label="Primary navigation"
+        aria-hidden={!mobileNavOpen}
+      >
+        <div className="mobile-nav-header">
+          <span className="brand-mark" aria-hidden="true">B</span>
+          <span><strong>BasketSense</strong><small>Our Costco companion</small></span>
+        </div>
+        <nav className="mobile-nav-links">
+          {visibleTabs.map((tab) => (
+            <button
+              key={tab.id}
+              ref={tab.id === visibleTabs[0]?.id ? mobileNavFirstLinkRef : undefined}
+              className={activeTab === tab.id ? "active" : ""}
+              onClick={() => changeTab(tab.id)}
+              onFocus={() => prepareDeferredTab(tab.id)}
+              onPointerDown={() => prepareDeferredTab(tab.id)}
+              aria-current={activeTab === tab.id ? "page" : undefined}
+              tabIndex={mobileNavOpen ? 0 : -1}
+            >
+              <span className="nav-glyph" aria-hidden="true">{tab.symbol}</span>
+              <span>{tab.label}</span>
+              {tab.id === "review" && openReviewCount > 0 ? (
+                <span className="mobile-count">{openReviewCount}</span>
+              ) : null}
+            </button>
+          ))}
+        </nav>
+        <div className="mobile-nav-footer">
           <button
-            key={tab.id}
-            className={activeTab === tab.id ? "active" : ""}
-            onClick={() => changeTab(tab.id)}
-            onFocus={() => prepareDeferredTab(tab.id)}
-            onPointerDown={() => prepareDeferredTab(tab.id)}
-            aria-current={activeTab === tab.id ? "page" : undefined}
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setMobileNavOpen(false);
+              openDataDialog();
+            }}
+            tabIndex={mobileNavOpen ? 0 : -1}
           >
-            <span className="nav-glyph" aria-hidden="true">
-              {tab.symbol}
-            </span>
-            <span>{tab.label}</span>
-            {tab.id === "review" && openReviewCount > 0 ? (
-              <span className="mobile-count">{openReviewCount}</span>
-            ) : null}
+            Data &amp; privacy
           </button>
-        ))}
-      </nav>
+          {household?.currentUser.role === "owner" ? (
+            <a
+              className="text-button"
+              href={sandboxMode ? "/" : "/?sandbox=1"}
+              onClick={changeSandboxMode}
+              tabIndex={mobileNavOpen ? 0 : -1}
+            >
+              {sandboxMode ? "Leave test sandbox" : "Receipt test sandbox"}
+            </a>
+          ) : null}
+          <a
+            className="text-button sign-out-link"
+            href={signOutHref}
+            tabIndex={mobileNavOpen ? 0 : -1}
+          >
+            Sign out
+          </a>
+        </div>
+      </aside>
 
       {isDataDialogOpen ? (
         <DataDialog
@@ -2702,7 +2794,7 @@ function ThisWeekTab({
                   );
                   const isHouseholdEstimate = item.productId === null;
                   const estimateIsEditable =
-                    isHouseholdEstimate &&
+                    (isHouseholdEstimate || item.estimatedPriceCents === null) &&
                     item.quantityMilli === 1000 &&
                     (!shoppingStarted || item.includedAtFreeze !== true);
                   const estimateEditorOpen =

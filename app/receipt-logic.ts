@@ -610,10 +610,9 @@ function labelForReceipt(item: MatchableReceiptItem): string {
 }
 
 function normalizeMatchDescription(value: string): string {
-  return normalizeReceiptDescription(value).replace(
-    /\bATTA\b(?:\s+FLOUR)?/g,
-    "WHEAT FLOUR",
-  );
+  return normalizeReceiptDescription(value)
+    .replace(/\bATTA\b(?:\s+FLOUR)?/g, "WHEAT FLOUR")
+    .replace(/\bWATR\b/g, "WATER");
 }
 
 function receiptMatchDescriptions(item: MatchableReceiptItem): string[] {

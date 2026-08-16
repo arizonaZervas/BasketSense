@@ -423,6 +423,28 @@ test("matches household shorthand to receipt wording without a catalog product",
   assert.deepEqual(result.unmatchedReceiptItemIds, []);
 });
 
+test("matches Costco's WATR abbreviation to a live coconut-water list item", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [
+      { id: "coconut-water-live", label: "Coconut water", addedAfterFreeze: true },
+    ],
+    receiptItems: [
+      {
+        id: "coconut-water-receipt",
+        rawDescription: "COCONUT WATR",
+        canonicalName: "COCONUT WATR",
+        netAmountCents: 2299,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [match.intentItemId, match.receiptItemId, match.status]),
+    [["coconut-water-live", "coconut-water-receipt", "auto_matched"]],
+  );
+  assert.deepEqual(result.unmatchedReceiptItemIds, []);
+});
+
 test("a confirmed household alias matches future receipt wording without a catalog list item", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "dal-plan", label: "Toor dal", includedAtFreeze: true }],
