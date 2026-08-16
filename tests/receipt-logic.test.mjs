@@ -146,6 +146,55 @@ test("uses a strict inclusive five-cent arithmetic threshold", () => {
   assert.match(outsideBoundary.explanations.at(-1), /remains provisional/i);
 });
 
+test("reconciles an online order whose discount is applied after the printed subtotal", () => {
+  const result = reconcileReceipt({
+    items: [
+      {
+        lineSubtotalCents: 127196,
+        discountCents: 8000,
+        netAmountCents: 119196,
+      },
+      { lineSubtotalCents: 2000, netAmountCents: 2000 },
+      { lineSubtotalCents: 1196, netAmountCents: 1196 },
+      { lineSubtotalCents: 900, netAmountCents: 900 },
+      { lineSubtotalCents: 0, netAmountCents: 0 },
+    ],
+    subtotalCents: 131292,
+    discountCents: 8000,
+    taxCents: 9584,
+    totalCents: 132876,
+  });
+
+  assert.equal(result.itemNetCents, 123292);
+  assert.equal(result.subtotalUsesGrossItemCents, true);
+  assert.equal(result.totalUsesReceiptDiscount, true);
+  assert.equal(result.subtotalDeltaCents, 0);
+  assert.equal(result.totalDeltaCents, 0);
+  assert.equal(result.isReconciled, true);
+});
+
+test("does not subtract a discount twice when a warehouse subtotal is already net", () => {
+  const result = reconcileReceipt({
+    items: [
+      {
+        lineSubtotalCents: 8000,
+        discountCents: 1200,
+        netAmountCents: 6800,
+      },
+    ],
+    subtotalCents: 6800,
+    discountCents: 1200,
+    taxCents: 0,
+    totalCents: 6800,
+  });
+
+  assert.equal(result.subtotalUsesGrossItemCents, false);
+  assert.equal(result.totalUsesReceiptDiscount, false);
+  assert.equal(result.subtotalDeltaCents, 0);
+  assert.equal(result.totalDeltaCents, 0);
+  assert.equal(result.isReconciled, true);
+});
+
 test("never treats a generic category as a product match", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "intent-fruit", label: "Fruit", quantityMilli: 1000 }],

@@ -409,6 +409,8 @@ export interface ReceiptReconciliation {
   totalDeltaCents: number | null;
   representedDiscountCents: number;
   appliedReceiptLevelDiscountCents: number;
+  subtotalUsesGrossItemCents: boolean;
+  totalUsesReceiptDiscount: boolean;
   isReconciled: boolean;
   explanations: string[];
 }
@@ -427,6 +429,7 @@ export function reconcileReceipt(input: {
   totalsOnly?: boolean;
 }): ReceiptReconciliation {
   let representedDiscountCents = 0;
+  let rawItemGrossCents = 0;
   let rawItemNetCents = 0;
 
   for (const item of input.items) {
@@ -437,6 +440,12 @@ export function reconcileReceipt(input: {
       ? (item.netAmountCents as number)
       : (Number.isInteger(item.lineSubtotalCents) ? (item.lineSubtotalCents as number) : 0) -
         itemDiscount;
+    const gross = item.kind === "discount"
+      ? net
+      : Number.isInteger(item.lineSubtotalCents)
+        ? (item.lineSubtotalCents as number)
+        : net + itemDiscount;
+    rawItemGrossCents += gross;
     rawItemNetCents += net;
     representedDiscountCents +=
       item.kind === "discount" && itemDiscount === 0
@@ -452,12 +461,23 @@ export function reconcileReceipt(input: {
     receiptDiscountCents - representedDiscountCents,
   );
   const itemNetCents = rawItemNetCents - appliedReceiptLevelDiscountCents;
-  const subtotalDeltaCents = Number.isInteger(input.subtotalCents)
-    ? input.totalsOnly
-      ? 0
-      : itemNetCents - (input.subtotalCents as number)
+  const netSubtotalDeltaCents = Number.isInteger(input.subtotalCents)
+    ? itemNetCents - (input.subtotalCents as number)
     : null;
-  const totalDeltaCents =
+  const grossSubtotalDeltaCents = Number.isInteger(input.subtotalCents)
+    ? rawItemGrossCents - (input.subtotalCents as number)
+    : null;
+  const subtotalUsesGrossItemCents =
+    !input.totalsOnly &&
+    grossSubtotalDeltaCents !== null &&
+    netSubtotalDeltaCents !== null &&
+    Math.abs(grossSubtotalDeltaCents) < Math.abs(netSubtotalDeltaCents);
+  const subtotalDeltaCents = input.totalsOnly
+    ? Number.isInteger(input.subtotalCents) ? 0 : null
+    : subtotalUsesGrossItemCents
+      ? grossSubtotalDeltaCents
+      : netSubtotalDeltaCents;
+  const totalDeltaWithoutDiscountCents =
     Number.isInteger(input.subtotalCents) &&
     Number.isInteger(input.taxCents) &&
     Number.isInteger(input.totalCents)
@@ -465,6 +485,17 @@ export function reconcileReceipt(input: {
         (input.taxCents as number) -
         (input.totalCents as number)
       : null;
+  const totalDeltaWithDiscountCents = totalDeltaWithoutDiscountCents === null
+    ? null
+    : totalDeltaWithoutDiscountCents - receiptDiscountCents;
+  const totalUsesReceiptDiscount =
+    totalDeltaWithoutDiscountCents !== null &&
+    totalDeltaWithDiscountCents !== null &&
+    receiptDiscountCents > 0 &&
+    Math.abs(totalDeltaWithDiscountCents) < Math.abs(totalDeltaWithoutDiscountCents);
+  const totalDeltaCents = totalUsesReceiptDiscount
+    ? totalDeltaWithDiscountCents
+    : totalDeltaWithoutDiscountCents;
   const isReconciled =
     subtotalDeltaCents !== null &&
     totalDeltaCents !== null &&
@@ -480,12 +511,12 @@ export function reconcileReceipt(input: {
   explanations.push(
     subtotalDeltaCents === null
       ? "A subtotal is required to reconcile item lines."
-      : `Item lines differ from the printed subtotal by ${subtotalDeltaCents} cents.`,
+      : `${subtotalUsesGrossItemCents ? "Item lines before discounts" : "Item lines after discounts"} differ from the printed subtotal by ${subtotalDeltaCents} cents.`,
   );
   explanations.push(
     totalDeltaCents === null
       ? "Subtotal, tax, and total are all required to reconcile the final total."
-      : `Subtotal plus tax differs from the printed total by ${totalDeltaCents} cents.`,
+      : `Subtotal${totalUsesReceiptDiscount ? " minus discounts" : ""} plus tax differs from the printed total by ${totalDeltaCents} cents.`,
   );
   explanations.push(
     isReconciled
@@ -499,6 +530,8 @@ export function reconcileReceipt(input: {
     totalDeltaCents,
     representedDiscountCents,
     appliedReceiptLevelDiscountCents,
+    subtotalUsesGrossItemCents,
+    totalUsesReceiptDiscount,
     isReconciled,
     explanations,
   };

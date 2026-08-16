@@ -72,6 +72,51 @@ test("the review draft preserves an extracted product discount through save", ()
   });
 });
 
+test("an online Costco order infers a missing order discount from matching evidence", () => {
+  const draft = draftFromParser({
+    purchasedAt: "2026-08-03",
+    subtotalCents: 131292,
+    discountCents: 0,
+    taxCents: 9584,
+    totalCents: 132876,
+    items: [
+      {
+        itemNumber: "1811798",
+        rawDescription: "255/40R20 TURANZA EV",
+        lineSubtotalCents: 127196,
+        netAmountCents: 127196,
+        discountCents: 8000,
+        kind: "item",
+      },
+      {
+        itemNumber: "9992",
+        rawDescription: "WA STATE TIRE FEE",
+        lineSubtotalCents: 2000,
+        netAmountCents: 2000,
+        discountCents: 0,
+        kind: "item",
+      },
+    ],
+  });
+
+  assert.equal(draft.discount, "80.00");
+  assert.equal(draft.items[0].amount, "1191.96");
+  assert.equal(receiptDraftLineValue(draft.items[0], 0).lineSubtotalCents, 127196);
+  assert.equal(receiptDraftLineValue(draft.items[0], 0).netAmountCents, 119196);
+});
+
+test("does not infer an order discount without matching line evidence", () => {
+  const draft = draftFromParser({
+    subtotalCents: 10000,
+    discountCents: 0,
+    taxCents: 1000,
+    totalCents: 10500,
+    items: [{ rawDescription: "ITEM", netAmountCents: 10000 }],
+  });
+
+  assert.equal(draft.discount, "0.00");
+});
+
 test("a manually marked discount saves as negative evidence, not a product", () => {
   const saved = receiptDraftLineValue(
     {

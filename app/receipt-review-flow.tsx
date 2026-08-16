@@ -582,12 +582,37 @@ export function draftFromParser(
     (parsed.transactionType === "return" ? "return" : "warehouse");
   const displayCents = (amount: number | null | undefined) =>
     centsToInput(transactionType === "return" && amount ? Math.abs(amount) : amount);
+  const representedDiscountCents = (parsed.items ?? []).reduce(
+    (sum, item) => sum + Math.max(0, item.discountCents ?? 0),
+    0,
+  );
+  const printedDiscountGapCents =
+    transactionType === "warehouse" &&
+    Number.isInteger(parsed.subtotalCents) &&
+    Number.isInteger(parsed.taxCents) &&
+    Number.isInteger(parsed.totalCents)
+      ? (parsed.subtotalCents as number) +
+        (parsed.taxCents as number) -
+        (parsed.totalCents as number)
+      : 0;
+  const inferredDiscountCents =
+    Math.max(0, parsed.discountCents ?? 0) > 0
+      ? Math.max(0, parsed.discountCents ?? 0)
+      : printedDiscountGapCents > 5 &&
+          representedDiscountCents > 0 &&
+          Math.abs(printedDiscountGapCents - representedDiscountCents) <= 5
+        ? printedDiscountGapCents
+        : 0;
   const items = (parsed.items ?? []).map((item) => ({
     clientId: clientId(),
     itemNumber: item.costcoItemNumber ?? item.itemNumber ?? "",
     description: item.rawDescription ?? item.description ?? "",
     amount: displayCents(
-      item.netAmountCents ?? item.lineSubtotalCents ?? item.amountCents,
+      item.kind !== "discount" &&
+      (item.discountCents ?? 0) > 0 &&
+      Number.isInteger(item.lineSubtotalCents)
+        ? (item.lineSubtotalCents as number) - (item.discountCents ?? 0)
+        : item.netAmountCents ?? item.lineSubtotalCents ?? item.amountCents,
     ),
     quantityMilli:
       item.quantityMilli ??
@@ -614,7 +639,7 @@ export function draftFromParser(
     subtotal: displayCents(parsed.subtotalCents),
     tax: displayCents(parsed.taxCents),
     total: displayCents(parsed.totalCents),
-    discount: transactionType === "return" ? "" : centsToInput(parsed.discountCents),
+    discount: transactionType === "return" ? "" : centsToInput(inferredDiscountCents),
     items: items.length ? items : [blankLine()],
   };
 }
@@ -1261,7 +1286,7 @@ export function ReceiptFlowDialog({
     const fallbackSubtotalDeltaCents =
       totalsOnly ? 0 : fallbackItemNetCents - values.subtotalCents;
     const fallbackTotalDeltaCents =
-      values.subtotalCents + values.taxCents - values.totalCents;
+      values.subtotalCents + values.taxCents - values.discountCents - values.totalCents;
     try {
       const result = reconcileReceipt({ ...values, totalsOnly }) as unknown as {
         itemNetCents?: number;
@@ -1270,6 +1295,8 @@ export function ReceiptFlowDialog({
         subtotalDelta?: number;
         totalDeltaCents?: number;
         totalDelta?: number;
+        subtotalUsesGrossItemCents?: boolean;
+        totalUsesReceiptDiscount?: boolean;
         isReconciled?: boolean;
         reconciled?: boolean;
       };
@@ -1288,6 +1315,8 @@ export function ReceiptFlowDialog({
           result.itemNetCents ?? result.computedSubtotalCents ?? fallbackItemNetCents,
         subtotalDeltaCents,
         totalDeltaCents,
+        subtotalUsesGrossItemCents: result.subtotalUsesGrossItemCents ?? false,
+        totalUsesReceiptDiscount: result.totalUsesReceiptDiscount ?? false,
         differenceCents,
         isReconciled:
           result.isReconciled ?? result.reconciled ?? differenceCents <= 5,
@@ -1301,6 +1330,8 @@ export function ReceiptFlowDialog({
         itemNetCents: fallbackItemNetCents,
         subtotalDeltaCents: fallbackSubtotalDeltaCents,
         totalDeltaCents: fallbackTotalDeltaCents,
+        subtotalUsesGrossItemCents: false,
+        totalUsesReceiptDiscount: values.discountCents > 0,
         differenceCents,
         isReconciled: differenceCents <= 5,
       };
@@ -2449,7 +2480,7 @@ export function ReceiptFlowDialog({
               {(
                 [
                   ["subtotal", "Subtotal"],
-                  ["discount", "Discounts"],
+                  ["discount", standalone ? "Order discounts" : "Discounts"],
                   ["tax", "Tax"],
                   ["total", "Total"],
                 ] as const
@@ -2479,8 +2510,9 @@ export function ReceiptFlowDialog({
               </p>
             ) : (
               <p className="receipt-discount-help">
-                Enter Discounts as a positive total. BasketSense subtracts each discount only
-                once, whether it is a receipt total, a separate line, or attached to an item.
+                Enter {standalone ? "order discounts" : "discounts"} as a positive total.
+                BasketSense subtracts each discount only once, whether it is a receipt total,
+                a separate line, or attached to an item.
               </p>
             )}
 
@@ -2596,8 +2628,12 @@ export function ReceiptFlowDialog({
                 </strong>
                 <p>
                   {values.captureMode === "totals_only"
-                    ? `Subtotal ${money.format(values.subtotalCents / 100)} · tax ${money.format(values.taxCents / 100)} · total ${money.format(values.totalCents / 100)}`
-                    : `Lines ${money.format(arithmetic.itemNetCents / 100)} · subtotal difference ${money.format(Math.abs(arithmetic.subtotalDeltaCents) / 100)} · total difference ${money.format(Math.abs(arithmetic.totalDeltaCents) / 100)}`}
+                    ? arithmetic.totalUsesReceiptDiscount
+                      ? `${money.format(values.subtotalCents / 100)} − ${money.format(values.discountCents / 100)} discounts + ${money.format(values.taxCents / 100)} tax = ${money.format(values.totalCents / 100)}`
+                      : `Subtotal ${money.format(values.subtotalCents / 100)} · tax ${money.format(values.taxCents / 100)} · total ${money.format(values.totalCents / 100)}`
+                    : canFinalize && arithmetic.totalUsesReceiptDiscount
+                      ? `${money.format(values.subtotalCents / 100)} − ${money.format(values.discountCents / 100)} discounts + ${money.format(values.taxCents / 100)} tax = ${money.format(values.totalCents / 100)}`
+                      : `Lines ${money.format(arithmetic.itemNetCents / 100)} · subtotal difference ${money.format(Math.abs(arithmetic.subtotalDeltaCents) / 100)} · total difference ${money.format(Math.abs(arithmetic.totalDeltaCents) / 100)}`}
                 </p>
               </div>
             </div>
