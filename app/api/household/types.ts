@@ -75,6 +75,8 @@ export interface TripIntentItemSummary {
   recommendationReason: string | null;
   confidenceBps: number | null;
   included: boolean;
+  /** True when this item joined the final list after shopping began. */
+  addedAfterFreeze: boolean;
   quantityMilli: number;
   estimatedPriceCents: number | null;
   sortOrder: number;
@@ -146,6 +148,7 @@ export interface ClosedLoopComparison {
   unresolvedCents: number;
   buckets: {
     matched: Array<{ intentItemId: string; receiptItemId: string }>;
+    addedDuringTrip: Array<{ intentItemId: string; receiptItemId: string }>;
     unpricedPlanned: Array<{ intentItemId: string; receiptItemId: string }>;
     skippedPlanned: Array<{ intentItemId: string }>;
     receiptOnly: Array<{ receiptItemId: string }>;
