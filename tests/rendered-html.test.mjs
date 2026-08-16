@@ -146,7 +146,11 @@ test("renders accessible catalog and device theme controls", async () => {
   );
   assert.match(
     styles,
-    /@media \(max-width: 900px\)[\s\S]*\.mobile-nav-trigger[\s\S]*\.mobile-nav\.open/,
+    /Unified navigation:[\s\S]*@media \(min-width: 0px\)[\s\S]*\.mobile-nav-trigger[\s\S]*\.mobile-nav\.open/,
+  );
+  assert.match(
+    styles,
+    /@media \(min-width: 0px\) \{[\s\S]*\.side-rail \{[\s\S]*display: none;[\s\S]*\.main-canvas \{[\s\S]*margin-left: 0;/,
   );
   assert.match(styles, /transform: translate3d\(-104%, 0, 0\)/);
   assert.match(

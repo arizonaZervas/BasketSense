@@ -445,6 +445,39 @@ test("matches Costco's WATR abbreviation to a live coconut-water list item", () 
   assert.deepEqual(result.unmatchedReceiptItemIds, []);
 });
 
+test("matches Hershey's Nuggets to the household's saved Chocolates item", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [
+      { id: "chocolates-plan", label: "Chocolates", includedAtFreeze: true },
+    ],
+    receiptItems: [
+      {
+        id: "hersheys-nuggets-receipt",
+        costcoItemNumber: "401621",
+        rawDescription: "NUGGETS 52OZ",
+        canonicalName: "Hershey's Nuggets",
+        netAmountCents: 1799,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [
+      match.intentItemId,
+      match.receiptItemId,
+      match.status,
+      match.reason,
+    ]),
+    [[
+      "chocolates-plan",
+      "hersheys-nuggets-receipt",
+      "auto_matched",
+      "normalized_exact",
+    ]],
+  );
+  assert.deepEqual(result.unmatchedReceiptItemIds, []);
+});
+
 test("a confirmed household alias matches future receipt wording without a catalog list item", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "dal-plan", label: "Toor dal", includedAtFreeze: true }],

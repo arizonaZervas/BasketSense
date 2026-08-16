@@ -615,8 +615,17 @@ function normalizeMatchDescription(value: string): string {
     .replace(/\bWATR\b/g, "WATER");
 }
 
+const COSTCO_ITEM_MATCH_ALIASES: Record<string, readonly string[]> = {
+  // Hershey's Nuggets. Costco abbreviates the receipt line to NUGGETS, while
+  // this household saved the item as Chocolates.
+  "401621": ["CHOCOLATES", "HERSHEYS CHOCOLATE NUGGETS"],
+};
+
 function receiptMatchDescriptions(item: MatchableReceiptItem): string[] {
-  return [...new Set([item.rawDescription, item.canonicalName]
+  const itemAliases = item.costcoItemNumber
+    ? COSTCO_ITEM_MATCH_ALIASES[item.costcoItemNumber] ?? []
+    : [];
+  return [...new Set([item.rawDescription, item.canonicalName, ...itemAliases]
     .map((value) => normalizeMatchDescription(value ?? ""))
     .filter(Boolean))];
 }

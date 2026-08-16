@@ -4813,8 +4813,8 @@ button.price-point:hover {
   }
 }
 
-/* Compact navigation: narrow panes and phones use one floating control and an
-   off-canvas drawer instead of squeezing the desktop rail beside the content. */
+/* Unified navigation: every viewport uses one floating control and the same
+   off-canvas drawer, so desktop and mobile share one interaction model. */
 .mobile-nav-trigger,
 .mobile-nav-scrim {
   display: none;
@@ -4837,7 +4837,7 @@ button.price-point:hover {
   }
 }
 
-@media (max-width: 900px) {
+@media (min-width: 0px) {
   :root {
     --sidebar: 0px;
   }
