@@ -1028,6 +1028,10 @@ summary:focus-visible,
   height: 235px;
   align-items: end;
   gap: clamp(6px, 1.5vw, 16px);
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
   border-bottom: 1px solid var(--line);
   padding: 12px 6px 0;
 }

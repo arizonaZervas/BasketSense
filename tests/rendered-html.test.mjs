@@ -287,6 +287,10 @@ test("reflows every primary surface from the available content width", async () 
     styles,
     /\.spend-card,\s*\.category-card \{[\s\S]*?min-width: 0;/,
   );
+  assert.match(
+    styles,
+    /\.bars \{[\s\S]*?overflow-x: auto;[\s\S]*?overscroll-behavior-inline: contain;/,
+  );
 });
 
 test("Saturday Prep is compact and inherits readable theme colors", async () => {
