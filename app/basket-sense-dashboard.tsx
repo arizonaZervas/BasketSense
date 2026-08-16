@@ -51,8 +51,8 @@ import {
 } from "./manual-estimate";
 import {
   ClosedLoopReview,
+  ReceiptCelebration,
   ReceiptFlowDialog,
-  ReceiptNextStepCard,
   type ClosedLoopSnapshot,
   type ReceiptStep,
 } from "./receipt-review-flow";
@@ -279,49 +279,24 @@ function sourceLabel(source: ListItemSource) {
 const IDEA_SECTIONS: readonly {
   key: SharedListItem["section"];
   label: string;
-  description: string;
 }[] = [
   {
     key: "essentials",
     label: "Essentials",
-    description: "Recurring staples and household additions",
   },
   {
     key: "suggested",
     label: "Recommended",
-    description: "Timely ideas from your exact purchase history",
   },
   {
     key: "check_first",
     label: "Check first",
-    description: "Confirm the fridge, pantry, or freezer before adding",
   },
   {
     key: "consider",
     label: "Seasonal",
-    description: "Optional favorites that may not be available every week",
   },
 ];
-
-function activeItemStatus(item: SharedListItem, status: TripStatus) {
-  if (
-    status === "frozen" &&
-    (item.addedAfterFreeze || item.includedAtFreeze === false)
-  ) {
-    return "Added during trip";
-  }
-  if (status === "frozen" && item.includedAtFreeze) return "Planned";
-  return sourceLabel(item.source);
-}
-
-function freezeEvidence(item: SharedListItem, status: TripStatus) {
-  if (status !== "frozen") return null;
-  if (item.addedAfterFreeze || (item.includedAtFreeze === false && item.included)) {
-    return "Added during the trip";
-  }
-  if (item.includedAtFreeze) return "On the list when shopping started";
-  return "Not on the list when shopping started";
-}
 
 function cadenceConfidence(confidenceBps: number | null) {
   if (confidenceBps === null) return null;
@@ -429,7 +404,6 @@ export function BasketSenseDashboard({
   const [insightsStatus, setInsightsStatus] =
     useState<DeferredViewStatus>("idle");
   const [insightsError, setInsightsError] = useState<string | null>(null);
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const [pendingWrites, setPendingWrites] = useState<Set<string>>(
     () => new Set(),
   );
@@ -659,7 +633,6 @@ export function BasketSenseDashboard({
         }
         setSyncStatus("shared");
         setSyncError(null);
-        setLastSyncedAt(new Date());
       } catch (error) {
         setSyncStatus("offline");
         setSyncError(
@@ -751,7 +724,6 @@ export function BasketSenseDashboard({
           if (response.status === 204) {
             setSyncStatus("shared");
             setSyncError(null);
-            setLastSyncedAt(new Date());
             return;
           }
           const body = (await response.json().catch(() => null)) as unknown;
@@ -790,7 +762,6 @@ export function BasketSenseDashboard({
           });
           setSyncStatus("shared");
           setSyncError(null);
-          setLastSyncedAt(new Date());
           shouldRefreshFullSnapshot = snapshot.currentTrip.status === "completed";
         } catch (error) {
           setSyncStatus("offline");
@@ -1151,7 +1122,6 @@ export function BasketSenseDashboard({
     });
     setSyncStatus("shared");
     setSyncError(null);
-    setLastSyncedAt(new Date());
   }
 
   function retryWrite(key: string) {
@@ -1582,12 +1552,6 @@ export function BasketSenseDashboard({
     role: "member" as const,
   };
   const insightsAvailable = Boolean(household?.dashboard);
-  const auditRange = household?.dashboard
-    ? formatAuditRange(
-        household.dashboard.transactions,
-        household.dashboard.audit.through,
-      )
-    : null;
   const visibleTabs = primaryTabs;
 
   return (
@@ -1681,11 +1645,6 @@ export function BasketSenseDashboard({
         <header className="topbar">
           <div className="topbar-context">
             <span className="mobile-kicker">BasketSense</span>
-            <p className="data-label">
-              {household?.dashboard && auditRange
-                ? `${household.dashboard.audit.transactionCount} receipt transactions audited · ${auditRange}`
-                : "Receipt history loads when you open Insights"}
-            </p>
           </div>
           <div className="topbar-actions">
             <label
@@ -1712,26 +1671,6 @@ export function BasketSenseDashboard({
                 <option value="dark">Dark</option>
               </select>
             </label>
-            <div
-              className="avatar-stack"
-              aria-label={
-                shownMembers.length
-                  ? `Household members ${shownMembers
-                      .map((member) => member.displayName)
-                      .join(" and ")}`
-                  : "Two-person household"
-              }
-            >
-              {shownMembers.map((member, index) => (
-                <span
-                  className={`avatar ${index === 0 ? "avatar-one" : "avatar-two"}`}
-                  key={member.id}
-                  aria-hidden="true"
-                >
-                  {initials(member.displayName)}
-                </span>
-              ))}
-            </div>
             <button className="secondary-button import-button" onClick={openDataDialog}>
               Data status
             </button>
@@ -1742,12 +1681,6 @@ export function BasketSenseDashboard({
             >
               Data
             </button>
-            <a
-              className="text-button sign-out-link topbar-sign-out"
-              href={signOutHref}
-            >
-              Sign out
-            </a>
           </div>
         </header>
 
@@ -1756,7 +1689,6 @@ export function BasketSenseDashboard({
             household={household}
             syncStatus={syncStatus}
             syncError={syncError}
-            lastSyncedAt={lastSyncedAt}
             suggestionPlanDate={
               household?.dashboard?.suggestionPlanDate ??
               household?.currentTrip.scheduledFor ??
@@ -1783,7 +1715,6 @@ export function BasketSenseDashboard({
         {activeTab === "overview" && insightsAvailable ? (
           <OverviewTab
             viewData={effectiveViewData}
-            changeTab={changeTab}
             selectedMonth={insightMonth}
             setSelectedMonth={setInsightMonth}
             selectedCategoryKey={insightCategoryKey}
@@ -1897,7 +1828,7 @@ export function BasketSenseDashboard({
       >
         <div className="mobile-nav-header">
           <span className="brand-mark" aria-hidden="true">B</span>
-          <span><strong>BasketSense</strong><small>Our Costco companion</small></span>
+          <strong>BasketSense</strong>
         </div>
         <nav className="mobile-nav-links">
           {visibleTabs.map((tab) => (
@@ -2070,7 +2001,6 @@ function ThisWeekTab({
   household,
   syncStatus,
   syncError,
-  lastSyncedAt,
   suggestionPlanDate,
   newItem,
   setNewItem,
@@ -2091,7 +2021,6 @@ function ThisWeekTab({
   household: HouseholdSnapshot | null;
   syncStatus: SyncStatus;
   syncError: string | null;
-  lastSyncedAt: Date | null;
   suggestionPlanDate: string;
   newItem: string;
   setNewItem: (value: string) => void;
@@ -2149,9 +2078,6 @@ function ThisWeekTab({
     0,
   );
   const excluded = items.filter((item) => !item.included);
-  const memberById = new Map(
-    household?.members.map((member) => [member.id, member]) ?? [],
-  );
   const shoppingStarted = trip?.status === "frozen";
   const activeIncluded = shoppingStarted
     ? included.filter((item) => !item.checked)
@@ -2164,19 +2090,6 @@ function ThisWeekTab({
     : null;
   const confirmUnfreeze =
     frozenContextKey !== null && unfreezeConfirmationKey === frozenContextKey;
-  const frozenEstimateCents = trip?.estimatedListTotalAtFreezeCents ?? null;
-  const frozenPricedItemCount =
-    trip?.estimatedPricedItemCountAtFreeze ?? null;
-  const frozenUnpricedItemCount =
-    trip?.estimatedUnpricedItemCountAtFreeze ?? null;
-  const frozenItemCount =
-    frozenPricedItemCount !== null && frozenUnpricedItemCount !== null
-      ? frozenPricedItemCount + frozenUnpricedItemCount
-      : null;
-  const estimateChangeCents =
-    shoppingStarted && frozenEstimateCents !== null
-      ? estimatedCents - frozenEstimateCents
-      : null;
   const estimateDisplay = !household
     ? "Loading…"
     : pricedIncluded.length
@@ -2187,20 +2100,6 @@ function ThisWeekTab({
     : included.length === 0
       ? "No items on the live list"
       : `${pricedIncluded.length} of ${included.length} ${included.length === 1 ? "item" : "items"} priced${unpricedIncluded ? ` · ${unpricedIncluded} not yet estimated` : ""}`;
-  const frozenCoverage =
-    frozenPricedItemCount !== null && frozenItemCount !== null
-      ? ` · ${frozenPricedItemCount} of ${frozenItemCount} priced`
-      : "";
-  const freezeEstimateCopy =
-    !shoppingStarted
-      ? "Updates with the live list · before tax · not a spending cap"
-      : frozenEstimateCents === null
-        ? "Shopping started · starting estimate unavailable"
-        : frozenPricedItemCount === 0
-          ? `Started with no price estimate${frozenCoverage}${pricedIncluded.length ? ` · now ~${currency.format(estimatedCents / 100)}` : ""}`
-          : `Started at ~${currency.format(frozenEstimateCents / 100)}${frozenCoverage}${estimateChangeCents
-            ? ` · ${estimateChangeCents > 0 ? "+" : "−"}${currency.format(Math.abs(estimateChangeCents) / 100)} since then`
-            : " · unchanged"}`;
   const catalogOptions = useMemo(
     () =>
       [...(household?.products ?? [])]
@@ -2285,19 +2184,11 @@ function ThisWeekTab({
   const syncTitle =
     syncStatus === "connecting"
       ? "Connecting the household list"
-      : syncStatus === "offline"
-        ? "Shared list is temporarily unavailable"
-        : shoppingStarted
-          ? "Live list · shopping started"
-          : "Live shared list · auto-updates";
+      : "Shared list is temporarily unavailable";
   const syncCopy =
     syncStatus === "offline"
       ? `${syncError ?? "Try again shortly."} Nothing is stored only on this device.`
-      : syncStatus === "connecting"
-        ? "Loading the one list shared by both household members."
-        : shoppingStarted
-          ? `Planned list captured${trip?.frozenAt ? ` at ${new Date(trip.frozenAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}. Active changes reach both phones in about five seconds.`
-          : `Checks for changes every five seconds while this list is visible.${lastSyncedAt ? ` Last checked ${lastSyncedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}.` : ""}`;
+      : "Loading your shared list.";
   const activeCatalogProduct = catalogResults[activeCatalogIndex] ?? null;
   const showCatalogResults = Boolean(
     catalogOpen && household && catalogResults.length,
@@ -2432,13 +2323,8 @@ function ThisWeekTab({
     <div className="page week-page">
       <section className="page-heading with-controls">
         <div>
-          <p className="section-label">Shared weekly plan</p>
           <h1>This Saturday</h1>
-          <p>
-            {trip
-              ? `${formatFullDate(trip.scheduledFor)} · both spouses edit one list`
-              : `${formatFullDate(suggestionPlanDate)} · both spouses edit one list`}
-          </p>
+          <p>{formatFullDate(trip?.scheduledFor ?? suggestionPlanDate)}</p>
         </div>
         <div className="heading-actions">
           <button className="secondary-button copy-list-button" onClick={onCopy}>
@@ -2456,6 +2342,23 @@ function ThisWeekTab({
           ) : (
             <>
               <span className="frozen-pill">Shopping started</span>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  onOpenReceipt(
+                    household && trip && household.closedLoop?.receipt?.tripId === trip.id
+                      ? household.closedLoop.comparison?.isProvisional
+                        ? "check"
+                        : "bridge"
+                      : "capture",
+                  )
+                }
+              >
+                {household && trip && household.closedLoop?.receipt?.tripId === trip.id
+                  ? "Receipt"
+                  : "Add receipt"}
+              </button>
               <button
                 ref={unfreezeTriggerRef}
                 type="button"
@@ -2528,29 +2431,25 @@ function ThisWeekTab({
         </section>
       ) : null}
 
-      <section
-        className={`device-notice ${
-          syncStatus === "offline"
-            ? "warning"
-            : syncStatus === "shared"
-              ? "compact"
-              : ""
-        }`}
-        aria-live={syncStatus === "shared" ? "off" : "polite"}
-      >
-        <span className="device-notice-mark" aria-hidden="true">
-          {syncStatus === "offline" ? "!" : syncStatus === "connecting" ? "…" : "✓"}
-        </span>
-        <div>
-          <strong>{syncTitle}</strong>
-          <p>{syncCopy}</p>
-        </div>
-        {syncStatus === "offline" ? (
-          <button type="button" className="secondary-button" onClick={onRetryLoad}>
-            Retry list
-          </button>
-        ) : null}
-      </section>
+      {syncStatus === "connecting" || syncStatus === "offline" ? (
+        <section
+          className={`device-notice ${syncStatus === "offline" ? "warning" : ""}`}
+          aria-live="polite"
+        >
+          <span className="device-notice-mark" aria-hidden="true">
+            {syncStatus === "offline" ? "!" : "…"}
+          </span>
+          <div>
+            <strong>{syncTitle}</strong>
+            <p>{syncCopy}</p>
+          </div>
+          {syncStatus === "offline" ? (
+            <button type="button" className="secondary-button" onClick={onRetryLoad}>
+              Retry list
+            </button>
+          ) : null}
+        </section>
+      ) : null}
 
       <InlineWriteError
         failure={failedWrites["freeze-trip"]}
@@ -2599,7 +2498,7 @@ function ThisWeekTab({
                 ? `catalog-option-${activeCatalogProduct.id}`
                 : undefined
             }
-            aria-describedby="quick-add-catalog-hint"
+            aria-describedby={newItem.trim() ? "quick-add-catalog-hint" : undefined}
             autoComplete="off"
             value={newItem}
             onFocus={() => {
@@ -2690,60 +2589,38 @@ function ThisWeekTab({
               : "Add item"}
         </button>
       </form>
-      <p
-        className="quick-add-hint"
-        id="quick-add-catalog-hint"
-        aria-live="polite"
-      >
-        {matchedCatalogProduct &&
-        matchedCatalogProduct.latestRegularUnitPriceCents !== null
-          ? `Estimate will use its latest regular package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}${matchedCatalogProduct.latestPurchasedAt ? ` from ${formatShortDate(matchedCatalogProduct.latestPurchasedAt)}` : ""}${matchedCatalogProduct.purchaseCount === 1 ? " · one purchase, low confidence." : "."}`
-          : newItem.trim()
-            ? "Choose an exact past product to add its receipt-based estimate; genuinely new items can stay unpriced."
-            : `Search ${catalogOptions.length} past warehouse products. Select a match to reuse its latest regular package price.`}
-      </p>
+      {newItem.trim() ? (
+        <p
+          className="quick-add-hint"
+          id="quick-add-catalog-hint"
+          aria-live="polite"
+        >
+          {matchedCatalogProduct &&
+          matchedCatalogProduct.latestRegularUnitPriceCents !== null
+            ? `Uses the latest package price: ${currency.format(matchedCatalogProduct.latestRegularUnitPriceCents / 100)}.`
+            : "Choose a past product for its estimate, or add this as a new item."}
+        </p>
+      ) : null}
       <InlineWriteError
         failure={failedWrites["quick-add"]}
         onRetry={() => onRetry("quick-add")}
       />
 
       <section className="week-summary" aria-label="Saturday list summary">
-        <div>
-          <span>On the shared list</span>
-          <strong>
-            {household
-              ? `${included.length} ${included.length === 1 ? "item" : "items"}`
-              : "—"}
-          </strong>
-        </div>
         <div className="estimate-summary" aria-live="polite">
           <span>Estimated list total</span>
           <strong>{estimateDisplay}</strong>
           <small>{estimateCoverage}</small>
-          <small>{freezeEstimateCopy}</small>
-        </div>
-        <div>
-          <span>List status</span>
-          <strong>{shoppingStarted ? "Shopping" : "Planning"}</strong>
-          <small>
-            {shoppingStarted
-              ? "Planned list captured"
-              : "Review suggestions, then start shopping"}
-          </small>
         </div>
       </section>
 
-      {trip ? (
-        <ReceiptNextStepCard
-          tripStatus={trip.status}
-          closedLoop={
-            household?.closedLoop?.receipt?.tripId === trip.id
-              ? household.closedLoop
-              : null
-          }
-          onOpen={onOpenReceipt}
-        />
-      ) : null}
+      <ReceiptCelebration
+        closedLoop={
+          household && trip && household.closedLoop?.receipt?.tripId === trip.id
+            ? household.closedLoop
+            : null
+        }
+      />
 
       <div className="week-layout">
         <div className="weekly-list-stack">
@@ -2767,9 +2644,7 @@ function ThisWeekTab({
           <section className="list-card card" aria-labelledby="active-list-title">
             <div className="list-section-heading active-list-heading">
               <div>
-                <p className="section-label">This trip</p>
                 <h2 id="active-list-title" tabIndex={-1}>Active List</h2>
-                <p>Only items your household has chosen to buy.</p>
               </div>
               <span>
                 {household
@@ -2786,9 +2661,6 @@ function ThisWeekTab({
                   const estimateKey = `estimate-${item.id}`;
                   const pending = pendingWrites.has(key);
                   const estimatePending = pendingWrites.has(estimateKey);
-                  const addedBy = item.addedByMemberId
-                    ? memberById.get(item.addedByMemberId)?.displayName
-                    : null;
                   const itemEstimateCents = estimatedItemTotalCents(item);
                   const quantityLabel = (item.quantityMilli / 1000).toLocaleString(
                     undefined,
@@ -2832,33 +2704,6 @@ function ThisWeekTab({
                           />
                           <div className="list-row-copy-body">
                             <strong>{item.label}</strong>
-                            {!shoppingStarted ? (
-                              <details className="item-evidence">
-                                <summary>Why this is here</summary>
-                                <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                                <small>
-                                  {[
-                                    activeItemStatus(item, trip?.status ?? "planning"),
-                                    addedBy ? `Added by ${addedBy}` : null,
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" · ") || sourceLabel(item.source)}
-                                </small>
-                              </details>
-                            ) : (
-                              <details className="item-evidence">
-                                <summary>Why it is here</summary>
-                                <p>{item.recommendationReason ?? sourceLabel(item.source)}</p>
-                                <small>
-                                  {[
-                                    freezeEvidence(item, trip?.status ?? "planning"),
-                                    addedBy ? `Added by ${addedBy}` : null,
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" · ")}
-                                </small>
-                              </details>
-                            )}
                           </div>
                         </div>
                         <div className="list-row-actions">
@@ -2942,15 +2787,15 @@ function ThisWeekTab({
                               }
                             >
                               {item.estimatedPriceCents === null
-                                ? "No estimate · Add estimate"
-                                : `~${currency.format(item.estimatedPriceCents / 100)} · household estimate`}
+                                ? "Add estimate"
+                                : `~${currency.format(item.estimatedPriceCents / 100)}`}
                             </button>
                           ) : (
                             <span className="estimated-price">
                               {item.estimatedPriceCents === null
                                 ? "No estimate"
                                 : isHouseholdEstimate
-                                  ? `~${currency.format(item.estimatedPriceCents / 100)} · household estimate`
+                                  ? `~${currency.format(item.estimatedPriceCents / 100)}`
                                   : item.quantityMilli === 1000
                                     ? `~${currency.format(item.estimatedPriceCents / 100)}`
                                     : `~${currency.format((itemEstimateCents ?? 0) / 100)} · ${quantityLabel} × ${currency.format(item.estimatedPriceCents / 100)}`}
@@ -2996,7 +2841,6 @@ function ThisWeekTab({
               <section className="checked-list" aria-labelledby="checked-list-title">
                 <div className="checked-list-heading">
                   <div>
-                    <p className="section-label">Shopping progress</p>
                     <h3 id="checked-list-title">Checked off</h3>
                   </div>
                   <span>{checkedIncluded.length}</span>
@@ -3035,7 +2879,6 @@ function ThisWeekTab({
                             />
                             <div className="list-row-copy-body">
                               <strong>{item.label}</strong>
-                              <small>Marked off this trip</small>
                             </div>
                           </div>
                           <div className="list-row-actions">
@@ -3099,7 +2942,6 @@ function ThisWeekTab({
           </section>
 
           <SuggestionShelf
-            suggestionPlanDate={suggestionPlanDate}
             household={household}
             items={visibleIdeaItems}
             pendingWrites={pendingWrites}
@@ -3178,7 +3020,6 @@ function ListSkeleton() {
 }
 
 function SuggestionShelf({
-  suggestionPlanDate,
   household,
   items,
   pendingWrites,
@@ -3187,7 +3028,6 @@ function SuggestionShelf({
   onAdd,
   onOpenImage,
 }: {
-  suggestionPlanDate: string;
   household: HouseholdSnapshot | null;
   items: readonly SharedListItem[];
   pendingWrites: Set<string>;
@@ -3208,17 +3048,7 @@ function SuggestionShelf({
   return (
     <section className="suggestion-shelf" aria-labelledby="ideas-title">
       <div className="card-heading ideas-heading">
-        <div>
-          <p className="section-label">
-            Suggested starting points for {formatShortDate(household?.currentTrip.scheduledFor ?? suggestionPlanDate)}
-          </p>
-          <h2 id="ideas-title" tabIndex={-1}>Ideas</h2>
-          <p>
-            {shoppingStarted
-              ? "These were not on the starting list. Add one if it makes sense in the warehouse."
-              : "Nothing here affects the estimate until either spouse adds it to the Active List."}
-          </p>
-        </div>
+        <h2 id="ideas-title" tabIndex={-1}>Ideas</h2>
         <span className="ideas-count" aria-label={`${items.length} ideas`}>
           {items.length}
         </span>
@@ -3236,10 +3066,7 @@ function SuggestionShelf({
                 key={group.key}
               >
                 <div className="idea-group-heading">
-                  <div>
-                    <h3 id={headingId}>{group.label}</h3>
-                    <p>{group.description}</p>
-                  </div>
+                  <h3 id={headingId}>{group.label}</h3>
                   <span>{group.items.length}</span>
                 </div>
                 <div className="suggestion-list" role="list">
@@ -3316,7 +3143,6 @@ function SuggestionShelf({
       ) : (
         <div className="empty-state ideas-empty">
           <strong>All current ideas are active</strong>
-          <p>Remove an item before shopping if you want to keep it here for later.</p>
         </div>
       )}
     </section>
@@ -3354,7 +3180,6 @@ function classificationTone(status: DashboardReceiptLine["classificationStatus"]
 
 function OverviewTab({
   viewData,
-  changeTab,
   selectedMonth,
   setSelectedMonth,
   selectedCategoryKey,
@@ -3366,7 +3191,6 @@ function OverviewTab({
   onAddCostcoPurchase,
 }: {
   viewData: DashboardViewData;
-  changeTab: (tab: Tab) => void;
   selectedMonth: string;
   setSelectedMonth: (month: string) => void;
   selectedCategoryKey: ProductCategoryKey | null;
@@ -3439,30 +3263,21 @@ function OverviewTab({
 
   return (
     <div className="page page-overview">
-      <section className="page-heading">
-        <p className="section-label">Audited household history</p>
+      <section className="page-heading with-controls">
         <h1>Insights</h1>
-        <p>
-          Explore 2026 spending from category to purchase to receipt line. Weekly
-          comparisons begin only after Start shopping captures a pre-trip list.
-        </p>
         <button type="button" className="secondary-button ad-hoc-purchase-action" onClick={onAddCostcoPurchase}>
           Add Costco receipt
         </button>
       </section>
 
-      <section className="notice-card gentle">
-        <span className="notice-mark" aria-hidden="true">✓</span>
-        <p>
-          <strong>
-            {viewData.audit.reconciliationIssueCount === 0
-              ? `All ${viewData.audit.transactionCount} receipt transactions reconcile.`
-              : "The audit still has open reconciliation work."}
-          </strong>{" "}
-          Category mappings are visible and reviewable. Receipts alone cannot prove
-          need, use, waste, regret, or whether a purchase was planned.
-        </p>
-      </section>
+      {viewData.audit.reconciliationIssueCount > 0 ? (
+        <section className="notice-card warning">
+          <span className="notice-mark" aria-hidden="true">!</span>
+          <p>
+            <strong>The audit still has open reconciliation work.</strong>
+          </p>
+        </section>
+      ) : null}
 
       <section className="metrics-strip four" aria-label={`${scopeLabel} Costco summary`}>
         <article>
@@ -3473,17 +3288,14 @@ function OverviewTab({
         <article>
           <span>Receipt transactions</span>
           <strong>{transactions.length}</strong>
-          <small>{transactions.filter((transaction) => transaction.channel === "warehouse").length} warehouse shops</small>
         </article>
         <article>
           <span>Warehouse tax</span>
           <strong>{currency.format(scopeWarehouseTaxCents / 100)}</strong>
-          <small>Shown separately from product categories</small>
         </article>
         <article>
           <span>Needs review</span>
           <strong>{currency.format(scopeNeedsReviewCents / 100)}</strong>
-          <small>Uncertain receipt abbreviations stay visible</small>
         </article>
       </section>
 
@@ -3492,7 +3304,6 @@ function OverviewTab({
           <div className="card-heading">
             <div>
               <h2>Household-funded spend by month</h2>
-              <p>Select a month to update categories and receipts below.</p>
             </div>
           </div>
           <MonthlyBarChart
@@ -3507,7 +3318,6 @@ function OverviewTab({
           <div className="card-heading">
             <div>
               <h2>Major categories</h2>
-              <p>Tap a category to see its trips and products.</p>
             </div>
             <EvidenceBadge label="After discounts" tone="receipt" />
           </div>
@@ -3524,7 +3334,6 @@ function OverviewTab({
         <div className="card-heading">
           <div>
             <h2>{selectedMonth === "all" ? "Latest receipt transactions" : `${scopeLabel} receipt transactions`}</h2>
-            <p>Tap an amount to open the complete receipt and every recorded line.</p>
           </div>
         </div>
         <TransactionTable
@@ -3533,41 +3342,6 @@ function OverviewTab({
         />
       </section>
 
-      <section className="learning-section">
-        <div className="card-heading">
-          <div>
-            <p className="section-label">Next useful actions</p>
-            <h2>Behavioral insight starts with intent</h2>
-          </div>
-          <EvidenceBadge label="Truth boundary" tone="unknown" />
-        </div>
-        <div className="learning-grid">
-          <button className="insight-card" onClick={() => changeTab("week")}>
-            <span className="insight-icon sage">1</span>
-            <span className="insight-copy">
-              <strong>Start shopping from the shared plan</strong>
-              <p>That captures the first defensible planned-versus-added comparison.</p>
-            </span>
-            <span className="insight-link">Open list</span>
-          </button>
-          <button className="insight-card" onClick={() => changeTab("review")}>
-            <span className="insight-icon apricot">1 min</span>
-            <span className="insight-copy">
-              <strong>Keep feedback lightweight</strong>
-              <p>One neutral trip question adds context receipts cannot provide.</p>
-            </span>
-            <span className="insight-link">Review trip</span>
-          </button>
-          <button className="insight-card" onClick={() => changeTab("products")}>
-            <span className="insight-icon lilac">SKU</span>
-            <span className="insight-copy">
-              <strong>Follow exact product history</strong>
-              <p>See item-number cadence and package prices without guessing use.</p>
-            </span>
-            <span className="insight-link">View products</span>
-          </button>
-        </div>
-      </section>
     </div>
   );
 }
@@ -3875,7 +3649,6 @@ function TransactionTable({
             </span>
             <span>
               <strong>{currency.format(transaction.householdFundedCents / 100)}</strong>
-              <small>Open receipt →</small>
             </span>
           </button>
         ))}
@@ -4066,7 +3839,6 @@ function CategoryDetail({
         <div className="card-heading">
           <div>
             <h2>Trips with {category.shortLabel.toLocaleLowerCase()}</h2>
-            <p>Open a receipt to see the exact contributing lines.</p>
           </div>
         </div>
         <TransactionTable
@@ -4141,7 +3913,6 @@ function ReceiptDetail({
         <div className="card-heading">
           <div>
             <h2>Receipt lines</h2>
-            <p>Tap a warehouse product to open its exact item-number history.</p>
           </div>
         </div>
         <div className="receipt-lines">
@@ -4611,9 +4382,7 @@ function ProductsTab({
     <div className="page products-page">
       <section className="page-heading with-controls product-heading">
         <div>
-          <p className="section-label">Exact receipt item numbers</p>
           <h1>Products</h1>
-          <p>Purchase cadence and package price—not inferred household consumption.</p>
         </div>
         <div className="product-filters">
           <label className="select-label">
@@ -4760,7 +4529,7 @@ function ProductsTab({
                         ? "—"
                         : currency.format(product.lastPriceCents / 100)}
                     </strong>
-                    <small
+                    {priceDelta === null || priceDelta !== 0 ? <small
                       className={
                         priceDelta !== null && priceDelta > 0
                           ? "delta-up"
@@ -4771,10 +4540,8 @@ function ProductsTab({
                     >
                       {priceDelta === null
                         ? formatShortDate(product.lastPurchasedOn)
-                        : priceDelta === 0
-                        ? "No latest change"
                         : `${priceDelta > 0 ? "+" : ""}${currency.format(priceDelta / 100)}`}
-                    </small>
+                    </small> : null}
                   </span>
                 </button>
                 <button
@@ -5140,7 +4907,6 @@ function ProductsTab({
           <div className="history-section">
             <div className="section-heading">
               <h3>Exact-product receipt history</h3>
-              <span>Open any purchase</span>
             </div>
             <div className="price-history">
               {selected.priceHistory.slice(-10).map((point) => (
@@ -5161,10 +4927,7 @@ function ProductsTab({
                   ) : (
                     <small>Receipt price · no line discount</small>
                   )}
-                  <small>
-                    {point.quantity !== 1 ? `${point.quantity} units · ` : ""}
-                    Open receipt →
-                  </small>
+                  {point.quantity !== 1 ? <small>{point.quantity} units</small> : null}
                 </button>
               ))}
             </div>
@@ -5228,9 +4991,7 @@ function ReviewTab({
   return (
     <div className="page review-page">
       <section className="page-heading">
-        <p className="section-label">Trip history</p>
         <h1>Receipt recaps</h1>
-        <p>Revisit any completed Costco trip and its saved-list comparison.</p>
       </section>
 
       {historyStatus === "loading" && !history.length ? (
@@ -5248,7 +5009,6 @@ function ReviewTab({
       {history.length ? (
         <section className="card review-history-picker" aria-labelledby="review-history-title">
           <div>
-            <p className="section-label">Saved weeks</p>
             <h2 id="review-history-title">Choose a trip</h2>
           </div>
           <label>
@@ -5270,17 +5030,6 @@ function ReviewTab({
               <span>{selected.itemCount} receipt {selected.itemCount === 1 ? "line" : "lines"}</span>
               <span>{selected.openQuestionCount ? `${selected.openQuestionCount} open review ${selected.openQuestionCount === 1 ? "question" : "questions"}` : "Review complete"}</span>
               {selected.correctionCount ? <span>Revision {selected.correctionCount + 1}</span> : <span>Original revision</span>}
-            </div>
-          ) : null}
-          {selected && canCorrect ? (
-            <div className="review-history-correction">
-              <div>
-                <strong>Need to replace this receipt?</strong>
-                <p>The current version stays official until you review and apply the replacement.</p>
-              </div>
-              <button type="button" className="secondary-button" onClick={onCorrectReceipt}>
-                Correct this receipt
-              </button>
             </div>
           ) : null}
         </section>

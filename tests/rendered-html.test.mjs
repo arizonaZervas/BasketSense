@@ -37,15 +37,12 @@ test("server-renders the BasketSense dashboard", async () => {
   assert.match(html, /<title>BasketSense — Our Costco companion<\/title>/i);
   assert.match(html, /Our Costco companion/);
   assert.match(html, /This Saturday/);
-  assert.match(html, /Receipt history loads when you open Insights/);
-  assert.match(html, /both spouses edit one list/i);
   assert.match(html, /Estimated list total/i);
-  assert.match(html, /Updates with the live list/i);
-  assert.match(html, /before tax/i);
-  assert.match(html, /Suggested starting points/i);
   assert.match(html, /Active List/i);
   assert.match(html, />Ideas</i);
   assert.match(html, /Loading household ideas/i);
+  assert.doesNotMatch(html, /receipt transactions audited|both spouses edit one list/i);
+  assert.doesNotMatch(html, /checks for changes every five seconds|suggested starting points/i);
   assert.doesNotMatch(html, /Kirkland Signature organic 2% milk|Lychee/i);
   assert.doesNotMatch(html, /automatically versioned|Saved just now|share this link/i);
   assert.doesNotMatch(
@@ -210,8 +207,8 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
     source,
     /function toggleIncluded[\s\S]*const shoppingStarted = household\?\.currentTrip\.status === "frozen";/,
   );
-  assert.match(source, /No estimate · Add estimate/);
-  assert.match(source, /household estimate/);
+  assert.match(source, /"Add estimate"/);
+  assert.doesNotMatch(source, /No estimate · Add estimate|· household estimate/);
   assert.match(source, /parseManualEstimateDollars/);
   assert.match(source, /item\.includedAtFreeze !== true/);
   assert.match(
@@ -226,7 +223,7 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(reviewSource, /Receipt matched/);
   assert.match(reviewSource, /receipt-spotlight/);
   assert.match(reviewSource, /showModal\(\)/);
-  assert.match(reviewSource, /Tap to explore/);
+  assert.doesNotMatch(reviewSource, /Tap to explore|View →/);
   assert.match(reviewSource, /Each card shows the receipt item that received a Costco discount/);
   assert.match(reviewSource, /Choose the receipt line that was this saved item/);
   assert.match(reviewSource, /Confirm match/);
@@ -381,6 +378,15 @@ test("reflows every primary surface from the available content width", async () 
   assert.match(
     styles,
     /\.category-donut-center strong \{[\s\S]*?font-size: clamp\(13px, 8cqi, 20px\);[\s\S]*?text-overflow: ellipsis;/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 760px\) \{[\s\S]*?\.list-row\.planning-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);/,
+  );
+  assert.match(styles, /\.estimated-price \{[\s\S]*?white-space: nowrap;/);
+  assert.doesNotMatch(
+    dashboardSource,
+    /Why this is here|Live shared list|No latest change|Open receipt →/,
   );
 });
 

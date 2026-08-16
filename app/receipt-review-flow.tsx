@@ -844,14 +844,10 @@ function normalizeBuckets(
   });
 }
 
-export function ReceiptNextStepCard({
-  tripStatus,
+export function ReceiptCelebration({
   closedLoop,
-  onOpen,
 }: {
-  tripStatus: "planning" | "frozen" | "completed";
   closedLoop?: ClosedLoopSnapshot | null;
-  onOpen: (step?: ReceiptStep) => void;
 }) {
   const hasReceipt = Boolean(closedLoop?.receipt);
   const provisional = closedLoop?.comparison?.isProvisional;
@@ -881,86 +877,36 @@ export function ReceiptNextStepCard({
     return () => window.cancelAnimationFrame(frame);
   }, [isCelebrationEligible, receiptId]);
 
-  if (hasReceipt) {
-    return (
-      <>
-        {showBudgetCelebration ? (
-          <section className="shopping-complete receipt-celebration" role="status" aria-live="polite">
-            <ConfettiCanvas />
-            <span className="shopping-complete-mark" aria-hidden="true">✦</span>
-            <div>
-              <strong>
-                {actualTotalCents !== null && finalListEstimateCents !== null && actualTotalCents <= finalListEstimateCents
-                  ? "Under plan — great cart day."
-                  : "Close to plan — great cart day."}
-              </strong>
-              <p>
-                Checkout was {money.format((actualTotalCents ?? 0) / 100)} against the final shopping-list estimate of {money.format((finalListEstimateCents ?? 0) / 100)}. Room for the fun finds included.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => {
-                if (receiptId) {
-                  window.sessionStorage.setItem(
-                    `basket-sense-receipt-celebration:${receiptId}`,
-                    "dismissed",
-                  );
-                }
-                setShowBudgetCelebration(false);
-              }}
-            >
-              Nice
-            </button>
-          </section>
-        ) : null}
-        <section className="receipt-next-step card" aria-labelledby="receipt-next-title">
-          <span className="receipt-step-mark" aria-hidden="true">✓</span>
-          <div>
-            <p className="section-label">Trip receipt</p>
-            <h2 id="receipt-next-title">
-              {provisional ? "One quick check remains" : "Receipt linked to this trip"}
-            </h2>
-            <p>
-              {provisional
-                ? "The comparison stays provisional until the unresolved amount is checked."
-                : "Open the expected-to-actual bridge and the evidence-triggered review."}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => onOpen(provisional ? "check" : "bridge")}
-          >
-            {provisional ? "Check receipt" : "View comparison"}
-          </button>
-        </section>
-      </>
-    );
-  }
+  if (!hasReceipt || !showBudgetCelebration) return null;
 
   return (
-    <section
-      className={`receipt-next-step card ${tripStatus === "planning" ? "quiet" : "ready"}`}
-      aria-labelledby="receipt-next-title"
-    >
-      <span className="receipt-step-mark" aria-hidden="true">3</span>
+    <section className="shopping-complete receipt-celebration" role="status" aria-live="polite">
+      <ConfettiCanvas />
+      <span className="shopping-complete-mark" aria-hidden="true">✦</span>
       <div>
-        <p className="section-label">After checkout</p>
-        <h2 id="receipt-next-title">Add today’s receipt</h2>
+        <strong>
+          {actualTotalCents !== null && finalListEstimateCents !== null && actualTotalCents <= finalListEstimateCents
+            ? "Under plan — great cart day."
+            : "Close to plan — great cart day."}
+        </strong>
         <p>
-          {tripStatus === "planning"
-            ? "Start shopping first to capture what you intended to buy. You can still add a receipt now, but the intent comparison will be weaker."
-            : "Add a photo or Costco PDF, check the draft, then see what changed from the saved list."}
+          Checkout was {money.format((actualTotalCents ?? 0) / 100)} against the final list estimate of {money.format((finalListEstimateCents ?? 0) / 100)}.
         </p>
       </div>
       <button
         type="button"
-        className={tripStatus === "planning" ? "text-button" : "primary-button"}
-        onClick={() => onOpen("capture")}
+        className="text-button"
+        onClick={() => {
+          if (receiptId) {
+            window.sessionStorage.setItem(
+              `basket-sense-receipt-celebration:${receiptId}`,
+              "dismissed",
+            );
+          }
+          setShowBudgetCelebration(false);
+        }}
       >
-        {tripStatus === "planning" ? "Add without saved plan" : "Add today’s receipt"}
+        Nice
       </button>
     </section>
   );
@@ -2901,10 +2847,7 @@ export function ExpectedActualBridge({
       {!totalsOnly && visibleBuckets.length ? (
         <section className="comparison-buckets trip-story-buckets" aria-labelledby="item-comparison-title">
           <div className="trip-story-section-heading">
-            <div>
-              <h4 id="item-comparison-title">What changed</h4>
-            </div>
-            <p>Open a group to see the receipt lines.</p>
+            <h4 id="item-comparison-title">What changed</h4>
           </div>
           <div className="trip-story-bucket-list">
           {visibleBuckets.map((bucket) => (
@@ -2918,11 +2861,10 @@ export function ExpectedActualBridge({
               >
                 <span>
                   <strong>{bucket.label}</strong>
-                  <small>Tap to explore · {bucket.itemCount} {bucket.itemCount === 1 ? "item" : "items"}</small>
+                  <small>{bucket.itemCount} {bucket.itemCount === 1 ? "item" : "items"}</small>
                 </span>
                 <span>
                   <strong>{money.format(bucket.amountCents / 100)}</strong>
-                  <small aria-hidden="true">View →</small>
                 </span>
               </button>
             </div>

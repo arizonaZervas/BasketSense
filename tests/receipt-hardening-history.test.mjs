@@ -247,8 +247,8 @@ test("historical review is lazy, owner-only to correct, and keeps revision evide
   assert.match(route, /SET status = 'superseded'/);
   assert.doesNotMatch(route.match(/async function applyHistoricalReceiptCorrection[\s\S]*?async function finalizeReceipt/)?.[0] ?? "", /SET status = 'completed'/);
   assert.match(dashboard, /view=review-history/);
-  assert.match(dashboard, /Correct this receipt/);
-  assert.match(dashboard, /current version stays official until you review and apply/i);
+  assert.match(dashboard, /receiptActionLabel="Correct receipt"/);
+  assert.doesNotMatch(dashboard, /current version stays official until you review and apply/i);
   assert.match(flow, /action: "apply_receipt_correction"/);
   assert.match(flow, /Re-read saved receipt/);
   assert.match(flow, /Current official receipt → proposed correction/);

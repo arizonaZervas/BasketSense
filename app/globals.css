@@ -2561,7 +2561,7 @@ button.price-point:hover {
 
 .week-summary {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr;
   overflow: hidden;
   margin-bottom: 16px;
   border: 1px solid var(--line);
@@ -2662,7 +2662,6 @@ button.price-point:hover {
 
 .week-summary > div {
   min-width: 0;
-  border-right: 1px solid var(--line);
   padding: 18px;
 }
 
@@ -3220,6 +3219,7 @@ button.price-point:hover {
   color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .estimate-edit-button {
@@ -4538,15 +4538,12 @@ button.price-point:hover {
   }
 
   .week-summary {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
     margin-bottom: 12px;
   }
 
   .week-summary .estimate-summary {
-    grid-column: 1 / -1;
-    grid-row: 1;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
+    grid-column: 1;
     padding: 14px;
   }
 
@@ -4666,6 +4663,15 @@ button.price-point:hover {
   .list-row {
     grid-template-columns: 44px 1fr;
     padding: 10px 7px;
+  }
+
+  .list-row.planning-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .list-row.planning-row .list-row-actions {
+    grid-column: 1;
+    justify-content: flex-end;
   }
 
   .list-row-copy strong {
