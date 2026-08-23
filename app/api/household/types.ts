@@ -563,12 +563,21 @@ export type HouseholdPostRequest =
       canonicalName?: string;
       category?: string;
       replacementReceiptItemId?: string | null;
+      matchRelation?:
+        | "same_product"
+        | "fulfills_intent"
+        | "substitute";
     }
   | {
       action: "set_product_memory";
       productId: string;
       preference: ProductMemoryPreference;
       note?: string | null;
+    }
+  | {
+      action: "run_recommendation_v2_evaluation";
+      mode: "backtest" | "live_shadow";
+      asOfDate?: string;
     };
 
 export type HouseholdPatchRequest =

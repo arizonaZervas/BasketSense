@@ -150,9 +150,11 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
     );
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM product_understandings").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM intent_fulfillments").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_runs").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_candidates").get().count, 0);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM basketsense_schema_migrations WHERE status = 'completed'").get().count,
-      5,
+      6,
     );
     assert.equal(database.prepare("PRAGMA foreign_key_check").all().length, 0);
 

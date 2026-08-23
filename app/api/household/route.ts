@@ -6,6 +6,12 @@ import {
 import { ensureBasketSenseSchemaUpgrades } from "../../database-schema-upgrades";
 import { buildSaturdayRecommendations } from "../../recommendation-engine";
 import {
+  RECOMMENDATION_ENGINE_V2_VERSION,
+  backtestRecommendationCatalog,
+  evaluateRecommendationCatalog,
+  type RecommendationV2Product,
+} from "../../recommendation-engine-v2";
+import {
   isProductMemoryPreference,
   productMemorySuppressesSuggestion,
   type ProductMemoryPreference,
@@ -23,6 +29,7 @@ import {
   receiptFulfillmentKeys,
   type ConfirmedProductAlias,
   type ConfirmedIntentFulfillment,
+  type IntentMatchRelation,
   type MatchableReceiptItem,
   type ReceiptIntentItem,
   type ReceiptIntentMatch,
@@ -735,6 +742,44 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON review_questions (receipt_transaction_id, status, priority)`,
   `CREATE INDEX IF NOT EXISTS review_questions_household_idx
     ON review_questions (household_id)`,
+  `CREATE TABLE IF NOT EXISTS recommendation_shadow_runs (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    as_of_date TEXT NOT NULL,
+    engine_version TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    attention_budget INTEGER NOT NULL,
+    catalog_size INTEGER NOT NULL,
+    eligible_count INTEGER NOT NULL,
+    metrics_json TEXT NOT NULL,
+    created_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS recommendation_shadow_runs_household_cycle_unique
+    ON recommendation_shadow_runs (household_id, as_of_date, engine_version, mode)`,
+  `CREATE INDEX IF NOT EXISTS recommendation_shadow_runs_household_created_idx
+    ON recommendation_shadow_runs (household_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS recommendation_shadow_candidates (
+    id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    rank INTEGER,
+    score_bps INTEGER NOT NULL,
+    eligible INTEGER NOT NULL,
+    selected INTEGER NOT NULL,
+    product_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    components_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES recommendation_shadow_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS recommendation_shadow_candidates_run_product_unique
+    ON recommendation_shadow_candidates (run_id, product_id)`,
+  `CREATE INDEX IF NOT EXISTS recommendation_shadow_candidates_run_rank_idx
+    ON recommendation_shadow_candidates (run_id, rank)`,
 ] as const;
 
 interface AuthenticatedUser {
@@ -953,7 +998,7 @@ interface ProductAliasRow {
 interface IntentFulfillmentRow {
   intent_key: string;
   receipt_key: string;
-  relation: "fulfills_intent" | "not_same";
+  relation: IntentMatchRelation;
   confidence_bps: number;
 }
 
@@ -5001,7 +5046,9 @@ function persistedMatchType(
     reason === "descriptive_subset" ||
     reason === "fuzzy_candidate"
     ? "exact_name"
-    : reason === "confirmed_intent_fulfillment"
+    : reason === "confirmed_same_product"
+      ? "confirmed_alias"
+      : reason === "confirmed_intent_fulfillment" || reason === "confirmed_substitute"
       ? "confirmed_intent"
     : reason;
 }
@@ -5294,17 +5341,27 @@ async function rebuildReviewQuestions(
     candidates.push({
       key: `possible-substitution:${intent.id}:${item.id}`,
       purpose: "intent",
-      prompt: `Did “${item.canonical_name ?? item.raw_description}” replace ${intent.label} on this trip?`,
+      prompt: `How does “${item.canonical_name ?? item.raw_description}” relate to ${intent.label}?`,
       options: [
         {
-          value: "yes_substitution",
-          label: "Yes",
-          effect: "Confirms this trip and remembers the household wording for future receipts.",
+          value: "same_product",
+          label: "Same product",
+          effect: "Confirms the match and teaches both wordings as one catalog product.",
         },
         {
-          value: "separate_purchase",
-          label: "No, separate item",
-          effect: "Keeps one item skipped and the other not on the saved list.",
+          value: "fulfills_intent",
+          label: "Fills the need",
+          effect: "Confirms the match without merging the products.",
+        },
+        {
+          value: "substitute",
+          label: "Substitute",
+          effect: "Records that a different product replaced the planned item.",
+        },
+        {
+          value: "not_same",
+          label: "Not related",
+          effect: "Keeps them separate and prevents this proposed match in the future.",
         },
         {
           value: "not_sure",
@@ -5312,7 +5369,7 @@ async function rebuildReviewQuestions(
           effect: "Leaves the possible match unresolved without changing future suggestions.",
         },
       ],
-      declaredEffect: "Confirms or rejects this match and, when confirmed, remembers a household alias",
+      declaredEffect: "Permanently records how these two household items relate",
       effectTarget: "receipt_match",
       intentItemId: intent.id,
       listItemId: intent.list_item_id,
@@ -7063,6 +7120,7 @@ async function rememberConfirmedIntentAlias(
   context: HouseholdContext,
   intentItemId: string,
   receiptItemId: string,
+  relation: IntentMatchRelation,
   now: string,
 ) {
   const pair = await db
@@ -7101,12 +7159,12 @@ async function rememberConfirmedIntentAlias(
           raw_intent_label, raw_receipt_description, costco_item_number,
           relation, confidence_bps, confirmed_by_member_id,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'fulfills_intent', 10000, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 10000, ?, ?, ?)
         ON CONFLICT(household_id, intent_key, receipt_key) DO UPDATE SET
           raw_intent_label = excluded.raw_intent_label,
           raw_receipt_description = excluded.raw_receipt_description,
           costco_item_number = excluded.costco_item_number,
-          relation = 'fulfills_intent',
+          relation = excluded.relation,
           confidence_bps = 10000,
           confirmed_by_member_id = excluded.confirmed_by_member_id,
           updated_at = excluded.updated_at`,
@@ -7118,6 +7176,7 @@ async function rememberConfirmedIntentAlias(
         pair.label,
         pair.raw_description,
         pair.costco_item_number,
+        relation,
         context.member.id,
         now,
         now,
@@ -7125,9 +7184,9 @@ async function rememberConfirmedIntentAlias(
     ));
   }
 
-  // Product aliases improve catalog identity when either side is already tied
-  // to a product. Intent fulfillment above deliberately works without one.
-  if (!productId) return;
+  // Only an explicit same-product decision is allowed to teach catalog
+  // identity. Intent fulfillment and substitutes remain separate products.
+  if (relation !== "same_product" || !productId) return;
 
   const normalized = normalizeReceiptDescription(pair.label);
   if (!normalized) return;
@@ -7271,6 +7330,160 @@ async function confirmProductMetadata(
   });
 }
 
+async function recommendationV2Catalog(
+  db: D1Database,
+  householdId: string,
+): Promise<RecommendationV2Product[]> {
+  const [products, purchases, memories, outcomes] = await Promise.all([
+    db.prepare(
+      `SELECT id, costco_item_number, canonical_name, category
+       FROM products WHERE household_id = ? AND active = 1 ORDER BY canonical_name`,
+    ).bind(householdId).all<{
+      id: string; costco_item_number: string | null; canonical_name: string; category: string | null;
+    }>(),
+    db.prepare(
+      `SELECT receipt_items.product_id,
+              substr(receipt_transactions.purchased_at, 1, 10) AS purchased_on,
+              SUM(receipt_items.quantity_milli) AS quantity_milli,
+              CAST(ROUND(AVG(receipt_items.unit_price_cents)) AS INTEGER) AS unit_price_cents
+       FROM receipt_items
+       INNER JOIN receipt_transactions ON receipt_transactions.id = receipt_items.receipt_transaction_id
+       WHERE receipt_transactions.household_id = ?
+         AND receipt_transactions.transaction_type = 'warehouse'
+         AND receipt_transactions.parse_status = 'reconciled'
+         AND receipt_items.product_id IS NOT NULL
+         AND receipt_items.is_return = 0
+         AND receipt_items.net_amount_cents > 0
+       GROUP BY receipt_items.product_id, receipt_transactions.id,
+                substr(receipt_transactions.purchased_at, 1, 10)`,
+    ).bind(householdId).all<{
+      product_id: string; purchased_on: string; quantity_milli: number; unit_price_cents: number | null;
+    }>(),
+    db.prepare(
+      `SELECT product_id, created_at, value FROM feedback
+       WHERE household_id = ? AND kind = 'product_experience' AND product_id IS NOT NULL`,
+    ).bind(householdId).all<{ product_id: string; created_at: string; value: string }>(),
+    db.prepare(
+      `SELECT COALESCE(feedback.product_id, receipt_items.product_id) AS product_id,
+              feedback.created_at, feedback.value
+       FROM feedback
+       LEFT JOIN receipt_items ON receipt_items.id = feedback.receipt_item_id
+       WHERE feedback.household_id = ?
+         AND feedback.kind IN (
+           'recommendation_response', 'duplicate_signal', 'waste_signal',
+           'regret_signal', 'fulfillment_reason'
+         )
+         AND COALESCE(feedback.product_id, receipt_items.product_id) IS NOT NULL`,
+    ).bind(householdId).all<{ product_id: string; created_at: string; value: string }>(),
+  ]);
+
+  return products.results.map((product) => ({
+    productId: product.id,
+    itemNumber: product.costco_item_number,
+    name: product.canonical_name,
+    category: product.category,
+    purchases: purchases.results
+      .filter((event) => event.product_id === product.id)
+      .map((event) => ({
+        purchasedOn: event.purchased_on,
+        quantityMilli: event.quantity_milli,
+        unitPriceCents: event.unit_price_cents,
+      })),
+    memories: memories.results
+      .filter((event) => event.product_id === product.id && isProductMemoryPreference(event.value))
+      .map((event) => ({
+        recordedAt: event.created_at,
+        preference: event.value as ProductMemoryPreference,
+      })),
+    outcomes: outcomes.results
+      .filter((event) => event.product_id === product.id)
+      .map((event) => ({ recordedAt: event.created_at, value: event.value })),
+  }));
+}
+
+async function runRecommendationV2Evaluation(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>,
+) {
+  requireHouseholdOwner(context);
+  const mode = body.mode === "backtest" ? "backtest" : body.mode === "live_shadow"
+    ? "live_shadow"
+    : null;
+  if (!mode) throw new ApiError(400, "mode must be backtest or live_shadow");
+  const asOfDate = body.asOfDate === undefined
+    ? context.currentTrip.scheduled_for
+    : requiredString(body.asOfDate, "asOfDate", 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate) || Number.isNaN(Date.parse(`${asOfDate}T00:00:00Z`))) {
+    throw new ApiError(400, "asOfDate must be a calendar date");
+  }
+  const products = await recommendationV2Catalog(db, context.household.id);
+  const run = evaluateRecommendationCatalog({ products, asOfDate, attentionBudget: 6 });
+  const historicalDates = mode === "backtest"
+    ? (await db.prepare(
+        `SELECT scheduled_for FROM trips
+         WHERE household_id = ? AND status = 'completed' AND scheduled_for < ?
+         ORDER BY scheduled_for`,
+      ).bind(context.household.id, asOfDate).all<{ scheduled_for: string }>())
+        .results.map((trip) => trip.scheduled_for)
+    : [];
+  const backtest = mode === "backtest"
+    ? backtestRecommendationCatalog({ products, targetDates: historicalDates, k: 6 })
+    : null;
+  const runId = `recommendation-v2:${RECOMMENDATION_ENGINE_V2_VERSION}:${context.household.id}:${mode}:${asOfDate}`;
+  const selectedProductIds = new Set(run.recommendations.map((item) => item.productId));
+  const currentPolicyProductIds = buildSaturdayRecommendations(
+    RECURRING_PRODUCT_HISTORIES_2026,
+    asOfDate,
+  ).map((item) => productIdFor(item.itemNumber));
+  const currentPolicyComparison = {
+    overlapProductIds: currentPolicyProductIds.filter((productId) => selectedProductIds.has(productId)),
+    v2OnlyProductIds: [...selectedProductIds].filter((productId) => !currentPolicyProductIds.includes(productId)),
+    currentOnlyProductIds: currentPolicyProductIds.filter((productId) => !selectedProductIds.has(productId)),
+  };
+  const metrics = {
+    visibleListChanged: false,
+    backtest,
+    selectedProductIds: [...selectedProductIds],
+    currentPolicyComparison,
+  };
+  const now = nowIso();
+  await db.prepare(
+    `INSERT INTO recommendation_shadow_runs (
+       id, household_id, as_of_date, engine_version, mode,
+       attention_budget, catalog_size, eligible_count, metrics_json,
+       created_by_member_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(household_id, as_of_date, engine_version, mode) DO UPDATE SET
+       attention_budget = excluded.attention_budget,
+       catalog_size = excluded.catalog_size,
+       eligible_count = excluded.eligible_count,
+       metrics_json = excluded.metrics_json,
+       created_by_member_id = excluded.created_by_member_id,
+       created_at = excluded.created_at`,
+  ).bind(
+    runId, context.household.id, asOfDate, RECOMMENDATION_ENGINE_V2_VERSION,
+    mode, run.attentionBudget, run.catalogSize, run.eligibleCount,
+    JSON.stringify(metrics), context.member.id, now,
+  ).run();
+  await db.prepare(`DELETE FROM recommendation_shadow_candidates WHERE run_id = ?`)
+    .bind(runId).run();
+  await runPreparedInChunks(db, run.assessments.map((assessment) =>
+    db.prepare(
+      `INSERT INTO recommendation_shadow_candidates (
+         id, run_id, product_id, rank, score_bps, eligible, selected,
+         product_state, reason, components_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      `${runId}:${assessment.productId}`, runId, assessment.productId,
+      assessment.rank, assessment.scoreBps, assessment.eligible ? 1 : 0,
+      selectedProductIds.has(assessment.productId) ? 1 : 0,
+      assessment.state, assessment.reason, JSON.stringify(assessment.components), now,
+    ),
+  ));
+  return json({ mode, visibleListChanged: false, run, backtest, currentPolicyComparison });
+}
+
 async function answerReviewQuestion(
   db: D1Database,
   context: HouseholdContext,
@@ -7353,6 +7566,15 @@ async function answerReviewQuestion(
     body.replacementReceiptItemId,
     "replacementReceiptItemId"
   );
+  const requestedMatchRelation = body.matchRelation;
+  if (
+    requestedMatchRelation !== undefined &&
+    requestedMatchRelation !== "same_product" &&
+    requestedMatchRelation !== "fulfills_intent" &&
+    requestedMatchRelation !== "substitute"
+  ) {
+    throw new ApiError(400, "matchRelation is not supported");
+  }
   const now = nowIso();
   const claimToken = crypto.randomUUID();
   const staleClaimCutoff = new Date(Date.now() - 120_000).toISOString();
@@ -7409,8 +7631,21 @@ async function answerReviewQuestion(
         productId
       );
     }
+  const matchRelation: IntentMatchRelation | null =
+    value === "same_product" ||
+    value === "fulfills_intent" ||
+    value === "substitute" ||
+    value === "not_same"
+      ? value
+      : value === "yes_substitution"
+        ? "substitute"
+        : value === "separate_purchase"
+          ? "not_same"
+          : value === "receipt_needs_fix"
+            ? (requestedMatchRelation ?? "fulfills_intent")
+            : null;
   if (
-    (value === "yes_substitution" || value === "receipt_needs_fix") &&
+    matchRelation &&
     question.intent_item_id &&
     (question.receipt_item_id || replacementReceiptItemId)
   ) {
@@ -7425,37 +7660,48 @@ async function answerReviewQuestion(
     if (!receiptItem) {
       throw new ApiError(400, "Choose a receipt line from this trip");
     }
-    await db.batch([
-      db
+    if (matchRelation === "not_same") {
+      await db
         .prepare(
           `DELETE FROM trip_item_matches
-           WHERE intent_item_id = ? OR receipt_item_id = ?`
+           WHERE intent_item_id = ? AND receipt_item_id = ?`
         )
-        .bind(question.intent_item_id, receiptItemId),
-      db
-        .prepare(
-          `INSERT INTO trip_item_matches (
-            id, household_id, trip_id, receipt_transaction_id,
-            intent_item_id, receipt_item_id, match_type, confidence_bps,
-            resolution_source, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'member_confirmed', 10000, 'member', ?, ?)`
-        )
-        .bind(
-          crypto.randomUUID(),
-          context.household.id,
-          question.trip_id,
-          question.receipt_transaction_id,
-          question.intent_item_id,
-          receiptItemId,
-          now,
-          now
-        ),
-    ]);
+        .bind(question.intent_item_id, receiptItemId)
+        .run();
+    } else {
+      await db.batch([
+        db
+          .prepare(
+            `DELETE FROM trip_item_matches
+             WHERE intent_item_id = ? OR receipt_item_id = ?`
+          )
+          .bind(question.intent_item_id, receiptItemId),
+        db
+          .prepare(
+            `INSERT INTO trip_item_matches (
+              id, household_id, trip_id, receipt_transaction_id,
+              intent_item_id, receipt_item_id, match_type, confidence_bps,
+              resolution_source, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'member_confirmed', 10000, 'member', ?, ?)`
+          )
+          .bind(
+            crypto.randomUUID(),
+            context.household.id,
+            question.trip_id,
+            question.receipt_transaction_id,
+            question.intent_item_id,
+            receiptItemId,
+            now,
+            now
+          ),
+      ]);
+    }
     await rememberConfirmedIntentAlias(
       db,
       context,
       question.intent_item_id,
       receiptItemId,
+      matchRelation,
       now,
     );
   }
@@ -7692,6 +7938,9 @@ export async function handleHouseholdPost(
     }
     if (action === "set_product_memory") {
       return await setProductMemory(db, context, body);
+    }
+    if (action === "run_recommendation_v2_evaluation") {
+      return await runRecommendationV2Evaluation(db, context, body);
     }
     if (action === "ingest_receipt_draft") {
       return await ingestReceiptDraft(db, context, body);

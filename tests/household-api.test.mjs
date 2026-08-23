@@ -1260,6 +1260,39 @@ test("product understanding migration keeps interpretations separate from receip
   }
 });
 
+test("recommendation shadow migration stores evidence without a visible-list foreign key", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE household_members (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE products (id TEXT PRIMARY KEY NOT NULL);
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0015_absurd_rhino.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+
+    assert.ok(db.database.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'recommendation_shadow_runs'`,
+    ).get());
+    assert.ok(db.database.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'recommendation_shadow_candidates'`,
+    ).get());
+    const candidateForeignKeys = db.database
+      .prepare(`PRAGMA foreign_key_list('recommendation_shadow_candidates')`)
+      .all()
+      .map((foreignKey) => foreignKey.table);
+    assert.deepEqual(candidateForeignKeys.sort(), ["products", "recommendation_shadow_runs"]);
+    assert.equal(candidateForeignKeys.includes("trip_list_items"), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("August receipt date migration repairs only the linked 2026 trip", () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -3769,6 +3802,7 @@ test("a confirmed same-item correction teaches the list product identity for fut
         questionId,
         value: "receipt_needs_fix",
         replacementReceiptItemId: replacementReceiptItem.id,
+        matchRelation: "same_product",
       }),
       db,
     );
@@ -3785,7 +3819,7 @@ test("a confirmed same-item correction teaches the list product identity for fut
       [{
         intent_key: "intent:KIRKLAND SIGNATURE ORGANIC 2% MILK",
         receipt_key: "description:ZIPLOC BAGS",
-        relation: "fulfills_intent",
+        relation: "same_product",
       }],
     );
     const aliases = db.database
@@ -3819,6 +3853,108 @@ test("a confirmed same-item correction teaches the list product identity for fut
       apparelProduct.id,
       "The explicit replacement must win over the question's stale candidate line",
     );
+
+    const notSameQuestionId = "learn-not-same-question";
+    db.database
+      .prepare(
+        `INSERT INTO review_questions (
+          id, household_id, trip_id, receipt_transaction_id, question_key,
+          purpose, prompt, options_json, declared_effect, effect_target,
+          list_item_id, intent_item_id, receipt_item_id, priority, status,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'intent', ?, ?, ?, 'receipt_match', ?, ?, ?, 1, 'open', ?, ?)`,
+      )
+      .run(
+        notSameQuestionId,
+        "household_basketsense",
+        tripId,
+        ingested.receiptId,
+        notSameQuestionId,
+        "Are these unrelated?",
+        JSON.stringify([{ value: "not_same", label: "Not related", effect: "Remember the rejection." }]),
+        "Permanently rejects this pair",
+        plannedMilk.id,
+        intent.id,
+        candidateReceiptItem.id,
+        now,
+        now,
+      );
+    const notSameAnswer = await handleHouseholdPost(
+      householdRequest("learn-alias@example.test", "POST", {
+        action: "answer_review_question",
+        questionId: notSameQuestionId,
+        value: "not_same",
+      }),
+      db,
+    );
+    assert.equal(notSameAnswer.status, 200);
+    assert.equal(
+      db.database.prepare(
+        `SELECT relation FROM intent_fulfillments
+         WHERE household_id = ? AND intent_key = ? AND receipt_key = ?`,
+      ).get(
+        "household_basketsense",
+        "intent:KIRKLAND SIGNATURE ORGANIC 2% MILK",
+        `item:${apparelProduct.costcoItemNumber}`,
+      ).relation,
+      "not_same",
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("recommendation v2 backtests and live shadow runs never change the visible list", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest("recommendation-shadow@example.test"), db),
+    );
+    const listBefore = db.database
+      .prepare(`SELECT id, included, checked, sort_order FROM trip_list_items WHERE trip_id = ? ORDER BY id`)
+      .all(initial.currentTrip.id)
+      .map((row) => ({ ...row }));
+
+    const backtestResponse = await handleHouseholdPost(
+      householdRequest("recommendation-shadow@example.test", "POST", {
+        action: "run_recommendation_v2_evaluation",
+        mode: "backtest",
+        asOfDate: initial.currentTrip.scheduledFor,
+      }),
+      db,
+    );
+    assert.equal(backtestResponse.status, 200);
+    const backtest = await responseJson(backtestResponse);
+    assert.equal(backtest.visibleListChanged, false);
+    assert.equal(backtest.run.catalogSize, initial.products.length);
+    assert.ok(backtest.backtest);
+
+    const shadowResponse = await handleHouseholdPost(
+      householdRequest("recommendation-shadow@example.test", "POST", {
+        action: "run_recommendation_v2_evaluation",
+        mode: "live_shadow",
+        asOfDate: initial.currentTrip.scheduledFor,
+      }),
+      db,
+    );
+    assert.equal(shadowResponse.status, 200);
+    const shadow = await responseJson(shadowResponse);
+    assert.equal(shadow.visibleListChanged, false);
+    assert.equal(shadow.backtest, null);
+    assert.ok(Array.isArray(shadow.currentPolicyComparison.overlapProductIds));
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM recommendation_shadow_runs`).get().count,
+      2,
+    );
+    assert.equal(
+      db.database.prepare(`SELECT COUNT(*) AS count FROM recommendation_shadow_candidates`).get().count,
+      initial.products.length * 2,
+    );
+    const listAfter = db.database
+      .prepare(`SELECT id, included, checked, sort_order FROM trip_list_items WHERE trip_id = ? ORDER BY id`)
+      .all(initial.currentTrip.id)
+      .map((row) => ({ ...row }));
+    assert.deepEqual(listAfter, listBefore);
   } finally {
     db.close();
   }

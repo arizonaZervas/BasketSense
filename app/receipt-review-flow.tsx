@@ -3163,6 +3163,9 @@ export function ClosedLoopReview({
   const [catalogCategory, setCatalogCategory] = useState<ProductCategoryKey | "">("");
   const [receiptMatchQuestionId, setReceiptMatchQuestionId] = useState<string | null>(null);
   const [replacementReceiptItemId, setReplacementReceiptItemId] = useState("");
+  const [replacementMatchRelation, setReplacementMatchRelation] = useState<
+    "same_product" | "fulfills_intent" | "substitute"
+  >("fulfills_intent");
   const receipt = closedLoop?.receipt;
   const questions = (closedLoop?.questions ?? []).slice(0, 3);
   const openQuestions = questions.filter(
@@ -3200,6 +3203,7 @@ export function ClosedLoopReview({
       canonicalName?: string;
       category?: ProductCategoryKey;
       replacementReceiptItemId?: string;
+      matchRelation?: "same_product" | "fulfills_intent" | "substitute";
       note?: string;
     },
   ) {
@@ -3226,6 +3230,7 @@ export function ClosedLoopReview({
       setCatalogQuestionId(null);
       setReceiptMatchQuestionId(null);
       setReplacementReceiptItemId("");
+      setReplacementMatchRelation("fulfills_intent");
     } catch (error) {
       setAnswerError(error instanceof Error ? error.message : "That answer could not be saved.");
     } finally {
@@ -3363,6 +3368,7 @@ export function ClosedLoopReview({
                       }
                       void answer(question, "receipt_needs_fix", {
                         replacementReceiptItemId,
+                        matchRelation: replacementMatchRelation,
                       });
                     }}
                   >
@@ -3380,6 +3386,19 @@ export function ClosedLoopReview({
                             {(item.rawDescription ?? item.canonicalName ?? "Receipt item").slice(0, 80)}{item.netAmountCents === null || item.netAmountCents === undefined ? "" : ` · ${money.format(item.netAmountCents / 100)}`}
                           </option>
                         ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Relationship</span>
+                      <select
+                        value={replacementMatchRelation}
+                        onChange={(event) => setReplacementMatchRelation(
+                          event.target.value as "same_product" | "fulfills_intent" | "substitute",
+                        )}
+                      >
+                        <option value="same_product">Same product</option>
+                        <option value="fulfills_intent">Fills the need</option>
+                        <option value="substitute">Substitute</option>
                       </select>
                     </label>
                     <div className="catalog-confirmation-actions">
@@ -3413,6 +3432,7 @@ export function ClosedLoopReview({
                           beginCatalogConfirmation(question);
                         } else if (option.value === "receipt_needs_fix") {
                           setReplacementReceiptItemId("");
+                          setReplacementMatchRelation("fulfills_intent");
                           setReceiptMatchQuestionId(question.id);
                           setAnswerError(null);
                         } else {

@@ -1,6 +1,8 @@
 # Product Understanding and Intent Matching v1
 
-**Status:** Implemented and locally validated; migration and application release are not yet authorized.
+**Status:** Released to the private BasketSense Site on 2026-08-23 in Sites
+version 84. Migration 0014 completed through the existing app-owned migration
+gate. The separate receipt Worker was not deployed.
 
 ## Outcome
 
@@ -100,3 +102,22 @@ Recommendation Engine v2 remains a separate leakage-safe backtest and shadow
 ticket. Product family and explicit fulfillment evidence may become bounded
 features in that evaluation, but no LLM output may directly rank, auto-add, or
 suppress a Saturday recommendation.
+
+## Local Household Intent Matching revision — 2026-08-23
+
+The next revision is implemented and validated locally but is not deployed.
+Review questions now preserve one of four household decisions:
+
+- `same_product` teaches catalog identity and the receipt/list wording pair;
+- `fulfills_intent` confirms the need was satisfied without merging products;
+- `substitute` confirms a deliberately different replacement;
+- `not_same` permanently suppresses that intent/receipt pair.
+
+All four decisions are stored in `intent_fulfillments`. Only
+`same_product` may update product aliases or receipt product identity. The
+other relations affect matching only, preventing a substitution from silently
+collapsing two catalog products.
+
+Local receipt-style simulations cover compact labels such as organic milk,
+coconut water, storage bags, and cupcakes without retaining the private source
+image or its metadata in the repository.

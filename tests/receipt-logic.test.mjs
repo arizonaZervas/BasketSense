@@ -266,6 +266,28 @@ test("an explicit household fulfillment is remembered without catalog identity",
   assert.equal(result.matches[0].reason, "confirmed_intent_fulfillment");
 });
 
+for (const [relation, reason] of [
+  ["same_product", "confirmed_same_product"],
+  ["substitute", "confirmed_substitute"],
+]) {
+  test(`an explicit ${relation} decision becomes a high-confidence automatic match`, () => {
+    const result = matchReceiptItemsToIntent({
+      intentItems: [{ id: "intent-bags", label: "Food storage bags" }],
+      receiptItems: [{ id: "receipt-bags", rawDescription: "ZIPLC SLIDER" }],
+      fulfillments: [{
+        intentKey: "intent:FOOD STORAGE BAGS",
+        receiptKey: "description:ZIPLOC BAGS",
+        relation,
+        confidenceBps: 10000,
+      }],
+    });
+
+    assert.equal(result.matches.length, 1);
+    assert.equal(result.matches[0].status, "auto_matched");
+    assert.equal(result.matches[0].reason, reason);
+  });
+}
+
 test("an explicit not-same decision suppresses that intent and receipt pair", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "intent-suja", label: "Suja" }],

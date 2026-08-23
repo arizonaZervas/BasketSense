@@ -179,6 +179,47 @@ const PRODUCT_UNDERSTANDING_STATEMENTS = [
     ON intent_fulfillments (household_id, intent_key)`,
 ];
 
+const RECOMMENDATION_SHADOW_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS recommendation_shadow_runs (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    as_of_date TEXT NOT NULL,
+    engine_version TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    attention_budget INTEGER NOT NULL,
+    catalog_size INTEGER NOT NULL,
+    eligible_count INTEGER NOT NULL,
+    metrics_json TEXT NOT NULL,
+    created_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS recommendation_shadow_runs_household_cycle_unique
+    ON recommendation_shadow_runs (household_id, as_of_date, engine_version, mode)`,
+  `CREATE INDEX IF NOT EXISTS recommendation_shadow_runs_household_created_idx
+    ON recommendation_shadow_runs (household_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS recommendation_shadow_candidates (
+    id TEXT PRIMARY KEY NOT NULL,
+    run_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    rank INTEGER,
+    score_bps INTEGER NOT NULL,
+    eligible INTEGER NOT NULL,
+    selected INTEGER NOT NULL,
+    product_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    components_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (run_id) REFERENCES recommendation_shadow_runs(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS recommendation_shadow_candidates_run_product_unique
+    ON recommendation_shadow_candidates (run_id, product_id)`,
+  `CREATE INDEX IF NOT EXISTS recommendation_shadow_candidates_run_rank_idx
+    ON recommendation_shadow_candidates (run_id, rank)`,
+];
+
 function changeCount(result: D1Result<unknown>) {
   return Number(result.meta?.changes ?? 0);
 }
@@ -340,6 +381,10 @@ async function performSchemaUpgrades(db: D1Database) {
     await addColumnIfMissing(db, "receipt_items", "interpretation_confidence_bps", "interpretation_confidence_bps INTEGER");
     await addColumnIfMissing(db, "receipt_items", "interpretation_source", "interpretation_source TEXT");
     await addColumnIfMissing(db, "receipt_items", "interpretation_model", "interpretation_model TEXT");
+  });
+
+  await runClaimedMigration(db, "0015_recommendation_shadow", async () => {
+    await db.batch(RECOMMENDATION_SHADOW_STATEMENTS.map((statement) => db.prepare(statement)));
   });
 }
 

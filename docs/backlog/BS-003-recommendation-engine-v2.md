@@ -1,7 +1,7 @@
 # BS-003 — Recommendation engine v2
 
-**Status:** Proposed  
-**Priority:** 3  
+**Status:** Implemented locally; production shadow pending
+**Priority:** 3
 **Decision gate:** Gate A
 
 ## Outcome
@@ -85,5 +85,30 @@ behavioral comparison.
 
 ## Evidence after completion
 
-Pending. Attach the leakage-safe backtest, live shadow comparison, explanation
-examples, and Gate A decision.
+The local candidate is implemented as `household-catalog-v2.1` behind the
+owner-only `run_recommendation_v2_evaluation` action. It:
+
+- evaluates every active catalog product;
+- uses named, bounded score components;
+- excludes purchases, memories, and outcomes recorded on or after each
+  historical cutoff;
+- reports precision at K, catalog coverage, and false-positive burden;
+- stores backtest and shadow candidates in migration 0015; and
+- cannot mutate `trip_list_items` or the visible Saturday experience.
+
+Focused validation runs a historical backtest followed by a local invisible
+cycle and proves the visible list rows and presentation fields are unchanged.
+The production live cycle and comparison with the current policy remain release checkpoints;
+Gate A is not approved and Recommendation v1 remains the customer-visible
+engine.
+
+The audited local 2026 fixture currently contains 35 recurring catalog
+products across 29 warehouse dates. At K=6, the leakage-safe backtest reports
+38.6% mean precision, 100% fixture coverage, and 3.24 non-purchased suggestions
+per evaluated date. This is evidence to tune the attention budget and product
+states, not a cutover result: receipts are an imperfect label for whether a
+suggestion was useful. The July 25 shadow top six were organic milk, immunity
+blend, lychee, mini cucumbers, cinnamon bagels, and organic eggs. No List row
+was written. All six were also present in the current 11-item policy; the local
+shadow introduced no novel product and omitted five lower-ranked current-policy
+items under its six-item attention budget.

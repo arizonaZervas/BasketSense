@@ -56,7 +56,28 @@ changing it.
 - A completed sandbox receipt can be reopened for another test cycle. This is
   intentionally unavailable in the real shared household.
 
-## Local feature work awaiting release
+## 2026-08-23 private app release
+
+- The receipt/camera hardening, standalone purchase/return support, historical
+  correction flow, Product Memory/Saturday Prep work, background image-job
+  source, and Product Understanding and Intent Matching v1 were committed as
+  `9dd651f1b02cd72af049993379f24c6782ec5112` and deployed as private Sites
+  version 84.
+- The app-owned migration gate completed migration 0014. The live `DB` binding
+  now contains `product_understandings` and `intent_fulfillments`; the migration
+  ledger reports 0014 completed.
+- The separate `workers/receipt-ingestion/` Worker was not deployed. Its image
+  jobs may remain queued until the legacy e-mail binding is removed and that
+  Worker receives its own approval.
+- Post-release authenticated smoke passed for List, Insights, Products, and
+  Recap. The owner sandbox check/uncheck round trip restored its original state,
+  receipt capture exposed camera/photo/PDF entry without an error, and the
+  post-canary Site error log contained no events.
+- Local release gates passed immediately before deployment: production build,
+  BasketSense-only TypeScript, targeted lint, diff checks, and 158/158
+  BasketSense tests. Good Cart Day was excluded from every release command.
+
+## Released feature details
 
 - The complete 2026-08-15 deployment manifest, risk register, mobile evidence,
   monitoring plan, and rollback runbook are in
@@ -65,16 +86,16 @@ changing it.
   Worker is explicitly excluded until its old email workflow/sender binding is
   removed and independently approved.
 
-- Saturday Prep is implemented locally as an optional, List-native three-step
+- Saturday Prep is available as an optional, List-native three-step
   review of likely-due and check-at-home suggestions. Only an explicit Add
   changes the shared list; Skip, Later, Have enough, and Not sure remain
   device-local planning choices.
-- Household Product Memory is implemented locally with the explicit choices
+- Household Product Memory is available with the explicit choices
   Buy again, Pause for now, and Not for us. Choices are append-only,
   receipt-backed feedback, editable from Products, and can also be captured in
   receipt review. The newest explicit choice wins; Pause and Not for us keep a
   product out of future Saturday Prep seeds.
-- Ad hoc Costco purchases and returns are implemented locally as standalone
+- Ad hoc Costco purchases and returns are available as standalone
   private receipts with `trip_id = NULL`. Insights can upload and review
   Costco.com, tire, jewelry/precious-metal, or other purchases and returns
   outside the Saturday trip.
@@ -100,10 +121,11 @@ changing it.
   resource or binding is required.
 - Migration 0009 makes only `receipt_ingestions.trip_id` nullable so the
   existing private upload/extraction path can attach directly to a standalone
-  receipt. It has been generated and locally tested but not applied remotely.
+  receipt. It is completed in the existing Sites `DB`.
 - Migration 0010 creates only the product-image job table and its indexes. It
-  has been generated and locally tested but not applied remotely.
-- Historical Review and Receipt Capture Hardening v1 are implemented locally.
+  is completed in the existing Sites `DB`; jobs remain queued until the
+  separate Worker is approved.
+- Historical Review and Receipt Capture Hardening v1 are released.
   Recap now loads a list of completed trips on demand and reads the selected
   trip's own frozen-list comparison. Both spouses can view history; only the
   owner can upload and confirm a historical replacement. Confirmation keeps
@@ -127,7 +149,7 @@ changing it.
   durable by recording its product ID before historical line replacement; the
   migration backfills existing Product Memory from its receipt line.
 - Migration 0013 adds an app-owned migration ledger. The private app now claims
-  and applies 0009–0013 idempotently against its actual Sites `DB` binding before
+  and applies 0009–0014 idempotently against its actual Sites `DB` binding before
   new receipt/history/Product Memory handlers continue. This is required because
   the Sites-managed D1 is not visible in the owner's Wrangler account and the
   available Sites database connector is read-only; never guess a remote D1 ID.
@@ -137,20 +159,16 @@ changing it.
   uncached receipt labels, never receives receipt totals or List state, and is
   failure-tolerant. Full behavior and release gates are in
   `docs/product-understanding-and-intent-matching-v1.md`.
-- The app accepts an optional `GEMINI_RECOVERY_MODEL` for pass 2; without it,
-  pass 2 uses the primary configured model with the enhanced/section evidence.
-  Verify and set a BasketSense recovery model during the release preflight if
-  the owner wants the higher-quality-model fallback. Automatic post-finalization
+- The app accepts an optional `GEMINI_RECOVERY_MODEL` for pass 2. It was not
+  added during the 2026-08-23 release, so pass 2 uses the primary configured
+  model with the enhanced/section evidence. Automatic post-finalization
   Workflow recovery remains intentionally deferred with the broader async
   ingestion architecture; totals-only spending can be finalized now and the
   saved original remains available for an explicit re-read/correction.
-- None of this local feature work has been committed or deployed. Local release
-  validation now has 128 BasketSense tests passing, a passing production build,
-  zero lint errors, sequential migration rehearsal, and a real authenticated
-  owner-sandbox walkthrough at 320×568, 390×844, 430×932, and 844×390. Before
-  release, capture production invariants, retain Sites version 69, verify
-  the existing Gemini secret without exposing it, and follow the canary in the
-  release-readiness report.
+- The 2026-08-23 release validation has 158 BasketSense tests passing, a passing
+  production build, zero targeted lint errors, a passing BasketSense-only
+  TypeScript check, sequential migration coverage, and the earlier authenticated
+  owner-sandbox walkthrough at 320×568, 390×844, 430×932, and 844×390.
 
 ## Recaps, e-mail, and the receipt Worker
 
@@ -168,14 +186,19 @@ changing it.
 - The private site project is identified by `.openai/hosting.json`. Use Sites
   tooling to inspect its live URL, version, and access policy; do not create a
   replacement site, D1 database, or R2 bucket.
-- Preserve the existing household access boundary and verify it live before
-  modifying or deploying. As verified on 2026-08-15, the private Sites policy
-  was custom revision 16 with exactly two account users and no external
-  visitors. Do not print or copy account identifiers into repository docs.
+- Preserve the live access boundary and verify it before every deployment. On
+  2026-08-23, the Site reported `workspace_all` at access revision 21, one
+  account entry, no external visitors, and no workspace or tenant groups. This
+  differs from the earlier custom two-account policy recorded on 2026-08-15.
+  The owner explicitly approved version 84 while preserving the 2026-08-23
+  policy unchanged. Do not print or copy account identifiers into repository
+  docs, and do not treat the older custom policy as current without a fresh
+  Sites check.
 - The latest verified production source commit is
-  `067d4d44c585336ffbaa68c5220b56153c8032d5`, deployed as Sites version 69.
-  Treat these values as a rollback checkpoint and re-verify them immediately
-  before an authorized release.
+  `9dd651f1b02cd72af049993379f24c6782ec5112`, deployed as Sites version 84.
+  The immediate code rollback is Sites version 83 / commit
+  `c78484987c70ce34ec605f69f5c3d85ee44529a8`; leave migrations in place during
+  an app rollback.
 
 ## Hard scope boundaries
 

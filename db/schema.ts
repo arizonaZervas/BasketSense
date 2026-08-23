@@ -828,7 +828,9 @@ export const intentFulfillments = sqliteTable(
     rawIntentLabel: text("raw_intent_label").notNull(),
     rawReceiptDescription: text("raw_receipt_description").notNull(),
     costcoItemNumber: text("costco_item_number"),
-    relation: text("relation", { enum: ["fulfills_intent", "not_same"] })
+    relation: text("relation", {
+      enum: ["same_product", "fulfills_intent", "substitute", "not_same"],
+    })
       .notNull(),
     confidenceBps: integer("confidence_bps").notNull().default(10000),
     confirmedByMemberId: text("confirmed_by_member_id").references(
@@ -957,6 +959,71 @@ export const reviewQuestions = sqliteTable(
   ]
 );
 
+export const recommendationShadowRuns = sqliteTable(
+  "recommendation_shadow_runs",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    asOfDate: text("as_of_date").notNull(),
+    engineVersion: text("engine_version").notNull(),
+    mode: text("mode", { enum: ["backtest", "live_shadow"] }).notNull(),
+    attentionBudget: integer("attention_budget").notNull(),
+    catalogSize: integer("catalog_size").notNull(),
+    eligibleCount: integer("eligible_count").notNull(),
+    metricsJson: text("metrics_json").notNull(),
+    createdByMemberId: text("created_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("recommendation_shadow_runs_household_cycle_unique").on(
+      table.householdId,
+      table.asOfDate,
+      table.engineVersion,
+      table.mode,
+    ),
+    index("recommendation_shadow_runs_household_created_idx").on(
+      table.householdId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const recommendationShadowCandidates = sqliteTable(
+  "recommendation_shadow_candidates",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => recommendationShadowRuns.id, { onDelete: "cascade" }),
+    productId: text("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    rank: integer("rank"),
+    scoreBps: integer("score_bps").notNull(),
+    eligible: integer("eligible", { mode: "boolean" }).notNull(),
+    selected: integer("selected", { mode: "boolean" }).notNull(),
+    productState: text("product_state").notNull(),
+    reason: text("reason").notNull(),
+    componentsJson: text("components_json").notNull(),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("recommendation_shadow_candidates_run_product_unique").on(
+      table.runId,
+      table.productId,
+    ),
+    index("recommendation_shadow_candidates_run_rank_idx").on(
+      table.runId,
+      table.rank,
+    ),
+  ],
+);
+
 export const basketSenseSchemaMigrations = sqliteTable(
   "basketsense_schema_migrations",
   {
@@ -990,5 +1057,7 @@ export type ProductUnderstanding = typeof productUnderstandings.$inferSelect;
 export type IntentFulfillment = typeof intentFulfillments.$inferSelect;
 export type TripItemMatch = typeof tripItemMatches.$inferSelect;
 export type ReviewQuestion = typeof reviewQuestions.$inferSelect;
+export type RecommendationShadowRun = typeof recommendationShadowRuns.$inferSelect;
+export type RecommendationShadowCandidate = typeof recommendationShadowCandidates.$inferSelect;
 export type BasketSenseSchemaMigration =
   typeof basketSenseSchemaMigrations.$inferSelect;

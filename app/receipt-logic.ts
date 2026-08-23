@@ -582,9 +582,15 @@ export interface ConfirmedProductAlias {
 export interface ConfirmedIntentFulfillment {
   intentKey: string;
   receiptKey: string;
-  relation: "fulfills_intent" | "not_same";
+  relation: IntentMatchRelation;
   confidenceBps?: number | null;
 }
+
+export type IntentMatchRelation =
+  | "same_product"
+  | "fulfills_intent"
+  | "substitute"
+  | "not_same";
 
 export interface ReceiptIntentMatch {
   intentItemId: string;
@@ -594,7 +600,9 @@ export interface ReceiptIntentMatch {
   reason:
     | "exact_item_number"
     | "confirmed_alias"
+    | "confirmed_same_product"
     | "confirmed_intent_fulfillment"
+    | "confirmed_substitute"
     | "exact_product"
     | "normalized_exact"
     | "descriptive_subset"
@@ -620,6 +628,9 @@ function labelForReceipt(item: MatchableReceiptItem): string {
 
 function normalizeMatchDescription(value: string): string {
   return normalizeReceiptDescription(value)
+    .replace(/\bKS\b/g, "KIRKLAND SIGNATURE")
+    .replace(/\bORG\b/g, "ORGANIC")
+    .replace(/\bMK\b/g, "MILK")
     .replace(/\bATTA\b(?:\s+FLOUR)?/g, "WHEAT FLOUR")
     .replace(/\bWATR\b/g, "WATER")
     .replace(/\bZIP\s+LOC\b|\bZIPLC\b|\bZIPLOCK\b/g, "ZIPLOC")
@@ -746,14 +757,30 @@ function scorePair(
 ): Pick<ReceiptIntentMatch, "confidenceBps" | "reason"> | null {
   const intentKey = intentFulfillmentKey(labelForIntent(intent));
   const receiptKeys = new Set(receiptFulfillmentKeys(receipt));
-  const confirmedFulfillment = fulfillments.find(
+  const confirmedFulfillments = fulfillments.filter(
     (entry) => entry.intentKey === intentKey && receiptKeys.has(entry.receiptKey),
   );
-  if (confirmedFulfillment?.relation === "not_same") return null;
+  if (confirmedFulfillments.some((entry) => entry.relation === "not_same")) return null;
+  const confirmedFulfillment =
+    confirmedFulfillments.find((entry) => entry.relation === "same_product") ??
+    confirmedFulfillments.find((entry) => entry.relation === "fulfills_intent") ??
+    confirmedFulfillments.find((entry) => entry.relation === "substitute");
+  if (confirmedFulfillment?.relation === "same_product") {
+    return {
+      confidenceBps: Math.max(9_975, confirmedFulfillment.confidenceBps ?? 10_000),
+      reason: "confirmed_same_product",
+    };
+  }
   if (confirmedFulfillment?.relation === "fulfills_intent") {
     return {
       confidenceBps: Math.max(9_950, confirmedFulfillment.confidenceBps ?? 10_000),
       reason: "confirmed_intent_fulfillment",
+    };
+  }
+  if (confirmedFulfillment?.relation === "substitute") {
+    return {
+      confidenceBps: Math.max(9_925, confirmedFulfillment.confidenceBps ?? 10_000),
+      reason: "confirmed_substitute",
     };
   }
   if (
