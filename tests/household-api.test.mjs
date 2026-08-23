@@ -1410,13 +1410,14 @@ test("receipt cadence produces a conservative, explainable July 25 list", () => 
   }
 });
 
-test("list seeding backfills missing candidates without overwriting spouse edits", async () => {
+test("visible recommendation v2 backfills candidates without overwriting spouse edits", async () => {
   const db = new D1DatabaseAdapter();
   try {
     const initial = await responseJson(
       await handleHouseholdGet(householdRequest("first@example.test"), db),
     );
-    assert.equal(initial.listItems.length, 11);
+    assert.equal(initial.listItems.length, 7);
+    assert.ok(initial.listItems.every((item) => item.id.startsWith("seed-v2-")));
 
     const lychee = initial.listItems.find((item) => item.label === "Lychee");
     const sweetCorn = initial.listItems.find(
@@ -1445,7 +1446,7 @@ test("list seeding backfills missing candidates without overwriting spouse edits
     const reconciled = await responseJson(
       await handleHouseholdGet(householdRequest("first@example.test"), db),
     );
-    assert.equal(reconciled.listItems.length, 11);
+    assert.equal(reconciled.listItems.length, 7);
     assert.ok(reconciled.listItems.some((item) => item.id === sweetCorn.id));
 
     const preserved = reconciled.listItems.find((item) => item.id === lychee.id);
@@ -1459,14 +1460,51 @@ test("list seeding backfills missing candidates without overwriting spouse edits
       "Household choice takes precedence",
     );
 
-    await handleHouseholdGet(householdRequest("first@example.test"), db);
+    const stable = await responseJson(
+      await handleHouseholdGet(householdRequest("first@example.test"), db),
+    );
+    assert.equal(stable.currentTrip.listRevision, reconciled.currentTrip.listRevision);
     assert.equal(
       db.database
         .prepare(
           "SELECT COUNT(*) AS count FROM trip_list_items WHERE trip_id = ?",
         )
         .get(initial.currentTrip.id).count,
-      11,
+      7,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("visible v2 cutover removes only legacy draft ideas", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "recommendation-cutover@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const legacyDraftId = `seed-${initial.currentTrip.scheduledFor}-legacy-draft`;
+    const legacyActiveId = `seed-${initial.currentTrip.scheduledFor}-legacy-active`;
+    const now = new Date().toISOString();
+    db.database.prepare(
+      `INSERT INTO trip_list_items (
+         id, trip_id, label, section, source, included, checked, created_at, updated_at
+       ) VALUES (?, ?, 'Legacy draft', 'suggested', 'predicted', 0, 0, ?, ?),
+                (?, ?, 'Legacy active choice', 'essentials', 'recurring', 1, 0, ?, ?)`,
+    ).run(
+      legacyDraftId, initial.currentTrip.id, now, now,
+      legacyActiveId, initial.currentTrip.id, now, now,
+    );
+
+    const migrated = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.ok(!migrated.listItems.some((item) => item.id === legacyDraftId));
+    assert.ok(migrated.listItems.some((item) => item.id === legacyActiveId));
+    assert.equal(
+      migrated.listItems.filter((item) => item.id.startsWith("seed-v2-")).length,
+      7,
     );
   } finally {
     db.close();
@@ -1507,7 +1545,7 @@ test("list scope returns only the live trip without rerunning household bootstra
     const scoped = await responseJson(scopedResponse);
     assert.deepEqual(Object.keys(scoped).sort(), ["currentTrip", "listItems"]);
     assert.equal(scoped.currentTrip.id, initial.currentTrip.id);
-    assert.equal(scoped.listItems.length, 10);
+    assert.equal(scoped.listItems.length, initial.listItems.length - 1);
     assert.ok(!scoped.listItems.some((item) => item.id === sweetCorn.id));
     assert.equal(
       db.database
@@ -2526,7 +2564,7 @@ test("two spouses share audited history, one frozen list, and receipt feedback",
     const first = await responseJson(firstResponse);
 
     assert.equal(first.receiptTransactions.length, 38);
-    assert.equal(first.listItems.length, 11);
+    assert.equal(first.listItems.length, 7);
     assert.match(first.currentTrip.scheduledFor, /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(first.currentTrip.status, "planning");
     assert.equal(first.currentTrip.estimatedListTotalAtFreezeCents, null);
@@ -3904,7 +3942,7 @@ test("a confirmed same-item correction teaches the list product identity for fut
   }
 });
 
-test("recommendation v2 backtests and live shadow runs never change the visible list", async () => {
+test("recommendation v2 diagnostic runs never mutate the visible list", async () => {
   const db = new D1DatabaseAdapter();
   try {
     const initial = await responseJson(

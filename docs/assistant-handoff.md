@@ -77,6 +77,41 @@ changing it.
   BasketSense-only TypeScript, targeted lint, diff checks, and 158/158
   BasketSense tests. Good Cart Day was excluded from every release command.
 
+## 2026-08-23 intent matching and recommendation shadow release
+
+- Household Intent Matching was committed as
+  `090e562e2885c3562d90142ed9c83c8766c324fc` and deployed as private Sites
+  version 85 without changing the existing D1/R2 bindings or access revision
+  21.
+- Review corrections now permanently distinguish `same_product`,
+  `fulfills_intent`, `substitute`, and `not_same`. Only `same_product` may
+  teach catalog identity; the other relations preserve distinct products.
+- Recommendation Engine v2 is deployed only as an owner-triggered backtest and
+  invisible shadow evaluator. Migration 0015 adds household-scoped shadow
+  evidence tables with no List foreign key. The visible Saturday policy and
+  List remain unchanged, and the first production shadow cycle is still
+  pending.
+- Release gates passed with a production build, BasketSense-only TypeScript,
+  targeted lint, diff checks, and 165/165 BasketSense tests. The authenticated
+  canary loaded the shared household without mutation, loaded the owner-only
+  sandbox and receipt capture controls, and recorded no application errors.
+  A fresh physical phone-camera capture remains the only unrepeatable check.
+
+## 2026-08-23 visible Recommendation V2 cutover
+
+- Saturday suggestion seeding now evaluates the reconciled household catalog
+  with `household-catalog-v2.1`. Ordinary ideas have a six-item attention
+  budget; configured essentials may appear in addition to that budget.
+- The cutover is deliberately non-destructive. It removes obsolete V1/V2 rows
+  only when they are recommendation-owned drafts. Manual rows and anything
+  included or checked survive, and no non-essential V2 idea is auto-added.
+- Recommendation V1 remains intact behind the single
+  `visibleRecommendationEngine()` server switch. Until the new Sites version
+  is verified, private Sites version 85 is the production rollback.
+- Focused D1 tests prove candidate backfill, repeat-read idempotency, legacy
+  draft cleanup, preservation of a legacy active choice, and unchanged
+  owner-only diagnostic behavior.
+
 ## Released feature details
 
 - The complete 2026-08-15 deployment manifest, risk register, mobile evidence,
@@ -195,9 +230,9 @@ changing it.
   docs, and do not treat the older custom policy as current without a fresh
   Sites check.
 - The latest verified production source commit is
-  `9dd651f1b02cd72af049993379f24c6782ec5112`, deployed as Sites version 84.
-  The immediate code rollback is Sites version 83 / commit
-  `c78484987c70ce34ec605f69f5c3d85ee44529a8`; leave migrations in place during
+  `090e562e2885c3562d90142ed9c83c8766c324fc`, deployed as Sites version 85.
+  The immediate code rollback is Sites version 84 / commit
+  `9dd651f1b02cd72af049993379f24c6782ec5112`; leave migrations in place during
   an app rollback.
 
 ## Hard scope boundaries

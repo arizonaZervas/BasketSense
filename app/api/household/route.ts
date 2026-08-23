@@ -4,11 +4,15 @@ import {
   RECURRING_PRODUCT_HISTORIES_2026,
 } from "../../basketsense-data";
 import { ensureBasketSenseSchemaUpgrades } from "../../database-schema-upgrades";
-import { buildSaturdayRecommendations } from "../../recommendation-engine";
+import {
+  JULY_25_RECOMMENDATION_POLICIES,
+  buildSaturdayRecommendations,
+} from "../../recommendation-engine";
 import {
   RECOMMENDATION_ENGINE_V2_VERSION,
   backtestRecommendationCatalog,
   evaluateRecommendationCatalog,
+  type RecommendationProductState,
   type RecommendationV2Product,
 } from "../../recommendation-engine-v2";
 import {
@@ -1411,6 +1415,106 @@ async function seedSaturdayList(
   trip: TripRow,
   now: string
 ) {
+  const visibleEngine = visibleRecommendationEngine();
+  const recommendations = visibleEngine === "v2"
+    ? (await evaluateVisibleRecommendationV2(db, trip)).map((recommendation) => ({
+        id: `seed-v2-${trip.scheduled_for}-${recommendation.productId}`,
+        productId: recommendation.productId,
+        name: recommendation.name,
+        section: recommendation.section,
+        source: recommendation.section === "essentials"
+          ? "recurring" as const
+          : recommendation.section === "consider"
+            ? "consider" as const
+            : "predicted" as const,
+        reason: recommendation.reason,
+        confidenceBps: recommendation.scoreBps,
+        included: recommendation.state === "essential",
+        estimatedPriceCents: recommendation.estimatedPriceCents,
+      }))
+    : await visibleRecommendationV1(db, trip);
+  const existing = await db
+    .prepare(
+      `SELECT id, product_id, included, checked
+       FROM trip_list_items WHERE trip_id = ?`
+    )
+    .bind(trip.id)
+    .all<{
+      id: string;
+      product_id: string | null;
+      included: number;
+      checked: number;
+    }>();
+  const selectedIds = new Set(recommendations.map((recommendation) => recommendation.id));
+  const legacyPrefix = `seed-${trip.scheduled_for}-`;
+  const v2Prefix = `seed-v2-${trip.scheduled_for}-`;
+  const removableIds = new Set(existing.results
+    .filter((item) => {
+      if (Boolean(item.included) || Boolean(item.checked)) return false;
+      if (visibleEngine === "v2" && item.id.startsWith(legacyPrefix)) return true;
+      return item.id.startsWith(v2Prefix) && !selectedIds.has(item.id);
+    })
+    .map((item) => item.id));
+  const survivingProductIds = new Set(existing.results
+    .filter((item) => !removableIds.has(item.id) && item.product_id)
+    .map((item) => item.product_id!));
+  const statements: D1PreparedStatement[] = [];
+
+  removableIds.forEach((id) => {
+    statements.push(
+      db.prepare(
+        `DELETE FROM trip_list_items
+         WHERE id = ? AND trip_id = ? AND included = 0 AND checked = 0`
+      ).bind(id, trip.id)
+    );
+  });
+
+  recommendations.forEach((recommendation, index) => {
+    if (survivingProductIds.has(recommendation.productId)) return;
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO trip_list_items (
+            id, trip_id, product_id, label, section, source,
+            recommendation_reason, confidence_bps, included, checked,
+            included_at_freeze, added_after_freeze, estimated_price_cents,
+            quantity_milli, sort_order, added_by_member_id, created_at, updated_at
+          ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
+            NULL, 0, ?, 1000, ?, NULL, ?, ?
+          )
+          ON CONFLICT DO NOTHING`
+        )
+        .bind(
+          recommendation.id,
+          trip.id,
+          recommendation.productId,
+          recommendation.name,
+          recommendation.section,
+          recommendation.source,
+          recommendation.reason,
+          recommendation.confidenceBps,
+          recommendation.included ? 1 : 0,
+          recommendation.estimatedPriceCents,
+          index,
+          now,
+          now
+        )
+    );
+  });
+
+  await runPreparedInChunks(db, statements);
+}
+
+type VisibleRecommendationEngine = "v1" | "v2";
+
+// This is the only customer-visible cutover switch. V1 remains intact so a
+// release can be rolled back without a data migration or destructive cleanup.
+function visibleRecommendationEngine(): VisibleRecommendationEngine {
+  return "v2";
+}
+
+async function visibleRecommendationV1(db: D1Database, trip: TripRow) {
   const latestMemories = await db
     .prepare(
       `SELECT product_id, preference FROM (
@@ -1438,51 +1542,34 @@ async function seedSaturdayList(
         : null,
     ]),
   );
-  const recommendations = buildSaturdayRecommendations(
+  return buildSaturdayRecommendations(
     RECURRING_PRODUCT_HISTORIES_2026,
     trip.scheduled_for,
-  ).filter((recommendation) => {
+  ).flatMap((recommendation) => {
     const productId = productIdFor(recommendation.itemNumber);
-    return !productMemorySuppressesSuggestion(
-      productId ? memoryByProductId.get(productId) : null,
-    );
+    if (!productId || productMemorySuppressesSuggestion(memoryByProductId.get(productId))) {
+      return [];
+    }
+    return [{
+      id: `seed-${trip.scheduled_for}-${recommendation.itemNumber}`,
+      productId,
+      name: recommendation.name,
+      section: recommendation.section,
+      source: recommendation.source,
+      reason: recommendation.reason,
+      confidenceBps: recommendation.confidenceBps,
+      included: recommendation.included,
+      estimatedPriceCents: recommendation.estimatedPriceCents,
+    }];
   });
-  const statements: D1PreparedStatement[] = [];
+}
 
-  recommendations.forEach((recommendation, index) => {
-    statements.push(
-      db
-        .prepare(
-          `INSERT INTO trip_list_items (
-            id, trip_id, product_id, label, section, source,
-            recommendation_reason, confidence_bps, included, checked,
-            included_at_freeze, added_after_freeze, estimated_price_cents,
-            quantity_milli, sort_order, added_by_member_id, created_at, updated_at
-          ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
-            NULL, 0, ?, 1000, ?, NULL, ?, ?
-          )
-          ON CONFLICT DO NOTHING`
-        )
-        .bind(
-          `seed-${trip.scheduled_for}-${recommendation.itemNumber}`,
-          trip.id,
-          productIdFor(recommendation.itemNumber),
-          recommendation.name,
-          recommendation.section,
-          recommendation.source,
-          recommendation.reason,
-          recommendation.confidenceBps,
-          recommendation.included ? 1 : 0,
-          recommendation.estimatedPriceCents,
-          index,
-          now,
-          now
-        )
-    );
-  });
-
-  await runPreparedInChunks(db, statements);
+async function evaluateVisibleRecommendationV2(db: D1Database, trip: TripRow) {
+  return evaluateRecommendationCatalog({
+    products: await recommendationV2Catalog(db, trip.household_id),
+    asOfDate: trip.scheduled_for,
+    attentionBudget: 6,
+  }).recommendations;
 }
 
 function authenticatedUser(request: Request): AuthenticatedUser {
@@ -7382,6 +7469,7 @@ async function recommendationV2Catalog(
     itemNumber: product.costco_item_number,
     name: product.canonical_name,
     category: product.category,
+    state: recommendationV2ProductState(product.costco_item_number),
     purchases: purchases.results
       .filter((event) => event.product_id === product.id)
       .map((event) => ({
@@ -7399,6 +7487,23 @@ async function recommendationV2Catalog(
       .filter((event) => event.product_id === product.id)
       .map((event) => ({ recordedAt: event.created_at, value: event.value })),
   }));
+}
+
+function recommendationV2ProductState(
+  itemNumber: string | null,
+): RecommendationProductState {
+  const policy = JULY_25_RECOMMENDATION_POLICIES.find(
+    (candidate) => candidate.itemNumber === itemNumber,
+  );
+  if (policy?.role === "essential") return "essential";
+  if (policy?.role === "check_first") return "check_first";
+  if (
+    policy?.role === "seasonal_favorite" ||
+    policy?.role === "seasonal_consider"
+  ) {
+    return "seasonal";
+  }
+  return "normal";
 }
 
 async function runRecommendationV2Evaluation(

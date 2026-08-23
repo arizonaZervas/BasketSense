@@ -1,6 +1,6 @@
 # BS-003 — Recommendation engine v2
 
-**Status:** Implemented locally; production shadow pending
+**Status:** Visible V2 cutover implemented and validated; deployment pending
 **Priority:** 3
 **Decision gate:** Gate A
 
@@ -85,22 +85,27 @@ behavioral comparison.
 
 ## Evidence after completion
 
-The local candidate is implemented as `household-catalog-v2.1` behind the
-owner-only `run_recommendation_v2_evaluation` action. It:
+The candidate is implemented as `household-catalog-v2.1`. The owner-only
+`run_recommendation_v2_evaluation` action remains available for diagnostic
+backtests and evidence capture. The visible-list cutover now:
 
 - evaluates every active catalog product;
 - uses named, bounded score components;
 - excludes purchases, memories, and outcomes recorded on or after each
   historical cutoff;
 - reports precision at K, catalog coverage, and false-positive burden;
-- stores backtest and shadow candidates in migration 0015; and
-- cannot mutate `trip_list_items` or the visible Saturday experience.
+- stores backtest and diagnostic candidates in migration 0015;
+- evaluates the full reconciled household catalog when Saturday ideas are
+  seeded;
+- limits ordinary suggestions to six while retaining configured essentials;
+- never silently includes non-essential recommendations; and
+- removes only obsolete recommendation-owned draft rows during the V1-to-V2
+  cutover. Manual rows, checked rows, and anything already included survive.
 
-Focused validation runs a historical backtest followed by a local invisible
-cycle and proves the visible list rows and presentation fields are unchanged.
-The production live cycle and comparison with the current policy remain release checkpoints;
-Gate A is not approved and Recommendation v1 remains the customer-visible
-engine.
+Focused validation proves repeated reads are idempotent, a deleted V2 candidate
+is restored, and the cutover removes a legacy draft while preserving a legacy
+active choice. Recommendation V1 remains in the same server module behind one
+explicit switch, and the previous Sites version is the production rollback.
 
 The audited local 2026 fixture currently contains 35 recurring catalog
 products across 29 warehouse dates. At K=6, the leakage-safe backtest reports
