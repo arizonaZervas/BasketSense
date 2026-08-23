@@ -9,6 +9,9 @@ type SchemaMigrationRow = {
 
 const schemaUpgradePromises = new WeakMap<D1Database, Promise<void>>();
 
+export const LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID =
+  "0015_recommendation_shadow";
+
 const RECEIPT_INGESTION_REBUILD_STATEMENTS = [
   `DROP TABLE IF EXISTS __basketsense_new_receipt_ingestions`,
   `CREATE TABLE __basketsense_new_receipt_ingestions (
@@ -383,7 +386,7 @@ async function performSchemaUpgrades(db: D1Database) {
     await addColumnIfMissing(db, "receipt_items", "interpretation_model", "interpretation_model TEXT");
   });
 
-  await runClaimedMigration(db, "0015_recommendation_shadow", async () => {
+  await runClaimedMigration(db, LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID, async () => {
     await db.batch(RECOMMENDATION_SHADOW_STATEMENTS.map((statement) => db.prepare(statement)));
   });
 }

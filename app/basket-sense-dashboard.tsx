@@ -153,6 +153,11 @@ type HouseholdSnapshot = {
   currentTrip: SharedTrip;
   listItems: SharedListItem[];
   products: SharedProduct[];
+  currentTripReceipt: {
+    id: string;
+    tripId: string;
+    isProvisional: boolean;
+  } | null;
   closedLoop?: ClosedLoopSnapshot | null;
   dashboard?: DashboardViewData;
 };
@@ -1529,6 +1534,43 @@ export function BasketSenseDashboard({
 
   const currentTripClosedLoop =
     closedLoop?.receipt?.tripId === household?.currentTrip.id ? closedLoop : null;
+
+  async function openCurrentReceiptFlow(step: ReceiptStep = "capture") {
+    const receipt = household?.currentTripReceipt;
+    if (!receipt || currentTripClosedLoop) {
+      openReceiptFlow(step, "current");
+      return;
+    }
+
+    try {
+      const response = await fetchHousehold(
+        `/api/household?view=trip-review&receiptId=${encodeURIComponent(receipt.id)}${sandboxMode ? "&sandbox=1" : ""}`,
+        { headers: { Accept: "application/json" }, cache: "no-store" },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        error?: unknown;
+        closedLoop?: unknown;
+      } | null;
+      if (!response.ok || !body?.closedLoop || typeof body.closedLoop !== "object") {
+        throw new Error(apiErrorMessage(body, "Receipt details could not be loaded."));
+      }
+      const nextClosedLoop = body.closedLoop as ClosedLoopSnapshot;
+      setHousehold((current) =>
+        current ? { ...current, closedLoop: nextClosedLoop } : current,
+      );
+      openReceiptFlow(
+        nextClosedLoop.comparison?.isProvisional ? "check" : "bridge",
+        "current",
+      );
+    } catch (error) {
+      flash(
+        error instanceof Error
+          ? error.message
+          : "Receipt details could not be loaded.",
+      );
+    }
+  }
+
   const openReviewQuestions = (closedLoop?.questions ?? [])
     .slice(0, 3)
     .filter(
@@ -1537,9 +1579,10 @@ export function BasketSenseDashboard({
           question.status ?? "open",
         ),
     ).length;
-  const receiptCheckCount = !household
-    ? 0
-    : !closedLoop?.receipt || closedLoop.comparison?.isProvisional
+  const receiptCheckCount =
+    household?.currentTrip.status === "frozen" &&
+    (!household.currentTripReceipt ||
+      household.currentTripReceipt.isProvisional)
       ? 1
       : 0;
   const openReviewCount = openReviewQuestions + receiptCheckCount;
@@ -1708,7 +1751,7 @@ export function BasketSenseDashboard({
             onFreeze={freezeTrip}
             onUnfreeze={unfreezeTrip}
             onCopy={copyList}
-            onOpenReceipt={(step) => openReceiptFlow(step, "current")}
+            onOpenReceipt={(step) => void openCurrentReceiptFlow(step)}
           />
         ) : null}
 
@@ -2355,15 +2398,15 @@ function ThisWeekTab({
                 className="secondary-button"
                 onClick={() =>
                   onOpenReceipt(
-                    household && trip && household.closedLoop?.receipt?.tripId === trip.id
-                      ? household.closedLoop.comparison?.isProvisional
+                    household && trip && household.currentTripReceipt?.tripId === trip.id
+                      ? household.currentTripReceipt.isProvisional
                         ? "check"
                         : "bridge"
                       : "capture",
                   )
                 }
               >
-                {household && trip && household.closedLoop?.receipt?.tripId === trip.id
+                {household && trip && household.currentTripReceipt?.tripId === trip.id
                   ? "Receipt"
                   : "Add receipt"}
               </button>

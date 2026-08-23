@@ -344,6 +344,11 @@ export interface HouseholdBootstrapResponse {
   recentTrips: TripSummary[];
   listItems: TripListItemSummary[];
   products: ProductSummary[];
+  currentTripReceipt: {
+    id: string;
+    tripId: string;
+    isProvisional: boolean;
+  } | null;
   receiptTransactions: ReceiptTransactionSummary[];
   feedback: FeedbackSummary[];
   closedLoop: ClosedLoopReview | null;
@@ -359,6 +364,7 @@ export type HouseholdCoreResponse = Pick<
   | "currentTrip"
   | "listItems"
   | "products"
+  | "currentTripReceipt"
   | "closedLoop"
 >;
 

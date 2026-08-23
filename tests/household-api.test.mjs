@@ -91,6 +91,7 @@ class D1DatabaseAdapter {
     this.batchCalls = 0;
     this.schemaBatchCalls = 0;
     this.reportedChanges = reportedChanges;
+    this.executedStatements = [];
   }
 
   prepare(sql) {
@@ -99,6 +100,7 @@ class D1DatabaseAdapter {
       sql,
       [],
       (statement) => {
+        this.executedStatements.push(statement);
         if (
           this.beforeNextStatement &&
           this.beforeNextStatement.pattern.test(statement)
@@ -212,6 +214,8 @@ test("core household reads defer dashboard calculation until Insights is request
     assert.equal("recentTrips" in core, false);
     assert.equal("receiptTransactions" in core, false);
     assert.equal("feedback" in core, false);
+    assert.equal(core.closedLoop, null);
+    assert.equal(core.currentTripReceipt, null);
     assert.ok(core.listItems.length > 0);
     assert.ok(core.products.length > 0);
 
@@ -249,6 +253,60 @@ test("core household reads defer dashboard calculation until Insights is request
     );
   } finally {
     db.close();
+  }
+});
+
+test("cold core reads use the completed migration marker and skip receipt reconciliation", async () => {
+  const database = new DatabaseSync(":memory:");
+  const warm = new D1DatabaseAdapter(database);
+  try {
+    await handleHouseholdGet(
+      householdRequest("cold-core-owner@example.test"),
+      warm,
+    );
+
+    const upgraded = new D1DatabaseAdapter(database);
+    await handleHouseholdGet(
+      householdRequest("cold-core-owner@example.test"),
+      upgraded,
+    );
+
+    const cold = new D1DatabaseAdapter(database);
+    const response = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "cold-core-owner@example.test",
+          "GET",
+          undefined,
+          "?view=core",
+        ),
+        cold,
+      ),
+    );
+
+    assert.equal(response.closedLoop, null);
+    assert.ok(
+      cold.executedStatements.some((statement) =>
+        /FROM basketsense_schema_migrations/i.test(statement),
+      ),
+    );
+    const repeatedSchemaWork = cold.executedStatements.filter((statement) =>
+      /CREATE TABLE|PRAGMA\s+table_info/i.test(statement),
+    );
+    assert.equal(
+      repeatedSchemaWork.length,
+      0,
+      `a ready database must not repeat runtime migration work on a cold isolate: ${repeatedSchemaWork.join(" | ")}`,
+    );
+    assert.equal(
+      cold.executedStatements.some((statement) =>
+        /FROM product_understandings/i.test(statement),
+      ),
+      false,
+      "the List-first response must not reconcile historical receipt matches",
+    );
+  } finally {
+    database.close();
   }
 });
 
@@ -4215,6 +4273,24 @@ test("a totals-only receipt preserves exact spending without inventing product e
     assert.equal(ingested.comparison.isTotalsOnly, true);
     assert.equal(ingested.comparison.isProvisional, true);
     assert.equal(ingested.questions.length, 0);
+
+    const coreWithReceipt = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          "totals-only@example.test",
+          "GET",
+          undefined,
+          "?view=core",
+        ),
+        db,
+      ),
+    );
+    assert.equal(coreWithReceipt.closedLoop, null);
+    assert.deepEqual(coreWithReceipt.currentTripReceipt, {
+      id: ingested.receiptId,
+      tripId,
+      isProvisional: true,
+    });
     assert.equal(
       db.database
         .prepare(

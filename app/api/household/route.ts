@@ -3,7 +3,10 @@ import {
   AUDITED_RECEIPT_TRANSACTIONS_2026,
   RECURRING_PRODUCT_HISTORIES_2026,
 } from "../../basketsense-data";
-import { ensureBasketSenseSchemaUpgrades } from "../../database-schema-upgrades";
+import {
+  ensureBasketSenseSchemaUpgrades,
+  LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID,
+} from "../../database-schema-upgrades";
 import {
   JULY_25_RECOMMENDATION_POLICIES,
   buildSaturdayRecommendations,
@@ -1164,6 +1167,24 @@ async function ensureSchema(db: D1Database) {
 }
 
 async function ensureReadableSchema(db: D1Database) {
+  try {
+    const ready = await db
+      .prepare(
+        `SELECT 1 AS ready
+         FROM basketsense_schema_migrations
+         WHERE id = ? AND status = 'completed'
+         LIMIT 1`,
+      )
+      .bind(LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID)
+      .first<{ ready: number }>();
+    if (ready?.ready === 1) return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/no such table:\s*basketsense_schema_migrations/i.test(message)) {
+      throw error;
+    }
+  }
+
   await ensureBasketSenseSchemaUpgrades(db);
   try {
     await db.prepare("SELECT 1 FROM households LIMIT 1").first();
@@ -2143,7 +2164,8 @@ function feedbackSummary(row: FeedbackRow): FeedbackSummary {
 
 async function readHouseholdCoreState(
   db: D1Database,
-  context: HouseholdContext
+  context: HouseholdContext,
+  includeClosedLoop = false,
 ): Promise<HouseholdCoreResponse> {
   const results = await db.batch([
     db
@@ -2267,6 +2289,29 @@ async function readHouseholdCoreState(
       )
       .bind(context.household.id, context.household.id),
     dashboardHistoryRevisionStatement(db, context.household.id),
+    db
+      .prepare(
+        `SELECT receipt_transactions.id,
+                receipt_transactions.trip_id,
+                CASE
+                  WHEN receipt_transactions.parse_status <> 'reconciled'
+                    OR instr(receipt_transactions.audit_flag, '_totals_only') > 0
+                    OR EXISTS (
+                      SELECT 1 FROM receipt_items
+                      WHERE receipt_items.receipt_transaction_id = receipt_transactions.id
+                        AND receipt_items.is_return = 1
+                    )
+                  THEN 1 ELSE 0
+                END AS is_provisional
+         FROM receipt_transactions
+         WHERE receipt_transactions.household_id = ?
+           AND receipt_transactions.trip_id = ?
+           AND receipt_transactions.source_type = 'receipt_photo'
+         ORDER BY receipt_transactions.purchased_at DESC,
+                  receipt_transactions.created_at DESC
+         LIMIT 1`,
+      )
+      .bind(context.household.id, context.currentTrip.id),
   ]);
 
   const members = results[0].results as unknown as MemberRow[];
@@ -2275,6 +2320,9 @@ async function readHouseholdCoreState(
   const historyRevision = (
     results[3].results[0] as { history_revision?: string } | undefined
   )?.history_revision ?? "1970-01-01T00:00:00.000Z";
+  const currentTripReceipt = results[4].results[0] as
+    | { id: string; trip_id: string; is_provisional: number }
+    | undefined;
 
   return {
     historyRevision,
@@ -2288,7 +2336,16 @@ async function readHouseholdCoreState(
     currentTrip: tripSummary(context.currentTrip),
     listItems: listItems.map(listItemSummary),
     products: products.map(productSummary),
-    closedLoop: await readClosedLoopReview(db, context.household.id),
+    currentTripReceipt: currentTripReceipt
+      ? {
+          id: currentTripReceipt.id,
+          tripId: currentTripReceipt.trip_id,
+          isProvisional: Boolean(currentTripReceipt.is_provisional),
+        }
+      : null,
+    closedLoop: includeClosedLoop
+      ? await readClosedLoopReview(db, context.household.id)
+      : null,
   };
 }
 
@@ -2296,7 +2353,7 @@ async function readHouseholdState(
   db: D1Database,
   context: HouseholdContext
 ): Promise<HouseholdBootstrapResponse> {
-  const core = await readHouseholdCoreState(db, context);
+  const core = await readHouseholdCoreState(db, context, true);
   const supplemental = await db.batch([
     db
       .prepare(
