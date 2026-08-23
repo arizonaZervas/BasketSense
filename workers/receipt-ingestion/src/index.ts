@@ -8,11 +8,16 @@ import {
   extractReceiptWithGemini,
   RECEIPT_EXTRACTION_SCHEMA_VERSION,
 } from "./extraction";
+import { generateProductImageWithGemini } from "./product-image-generation";
+import {
+  PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+  understandReceiptProducts,
+} from "./product-understanding";
 
 type ReceiptIngestionRow = {
   id: string;
   household_id: string;
-  trip_id: string;
+  trip_id: string | null;
   source_storage_key: string;
   source_content_type: string;
   source_byte_size: number;
@@ -47,6 +52,19 @@ type TripReportRow = {
 
 type IngestionParams = { ingestionId: string };
 type ReportParams = { outboxId: string };
+
+type ProductImageJobRow = {
+  id: string;
+  household_id: string;
+  product_id: string;
+  receipt_transaction_id: string | null;
+  status: "queued" | "processing" | "generated" | "skipped" | "failed";
+  attempt_count: number;
+  canonical_name: string;
+  category: string | null;
+  costco_item_number: string | null;
+  raw_description: string | null;
+};
 
 const ARTIFACT_PREFIX = "receipt-ingestion-artifacts";
 
@@ -102,6 +120,13 @@ function escapeHtml(value: string) {
 async function digest(value: string) {
   const bytes = new TextEncoder().encode(value);
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+}
+
+async function sha256Hex(bytes: Uint8Array) {
+  const value = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
+  return [...new Uint8Array(value)]
+    .map((part) => part.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array) {
@@ -374,6 +399,227 @@ async function startQueuedTripReports(env: Env) {
   return queued.results.length;
 }
 
+async function readProductImageJob(db: D1Database, jobId: string) {
+  return db
+    .prepare(
+      `SELECT product_image_jobs.*, products.canonical_name, products.category,
+              products.costco_item_number,
+              (
+                SELECT receipt_items.raw_description
+                FROM receipt_items
+                WHERE receipt_items.receipt_transaction_id = product_image_jobs.receipt_transaction_id
+                  AND receipt_items.product_id = product_image_jobs.product_id
+                ORDER BY receipt_items.source_line_number ASC
+                LIMIT 1
+              ) AS raw_description
+       FROM product_image_jobs
+       INNER JOIN products ON products.id = product_image_jobs.product_id
+       WHERE product_image_jobs.id = ?
+         AND products.household_id = product_image_jobs.household_id
+         AND products.active = 1
+       LIMIT 1`,
+    )
+    .bind(jobId)
+    .first<ProductImageJobRow>();
+}
+
+async function claimProductImageJob(db: D1Database, jobId: string) {
+  const now = nowIso();
+  const staleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const claimed = await db
+    .prepare(
+      `UPDATE product_image_jobs
+       SET status = 'processing', attempt_count = attempt_count + 1,
+           locked_at = ?, error_code = NULL, updated_at = ?
+       WHERE id = ? AND attempt_count < 3
+         AND (
+           status = 'queued'
+           OR (
+             status = 'processing'
+             AND (locked_at IS NULL OR locked_at < ?)
+           )
+         )`,
+    )
+    .bind(now, now, jobId, staleBefore)
+    .run();
+  if ((claimed.meta.changes ?? 0) !== 1) return null;
+  return readProductImageJob(db, jobId);
+}
+
+async function approvedProductImage(db: D1Database, job: ProductImageJobRow) {
+  return db
+    .prepare(
+      `SELECT id FROM product_images
+       WHERE household_id = ? AND product_id = ?
+         AND status = 'approved' AND is_primary = 1
+       LIMIT 1`,
+    )
+    .bind(job.household_id, job.product_id)
+    .first<{ id: string }>();
+}
+
+async function markProductImageJob(
+  db: D1Database,
+  jobId: string,
+  status: "generated" | "skipped",
+  model: string,
+) {
+  const now = nowIso();
+  await db
+    .prepare(
+      `UPDATE product_image_jobs
+       SET status = ?, model = ?, error_code = NULL, locked_at = NULL,
+           completed_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'processing'`,
+    )
+    .bind(status, model, now, now, jobId)
+    .run();
+}
+
+async function failProductImageJob(
+  db: D1Database,
+  jobId: string,
+  model: string,
+  error: unknown,
+) {
+  await db
+    .prepare(
+      `UPDATE product_image_jobs
+       SET status = CASE WHEN attempt_count >= 3 THEN 'failed' ELSE 'queued' END,
+           model = ?, error_code = ?, locked_at = NULL,
+           completed_at = CASE WHEN attempt_count >= 3 THEN ? ELSE NULL END,
+           updated_at = ?
+       WHERE id = ? AND status = 'processing'`,
+    )
+    .bind(model, errorMessage(error), nowIso(), nowIso(), jobId)
+    .run();
+}
+
+function imageExtension(contentType: string) {
+  if (contentType === "image/png") return "png";
+  if (contentType === "image/webp") return "webp";
+  return "jpg";
+}
+
+async function processProductImageJob(env: Env, jobId: string) {
+  const job = await claimProductImageJob(env.DB, jobId);
+  if (!job) return "not_claimed";
+  try {
+    if (await approvedProductImage(env.DB, job)) {
+      await markProductImageJob(env.DB, job.id, "skipped", env.GEMINI_IMAGE_MODEL);
+      return "skipped";
+    }
+    const generated = await generateProductImageWithGemini({
+      apiKey: env.GEMINI_API_KEY,
+      model: env.GEMINI_IMAGE_MODEL,
+      product: {
+        canonicalName: job.canonical_name,
+        rawDescription: job.raw_description,
+        category: job.category,
+        itemNumber: job.costco_item_number,
+      },
+    });
+    const imageId = crypto.randomUUID();
+    const storageKey = `households/${job.household_id}/product-images/${job.product_id}/${imageId}.${imageExtension(generated.contentType)}`;
+    await env.RECEIPTS.put(storageKey, generated.bytes, {
+      httpMetadata: {
+        contentType: generated.contentType,
+        cacheControl: "private, max-age=86400",
+      },
+      customMetadata: {
+        householdId: job.household_id,
+        productId: job.product_id,
+        source: "ai_generated",
+        model: env.GEMINI_IMAGE_MODEL,
+      },
+    });
+    let inserted: D1Result<unknown>;
+    try {
+      const now = nowIso();
+      inserted = await env.DB
+        .prepare(
+          `INSERT INTO product_images (
+            id, household_id, product_id, source_type, source_external_id,
+            source_product_name, storage_key, attribution_text, license_code,
+            confidence_bps, status, is_primary, content_type, byte_size,
+            content_sha256, reviewed_at, created_at, updated_at
+          )
+          SELECT ?, ?, ?, 'ai_generated', ?, ?, ?,
+                 'AI-generated reference image', 'ai_generated', 7000,
+                 'approved', 1, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM product_images
+            WHERE product_id = ? AND status = 'approved' AND is_primary = 1
+          )`,
+        )
+        .bind(
+          imageId,
+          job.household_id,
+          job.product_id,
+          generated.responseId,
+          job.canonical_name,
+          storageKey,
+          generated.contentType,
+          generated.bytes.byteLength,
+          await sha256Hex(generated.bytes),
+          now,
+          now,
+          now,
+          job.product_id,
+        )
+        .run();
+    } catch (error) {
+      await env.RECEIPTS.delete(storageKey);
+      throw error;
+    }
+    if ((inserted.meta.changes ?? 0) !== 1) {
+      await env.RECEIPTS.delete(storageKey);
+      await markProductImageJob(env.DB, job.id, "skipped", env.GEMINI_IMAGE_MODEL);
+      return "skipped";
+    }
+    await markProductImageJob(env.DB, job.id, "generated", env.GEMINI_IMAGE_MODEL);
+    return "generated";
+  } catch (error) {
+    await failProductImageJob(
+      env.DB,
+      job.id,
+      env.GEMINI_IMAGE_MODEL,
+      error,
+    );
+    return "failed";
+  }
+}
+
+async function startQueuedProductImages(env: Env) {
+  const queued = await env.DB
+    .prepare(
+      `SELECT product_image_jobs.id
+       FROM product_image_jobs
+       INNER JOIN products ON products.id = product_image_jobs.product_id
+       WHERE product_image_jobs.attempt_count < 3
+         AND products.household_id = product_image_jobs.household_id
+         AND products.active = 1
+         AND (
+           product_image_jobs.status = 'queued'
+           OR (
+             product_image_jobs.status = 'processing'
+             AND (
+               product_image_jobs.locked_at IS NULL
+               OR product_image_jobs.locked_at < ?
+             )
+           )
+         )
+       ORDER BY product_image_jobs.created_at ASC
+       LIMIT 2`,
+    )
+    .bind(new Date(Date.now() - 15 * 60 * 1000).toISOString())
+    .all<{ id: string }>();
+  for (const entry of queued.results) {
+    await processProductImageJob(env, entry.id);
+  }
+  return queued.results.length;
+}
+
 async function markOutboxSent(db: D1Database, outboxId: string, messageId: string | null) {
   await db
     .prepare(
@@ -428,6 +674,23 @@ export class ReceiptIngestionWorkflow extends WorkflowEntrypoint<Env> {
               contentType: ingestion.source_content_type,
               bytes,
             });
+            let draft = result.draft;
+            let understandingStatus: "completed" | "unavailable" = "completed";
+            try {
+              draft = await understandReceiptProducts({
+                db: this.env.DB,
+                householdId: ingestion.household_id,
+                apiKey: this.env.GEMINI_API_KEY,
+                model: this.env.GEMINI_MODEL,
+                draft: result.draft,
+              });
+            } catch (error) {
+              understandingStatus = "unavailable";
+              console.warn("BasketSense optional product understanding was unavailable", {
+                ingestionId: ingestion.id,
+                message: errorMessage(error),
+              });
+            }
             return persistDraft(this.env, ingestion, {
               ingestionId: ingestion.id,
               householdId: ingestion.household_id,
@@ -437,8 +700,10 @@ export class ReceiptIngestionWorkflow extends WorkflowEntrypoint<Env> {
               model: this.env.GEMINI_MODEL,
               responseId: result.responseId,
               schemaVersion: RECEIPT_EXTRACTION_SCHEMA_VERSION,
+              productUnderstandingSchemaVersion: PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+              productUnderstandingStatus: understandingStatus,
               createdAt: nowIso(),
-              draft: result.draft,
+              draft,
             });
           } catch (error) {
             throw nonRetryableExtractionError(error) ?? error;
@@ -539,6 +804,11 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(startQueuedTripReports(env));
+    ctx.waitUntil(
+      Promise.all([
+        startQueuedTripReports(env),
+        startQueuedProductImages(env),
+      ]),
+    );
   },
 } satisfies ExportedHandler<Env>;

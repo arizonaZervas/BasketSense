@@ -557,6 +557,7 @@ export interface MatchableReceiptItem {
   costcoItemNumber?: string | null;
   rawDescription?: string | null;
   canonicalName?: string | null;
+  canonicalNameAdvisory?: boolean;
   quantityMilli?: number | null;
   netAmountCents?: number | null;
   lineSubtotalCents?: number | null;
@@ -578,6 +579,13 @@ export interface ConfirmedProductAlias {
   confirmed?: boolean;
 }
 
+export interface ConfirmedIntentFulfillment {
+  intentKey: string;
+  receiptKey: string;
+  relation: "fulfills_intent" | "not_same";
+  confidenceBps?: number | null;
+}
+
 export interface ReceiptIntentMatch {
   intentItemId: string;
   receiptItemId: string;
@@ -586,6 +594,7 @@ export interface ReceiptIntentMatch {
   reason:
     | "exact_item_number"
     | "confirmed_alias"
+    | "confirmed_intent_fulfillment"
     | "exact_product"
     | "normalized_exact"
     | "descriptive_subset"
@@ -612,8 +621,35 @@ function labelForReceipt(item: MatchableReceiptItem): string {
 function normalizeMatchDescription(value: string): string {
   return normalizeReceiptDescription(value)
     .replace(/\bATTA\b(?:\s+FLOUR)?/g, "WHEAT FLOUR")
-    .replace(/\bWATR\b/g, "WATER");
+    .replace(/\bWATR\b/g, "WATER")
+    .replace(/\bZIP\s+LOC\b|\bZIPLC\b|\bZIPLOCK\b/g, "ZIPLOC")
+    .replace(/\bSLIDERS?\b/g, "BAGS")
+    .replace(/\bSUJA\s*DIGSTION\b|\bSUJADIGSTION\b/g, "SUJA DIGESTION")
+    .replace(/\bDIGSTION\b/g, "DIGESTION")
+    .replace(/\bCUP\s*CAKES?\b/g, "CUPCAKE")
+    .replace(/\s+/g, " ")
+    .trim();
 }
+
+export function intentFulfillmentKey(value: string) {
+  return `intent:${normalizeMatchDescription(value)}`;
+}
+
+export function receiptFulfillmentKeys(
+  item: Pick<MatchableReceiptItem, "costcoItemNumber" | "rawDescription" | "canonicalName">,
+) {
+  return [...new Set([
+    item.costcoItemNumber ? `item:${item.costcoItemNumber}` : "",
+    item.rawDescription
+      ? `description:${normalizeMatchDescription(item.rawDescription)}`
+      : "",
+    item.canonicalName
+      ? `description:${normalizeMatchDescription(item.canonicalName)}`
+      : "",
+  ].filter(Boolean))];
+}
+
+const AMBIGUOUS_BRAND_ONLY_TOKENS = new Set(["KIRKLAND", "KS", "SUJA", "ZIPLOC"]);
 
 const COSTCO_ITEM_MATCH_ALIASES: Record<string, readonly string[]> = {
   // Hershey's Nuggets. Costco abbreviates the receipt line to NUGGETS, while
@@ -689,6 +725,12 @@ function aliasTargetsIntent(
 function isDescriptiveSubset(intent: string, receipt: string): boolean {
   const intentTokens = new Set(intent.split(" ").filter(Boolean));
   const receiptTokens = new Set(receipt.split(" ").filter(Boolean));
+  if (
+    intentTokens.size === 1 &&
+    AMBIGUOUS_BRAND_ONLY_TOKENS.has([...intentTokens][0] ?? "")
+  ) {
+    return false;
+  }
   return (
     intentTokens.size > 0 &&
     intentTokens.size < receiptTokens.size &&
@@ -700,7 +742,20 @@ function scorePair(
   intent: ReceiptIntentItem,
   receipt: MatchableReceiptItem,
   aliases: ConfirmedProductAlias[],
+  fulfillments: ConfirmedIntentFulfillment[],
 ): Pick<ReceiptIntentMatch, "confidenceBps" | "reason"> | null {
+  const intentKey = intentFulfillmentKey(labelForIntent(intent));
+  const receiptKeys = new Set(receiptFulfillmentKeys(receipt));
+  const confirmedFulfillment = fulfillments.find(
+    (entry) => entry.intentKey === intentKey && receiptKeys.has(entry.receiptKey),
+  );
+  if (confirmedFulfillment?.relation === "not_same") return null;
+  if (confirmedFulfillment?.relation === "fulfills_intent") {
+    return {
+      confidenceBps: Math.max(9_950, confirmedFulfillment.confidenceBps ?? 10_000),
+      reason: "confirmed_intent_fulfillment",
+    };
+  }
   if (
     intent.costcoItemNumber &&
     receipt.costcoItemNumber &&
@@ -710,6 +765,10 @@ function scorePair(
   }
 
   const normalizedReceipts = receiptMatchDescriptions(receipt);
+  const normalizedRawReceipts = receiptMatchDescriptions({
+    ...receipt,
+    canonicalName: null,
+  });
   const confirmedAlias = aliases.find((alias) => {
     if (alias.confirmed === false) return false;
     const aliasLabel =
@@ -728,6 +787,16 @@ function scorePair(
   }
 
   const normalizedIntent = normalizeMatchDescription(labelForIntent(intent));
+  if (normalizedIntent && normalizedRawReceipts.includes(normalizedIntent)) {
+    return { confidenceBps: 9_400, reason: "normalized_exact" };
+  }
+  if (
+    normalizedIntent &&
+    normalizedReceipts.includes(normalizedIntent) &&
+    receipt.canonicalNameAdvisory
+  ) {
+    return { confidenceBps: 9_200, reason: "fuzzy_candidate" };
+  }
   if (normalizedIntent && normalizedReceipts.includes(normalizedIntent)) {
     return { confidenceBps: 9_400, reason: "normalized_exact" };
   }
@@ -735,11 +804,22 @@ function scorePair(
   if (
     !intent.productId &&
     !intent.costcoItemNumber &&
-    normalizedReceipts.some((receiptDescription) =>
+    normalizedRawReceipts.some((receiptDescription) =>
       isDescriptiveSubset(normalizedIntent, receiptDescription),
     )
   ) {
     return { confidenceBps: 9_300, reason: "descriptive_subset" };
+  }
+
+  if (
+    !intent.productId &&
+    !intent.costcoItemNumber &&
+    receipt.canonicalNameAdvisory &&
+    normalizedReceipts.some((receiptDescription) =>
+      isDescriptiveSubset(normalizedIntent, receiptDescription),
+    )
+  ) {
+    return { confidenceBps: 9_200, reason: "fuzzy_candidate" };
   }
 
   const similarity = Math.max(
@@ -759,14 +839,16 @@ export function matchReceiptItemsToIntent(input: {
   intentItems: ReceiptIntentItem[];
   receiptItems: MatchableReceiptItem[];
   aliases?: ConfirmedProductAlias[];
+  fulfillments?: ConfirmedIntentFulfillment[];
 }): ReceiptMatchingResult {
   const aliases = input.aliases ?? [];
+  const fulfillments = input.fulfillments ?? [];
   const possible: Array<ReceiptIntentMatch & { quantityDistance: number }> = [];
 
   for (const intent of input.intentItems) {
     for (const receipt of input.receiptItems) {
       if (receipt.kind === "discount") continue;
-      const score = scorePair(intent, receipt, aliases);
+      const score = scorePair(intent, receipt, aliases, fulfillments);
       if (!score) continue;
       const expectedQuantityMilli =
         Number.isFinite(intent.quantityMilli) && (intent.quantityMilli ?? 0) > 0

@@ -1788,7 +1788,15 @@ export function BasketSenseDashboard({
             onOpenReceipt={(step) => openReceiptFlow(step, "latest")}
             onCorrectReceipt={() => openReceiptFlow("capture", "correction")}
             onRetryHistory={() => void loadReviewHistory(true)}
-            onRefresh={async () => {
+            onRefresh={async (nextClosedLoop) => {
+              if (nextClosedLoop) {
+                setSelectedTripReview(nextClosedLoop);
+                setHousehold((current) =>
+                  current && nextClosedLoop.receipt?.tripId === current.currentTrip.id
+                    ? { ...current, closedLoop: nextClosedLoop }
+                    : current,
+                );
+              }
               await refreshHousehold(true, true);
               await loadReviewHistory(true);
             }}
@@ -4985,7 +4993,7 @@ function ReviewTab({
   onOpenReceipt: (step?: ReceiptStep) => void;
   onCorrectReceipt: () => void;
   onRetryHistory: () => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: (nextClosedLoop?: ClosedLoopSnapshot) => Promise<void>;
 }) {
   const selected = history.find((entry) => entry.receiptId === selectedReceiptId) ?? history[0];
   return (

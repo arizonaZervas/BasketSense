@@ -1217,6 +1217,49 @@ test("list revision migration adds an atomic trip and item ledger", () => {
   }
 });
 
+test("product understanding migration keeps interpretations separate from receipt truth", () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    db.database.exec(`
+      CREATE TABLE households (id TEXT PRIMARY KEY NOT NULL);
+      CREATE TABLE household_members (
+        id TEXT PRIMARY KEY NOT NULL,
+        household_id TEXT NOT NULL
+      );
+      CREATE TABLE receipt_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        raw_description TEXT NOT NULL
+      );
+    `);
+    const migration = readFileSync(
+      new URL("../drizzle/0014_dusty_sprite.sql", import.meta.url),
+      "utf8",
+    );
+    for (const statement of migration.split("--> statement-breakpoint")) {
+      if (statement.trim()) db.database.exec(statement);
+    }
+
+    const receiptColumns = db.database
+      .prepare(`PRAGMA table_info('receipt_items')`)
+      .all()
+      .map((column) => column.name);
+    assert.ok(receiptColumns.includes("interpreted_name"));
+    assert.ok(receiptColumns.includes("interpretation_confidence_bps"));
+    assert.ok(
+      db.database
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'product_understandings'`)
+        .get(),
+    );
+    assert.ok(
+      db.database
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'intent_fulfillments'`)
+        .get(),
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("August receipt date migration repairs only the linked 2026 trip", () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -3604,7 +3647,7 @@ test("receipt discounts fold into the product paid price and stay out of additio
   }
 });
 
-test("a confirmed receipt-to-list match teaches the household alias for future trips", async () => {
+test("a confirmed same-item correction teaches the list product identity for future trips", async () => {
   const db = new D1DatabaseAdapter();
   try {
     const initial = await responseJson(
@@ -3619,6 +3662,7 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
     );
     assert.ok(apparelProduct);
     assert.ok(plannedMilk);
+    assert.ok(plannedMilk.productId);
 
     assert.equal(
       (
@@ -3639,9 +3683,9 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
           clientDraftId: "learn-alias",
           tripId,
           purchasedAt: receiptTimestampForTrip(initial.currentTrip),
-          subtotalCents: 8000,
+          subtotalCents: 10000,
           taxCents: 0,
-          totalCents: 8000,
+          totalCents: 10000,
           discountCents: 0,
           items: [
             receiptDraftLine({
@@ -3650,6 +3694,14 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
               rawDescription: "3 DOT PANT",
               unitPriceCents: 8000,
               lineSubtotalCents: 8000,
+              taxStatus: "taxable",
+            }),
+            receiptDraftLine({
+              sourceLineNumber: 2,
+              costcoItemNumber: null,
+              rawDescription: "ZIPLC SLIDER",
+              unitPriceCents: 2000,
+              lineSubtotalCents: 2000,
               taxStatus: "taxable",
             }),
           ],
@@ -3662,13 +3714,21 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
         `SELECT * FROM trip_intent_items WHERE trip_id = ? AND list_item_id = ?`,
       )
       .get(tripId, plannedMilk.id);
-    const receiptItem = db.database
+    const candidateReceiptItem = db.database
       .prepare(
-        `SELECT * FROM receipt_items WHERE receipt_transaction_id = ? LIMIT 1`,
+        `SELECT * FROM receipt_items
+         WHERE receipt_transaction_id = ? AND raw_description = '3 DOT PANT'`,
+      )
+      .get(ingested.receiptId);
+    const replacementReceiptItem = db.database
+      .prepare(
+        `SELECT * FROM receipt_items
+         WHERE receipt_transaction_id = ? AND raw_description = 'ZIPLC SLIDER'`,
       )
       .get(ingested.receiptId);
     assert.ok(intent);
-    assert.ok(receiptItem);
+    assert.ok(candidateReceiptItem);
+    assert.ok(replacementReceiptItem);
 
     const questionId = "learn-alias-question";
     const now = new Date().toISOString();
@@ -3698,7 +3758,7 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
         "Confirms and remembers a household alias",
         plannedMilk.id,
         intent.id,
-        receiptItem.id,
+        candidateReceiptItem.id,
         now,
         now,
       );
@@ -3708,11 +3768,26 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
         action: "answer_review_question",
         questionId,
         value: "receipt_needs_fix",
-        replacementReceiptItemId: receiptItem.id,
+        replacementReceiptItemId: replacementReceiptItem.id,
       }),
       db,
     );
     assert.equal(answer.status, 200);
+    const fulfillments = db.database
+      .prepare(
+        `SELECT intent_key, receipt_key, relation
+         FROM intent_fulfillments
+         WHERE household_id = ? ORDER BY receipt_key`,
+      )
+      .all("household_basketsense");
+    assert.deepEqual(
+      fulfillments.map((entry) => ({ ...entry })),
+      [{
+        intent_key: "intent:KIRKLAND SIGNATURE ORGANIC 2% MILK",
+        receipt_key: "description:ZIPLOC BAGS",
+        relation: "fulfills_intent",
+      }],
+    );
     const aliases = db.database
       .prepare(
         `SELECT normalized_description, product_id FROM product_aliases
@@ -3723,16 +3798,82 @@ test("a confirmed receipt-to-list match teaches the household alias for future t
       aliases.some(
         (alias) =>
           alias.normalized_description === "KIRKLAND SIGNATURE ORGANIC 2% MILK" &&
-          alias.product_id === apparelProduct.id,
+          alias.product_id === plannedMilk.productId,
       ),
     );
     assert.ok(
       aliases.some(
         (alias) =>
-          alias.normalized_description === "3 DOT PANT" &&
-          alias.product_id === apparelProduct.id,
+          alias.normalized_description === "ZIPLC SLIDER" &&
+          alias.product_id === plannedMilk.productId,
       ),
     );
+    const correctedReceiptItem = db.database
+      .prepare(`SELECT product_id FROM receipt_items WHERE id = ?`)
+      .get(replacementReceiptItem.id);
+    assert.equal(correctedReceiptItem.product_id, plannedMilk.productId);
+    assert.equal(
+      db.database
+        .prepare(`SELECT product_id FROM receipt_items WHERE id = ?`)
+        .get(candidateReceiptItem.id).product_id,
+      apparelProduct.id,
+      "The explicit replacement must win over the question's stale candidate line",
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("a unique learned household alias restores the catalog product and latest estimate", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "learned-list-alias@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const listedProductIds = new Set(initial.listItems.map((item) => item.productId).filter(Boolean));
+    const product = initial.products.find(
+      (candidate) =>
+        candidate.latestRegularUnitPriceCents !== null &&
+        !listedProductIds.has(candidate.id),
+    );
+    assert.ok(product);
+
+    const now = new Date().toISOString();
+    db.database.prepare(
+      `INSERT INTO product_aliases (
+        id, household_id, alias_key, raw_description,
+        normalized_description, costco_item_number, product_id,
+        confirmation_source, confirmed_by_member_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'member', ?, ?, ?)`,
+    ).run(
+      "learned-list-alias",
+      initial.household.id,
+      "intent:HOUSEHOLD PANTRY SHORTHAND",
+      "Household pantry shorthand",
+      "HOUSEHOLD PANTRY SHORTHAND",
+      product.id,
+      initial.currentUser.id,
+      now,
+      now,
+    );
+
+    const response = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "household pantry shorthand",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(response.status, 201);
+    const added = (await responseJson(response)).item;
+    assert.equal(added.productId, product.id);
+    assert.equal(added.label, product.canonicalName);
+    assert.equal(added.estimatedPriceCents, product.latestRegularUnitPriceCents);
   } finally {
     db.close();
   }

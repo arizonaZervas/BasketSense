@@ -128,3 +128,11 @@ If these cannot be stated clearly, the idea is not ready for implementation.
 
 Future decisions and their status live in [`decisions/`](decisions/README.md).
 Deferred ideas live in [`parking-lot.md`](parking-lot.md).
+
+## Multi-tenant transition handoff
+
+The checkpointed path from the current family product to an invite-only Good
+Cart Day household beta lives in
+[`good-cart-day-private-beta-plan.md`](good-cart-day-private-beta-plan.md).
+It preserves the family deployment, corrects the tenant-isolation/migration
+sequence, and does not authorize implementation or release work.

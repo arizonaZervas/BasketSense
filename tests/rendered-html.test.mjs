@@ -243,6 +243,8 @@ test("keeps sandbox review answers in the owner-only test household", async () =
   assert.match(dashboardSource, /<ReviewTab[\s\S]*sandboxMode=\{sandboxMode\}/);
   assert.match(dashboardSource, /<ClosedLoopReview[\s\S]*sandboxMode=\{sandboxMode\}/);
   assert.match(reviewSource, /\.\.\.\(sandboxMode \? \{ sandbox: true \} : \{\}\)/);
+  assert.match(reviewSource, /onRefresh\(nextClosedLoop\)/);
+  assert.match(dashboardSource, /setSelectedTripReview\(nextClosedLoop\)/);
 });
 
 test("uses a smooth fullscreen canvas celebration with bounded mobile work", async () => {
@@ -313,14 +315,15 @@ test("preserves readable receipt width and prepares long-photo recovery evidence
     "utf8",
   );
 
-  assert.match(receiptFlowSource, /Math\.floor\(1\.5 \* 1024 \* 1024\)/);
-  assert.match(receiptFlowSource, /if \(file\.size <= LIVE_UPLOAD_SAFE_BYTES\)/);
+  assert.match(receiptFlowSource, /LIVE_UPLOAD_SAFE_BYTES = 900 \* 1024/);
+  assert.match(receiptFlowSource, /file\.size <= LIVE_UPLOAD_SAFE_BYTES/);
+  assert.match(receiptFlowSource, /receiptUploadContentType\(file\)/);
   assert.match(receiptFlowSource, /RECEIPT_MIN_READABLE_WIDTH = 1_200/);
   assert.match(receiptFlowSource, /prepareReceiptRecoveryAssets/);
   assert.match(receiptFlowSource, /contrast\(1\.38\)/);
   assert.match(receiptFlowSource, /RECEIPT_RECOVERY_TILE_OVERLAP/);
   assert.match(receiptFlowSource, /decodeReceiptImage/);
-  assert.match(receiptFlowSource, /Preparing this large photo without shrinking the receipt text/);
+  assert.match(receiptFlowSource, /Preparing a safe-size photo and readable receipt sections/);
   assert.doesNotMatch(receiptFlowSource, /compressed\.size > LIVE_UPLOAD_SAFE_BYTES\) return file/);
   assert.doesNotMatch(
     receiptFlowSource,

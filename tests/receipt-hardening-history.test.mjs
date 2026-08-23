@@ -194,8 +194,47 @@ test("large receipt preparation retries createImageBitmap without Safari-unsuppo
     assert.equal(decodeCalls, 2);
     assert.equal(prepared.type, "image/jpeg");
     assert.equal(prepared.size, 900_000);
-    assert.ok(prepared.size < 1.5 * 1024 * 1024);
+    assert.ok(prepared.size < 900 * 1024);
     assert.equal(closed, true);
+  } finally {
+    if (originalCreateImageBitmap) globalThis.createImageBitmap = originalCreateImageBitmap;
+    else delete globalThis.createImageBitmap;
+    if (originalDocument) globalThis.document = originalDocument;
+    else delete globalThis.document;
+  }
+});
+
+test("large iPhone camera photos with an empty MIME type are still reduced safely", async () => {
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  globalThis.createImageBitmap = async () => ({
+    width: 3_024,
+    height: 8_000,
+    close() {},
+  });
+  globalThis.document = {
+    createElement() {
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return { drawImage() {} };
+        },
+        toBlob(callback) {
+          callback(new Blob([new Uint8Array(880_000)], { type: "image/jpeg" }));
+        },
+      };
+    },
+  };
+  try {
+    const prepared = await prepareReceiptUpload(new File(
+      [new Uint8Array(4_800_000)],
+      "IMG_4800.JPG",
+      { type: "" },
+    ));
+    assert.equal(prepared.type, "image/jpeg");
+    assert.equal(prepared.name, "IMG_4800.jpg");
+    assert.ok(prepared.size <= 900 * 1024);
   } finally {
     if (originalCreateImageBitmap) globalThis.createImageBitmap = originalCreateImageBitmap;
     else delete globalThis.createImageBitmap;

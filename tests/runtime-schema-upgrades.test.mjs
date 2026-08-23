@@ -141,9 +141,18 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
     assert.equal(database.prepare("SELECT product_id FROM feedback WHERE id = 'f1'").get().product_id, "p1");
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM product_image_jobs").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM receipt_corrections").get().count, 0);
+    const receiptItemColumns = database.prepare("PRAGMA table_info('receipt_items')").all();
+    assert.ok(receiptItemColumns.some((entry) => entry.name === "interpreted_name"));
+    assert.ok(
+      receiptItemColumns.some(
+        (entry) => entry.name === "interpretation_confidence_bps",
+      ),
+    );
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM product_understandings").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM intent_fulfillments").get().count, 0);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM basketsense_schema_migrations WHERE status = 'completed'").get().count,
-      4,
+      5,
     );
     assert.equal(database.prepare("PRAGMA foreign_key_check").all().length, 0);
 

@@ -130,6 +130,55 @@ const RECEIPT_CORRECTION_STATEMENTS = [
     ON receipt_corrections (household_id, applied_at)`,
 ];
 
+const PRODUCT_UNDERSTANDING_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS product_understandings (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    lookup_key TEXT NOT NULL,
+    costco_item_number TEXT,
+    raw_description TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    brand TEXT,
+    product_family TEXT,
+    variant TEXT,
+    category_hint TEXT,
+    confidence_bps INTEGER NOT NULL,
+    exact_sku_known INTEGER NOT NULL DEFAULT 0,
+    search_aliases_json TEXT NOT NULL DEFAULT '[]',
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_understandings_household_lookup_unique
+    ON product_understandings (household_id, lookup_key)`,
+  `CREATE INDEX IF NOT EXISTS product_understandings_item_number_idx
+    ON product_understandings (household_id, costco_item_number)`,
+  `CREATE TABLE IF NOT EXISTS intent_fulfillments (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    intent_key TEXT NOT NULL,
+    receipt_key TEXT NOT NULL,
+    raw_intent_label TEXT NOT NULL,
+    raw_receipt_description TEXT NOT NULL,
+    costco_item_number TEXT,
+    relation TEXT NOT NULL,
+    confidence_bps INTEGER NOT NULL DEFAULT 10000,
+    confirmed_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (confirmed_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS intent_fulfillments_household_pair_unique
+    ON intent_fulfillments (household_id, intent_key, receipt_key)`,
+  `CREATE INDEX IF NOT EXISTS intent_fulfillments_household_intent_idx
+    ON intent_fulfillments (household_id, intent_key)`,
+];
+
 function changeCount(result: D1Result<unknown>) {
   return Number(result.meta?.changes ?? 0);
 }
@@ -279,6 +328,18 @@ async function performSchemaUpgrades(db: D1Database) {
          AND product_id IS NULL`,
     ).run();
     await db.prepare(`CREATE INDEX IF NOT EXISTS feedback_product_idx ON feedback (product_id)`).run();
+  });
+
+  await runClaimedMigration(db, "0014_product_understanding_and_intent_fulfillment", async () => {
+    await db.batch(PRODUCT_UNDERSTANDING_STATEMENTS.map((statement) => db.prepare(statement)));
+    await addColumnIfMissing(db, "receipt_items", "interpreted_name", "interpreted_name TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpreted_brand", "interpreted_brand TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpreted_product_family", "interpreted_product_family TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpreted_variant", "interpreted_variant TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpretation_category_hint", "interpretation_category_hint TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpretation_confidence_bps", "interpretation_confidence_bps INTEGER");
+    await addColumnIfMissing(db, "receipt_items", "interpretation_source", "interpretation_source TEXT");
+    await addColumnIfMissing(db, "receipt_items", "interpretation_model", "interpretation_model TEXT");
   });
 }
 

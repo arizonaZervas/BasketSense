@@ -90,6 +90,7 @@ export interface TripItemMatchSummary {
     | "exact_item_number"
     | "exact_product"
     | "confirmed_alias"
+    | "confirmed_intent"
     | "exact_name"
     | "member_confirmed";
   confidenceBps: number;

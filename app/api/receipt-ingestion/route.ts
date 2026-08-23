@@ -4,6 +4,10 @@ import {
   receiptExtractionErrorCode,
   RECEIPT_EXTRACTION_SCHEMA_VERSION,
 } from "../../../workers/receipt-ingestion/src/extraction";
+import {
+  PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+  understandReceiptProducts,
+} from "../../../workers/receipt-ingestion/src/product-understanding";
 import { ensureBasketSenseSchemaUpgrades } from "../../database-schema-upgrades";
 import { isReceiptUploadContentType } from "../../receipt-upload-formats";
 
@@ -332,7 +336,7 @@ export function receiptIngestionRetryDisposition(status: string) {
   return "unavailable" as const;
 }
 
-function parseArtifact(value: unknown) {
+export function parseArtifact(value: unknown) {
   const artifact = value as {
     draft?: {
       purchasedAt?: string | null;
@@ -349,6 +353,16 @@ function parseArtifact(value: unknown) {
         netAmountCents?: number;
         discountCents?: number;
         taxStatus?: "taxable" | "non_taxable" | "unknown";
+        understanding?: {
+          canonicalName?: string | null;
+          brand?: string | null;
+          productFamily?: string | null;
+          variant?: string | null;
+          categoryHint?: string | null;
+          confidenceBps?: number | null;
+          source?: "catalog" | "gemini";
+          model?: string | null;
+        };
       }>;
     };
   };
@@ -372,6 +386,14 @@ function parseArtifact(value: unknown) {
       netAmountCents: line.netAmountCents ?? line.lineSubtotalCents ?? 0,
       discountCents: line.discountCents ?? 0,
       taxStatus: line.taxStatus ?? "unknown",
+      interpretedName: line.understanding?.canonicalName ?? null,
+      interpretedBrand: line.understanding?.brand ?? null,
+      interpretedProductFamily: line.understanding?.productFamily ?? null,
+      interpretedVariant: line.understanding?.variant ?? null,
+      interpretationCategoryHint: line.understanding?.categoryHint ?? null,
+      interpretationConfidenceBps: line.understanding?.confidenceBps ?? null,
+      interpretationSource: line.understanding?.source ?? null,
+      interpretationModel: line.understanding?.model ?? null,
       kind:
         (line.discountCents ?? 0) > 0 &&
         (line.netAmountCents ?? line.lineSubtotalCents ?? 0) < 0
@@ -490,6 +512,23 @@ async function nativeExtractReceipt({
       }
     }
     if (!extracted) throw firstError ?? new Error("receipt_extraction_failed");
+    let understoodDraft = extracted.draft;
+    let productUnderstandingStatus: "completed" | "unavailable" = "completed";
+    try {
+      understoodDraft = await understandReceiptProducts({
+        db,
+        householdId: ingestion.household_id,
+        apiKey,
+        model: usedModel,
+        draft: extracted.draft,
+      });
+    } catch (error) {
+      productUnderstandingStatus = "unavailable";
+      console.warn("BasketSense optional product understanding was unavailable", {
+        ingestionId: ingestion.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     const artifactKey = `households/${ingestion.household_id}/receipt-ingestions/${ingestion.id}/gemini-draft.json`;
     await bucket.put(
       artifactKey,
@@ -497,11 +536,13 @@ async function nativeExtractReceipt({
         provider: "gemini",
         model: usedModel,
         schemaVersion: RECEIPT_EXTRACTION_SCHEMA_VERSION,
+        productUnderstandingSchemaVersion: PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+        productUnderstandingStatus,
         responseId: extracted.responseId,
         finishReason: extracted.finishReason,
         durationMs: extracted.durationMs,
         extractionPass,
-        draft: extracted.draft,
+        draft: understoodDraft,
       }),
       { httpMetadata: { contentType: "application/json" } },
     );

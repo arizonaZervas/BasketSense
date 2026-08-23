@@ -72,6 +72,29 @@ test("the review draft preserves an extracted product discount through save", ()
   });
 });
 
+test("the review draft carries advisory product understanding into receipt persistence", () => {
+  const draft = draftFromParser({
+    items: [{
+      itemNumber: "1234567",
+      rawDescription: "ZIPLC SLIDER",
+      netAmountCents: 1499,
+      interpretedName: "Ziploc Slider Storage Bags",
+      interpretedBrand: "Ziploc",
+      interpretedProductFamily: "Storage bags",
+      interpretationCategoryHint: "household_supplies",
+      interpretationConfidenceBps: 9200,
+      interpretationSource: "gemini",
+      interpretationModel: "test-model",
+    }],
+  });
+
+  const saved = receiptDraftLineValue(draft.items[0], 0);
+  assert.equal(saved.rawDescription, "ZIPLC SLIDER");
+  assert.equal(saved.interpretedName, "Ziploc Slider Storage Bags");
+  assert.equal(saved.interpretedProductFamily, "Storage bags");
+  assert.equal(saved.interpretationConfidenceBps, 9200);
+});
+
 test("an online Costco order infers a missing order discount from matching evidence", () => {
   const draft = draftFromParser({
     purchasedAt: "2026-08-03",

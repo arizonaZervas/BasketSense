@@ -19,7 +19,10 @@ import {
   matchReceiptItemsToIntent,
   normalizeReceiptDescription,
   reconcileReceipt,
+  intentFulfillmentKey,
+  receiptFulfillmentKeys,
   type ConfirmedProductAlias,
+  type ConfirmedIntentFulfillment,
   type MatchableReceiptItem,
   type ReceiptIntentItem,
   type ReceiptIntentMatch,
@@ -350,6 +353,14 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     source_line_number INTEGER NOT NULL,
     costco_item_number TEXT,
     raw_description TEXT NOT NULL,
+    interpreted_name TEXT,
+    interpreted_brand TEXT,
+    interpreted_product_family TEXT,
+    interpreted_variant TEXT,
+    interpretation_category_hint TEXT,
+    interpretation_confidence_bps INTEGER,
+    interpretation_source TEXT,
+    interpretation_model TEXT,
     quantity_milli INTEGER NOT NULL DEFAULT 1000,
     unit_price_cents INTEGER,
     unit_price_mills INTEGER,
@@ -614,6 +625,52 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON product_aliases (household_id, alias_key)`,
   `CREATE INDEX IF NOT EXISTS product_aliases_product_idx
     ON product_aliases (product_id)`,
+  `CREATE TABLE IF NOT EXISTS product_understandings (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    lookup_key TEXT NOT NULL,
+    costco_item_number TEXT,
+    raw_description TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    brand TEXT,
+    product_family TEXT,
+    variant TEXT,
+    category_hint TEXT,
+    confidence_bps INTEGER NOT NULL,
+    exact_sku_known INTEGER NOT NULL DEFAULT 0,
+    search_aliases_json TEXT NOT NULL DEFAULT '[]',
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS product_understandings_household_lookup_unique
+    ON product_understandings (household_id, lookup_key)`,
+  `CREATE INDEX IF NOT EXISTS product_understandings_item_number_idx
+    ON product_understandings (household_id, costco_item_number)`,
+  `CREATE TABLE IF NOT EXISTS intent_fulfillments (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    intent_key TEXT NOT NULL,
+    receipt_key TEXT NOT NULL,
+    raw_intent_label TEXT NOT NULL,
+    raw_receipt_description TEXT NOT NULL,
+    costco_item_number TEXT,
+    relation TEXT NOT NULL,
+    confidence_bps INTEGER NOT NULL DEFAULT 10000,
+    confirmed_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (confirmed_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS intent_fulfillments_household_pair_unique
+    ON intent_fulfillments (household_id, intent_key, receipt_key)`,
+  `CREATE INDEX IF NOT EXISTS intent_fulfillments_household_intent_idx
+    ON intent_fulfillments (household_id, intent_key)`,
   `CREATE TABLE IF NOT EXISTS trip_item_matches (
     id TEXT PRIMARY KEY NOT NULL,
     household_id TEXT NOT NULL,
@@ -823,6 +880,14 @@ interface ReceiptItemRow {
   source_line_number: number;
   costco_item_number: string | null;
   raw_description: string;
+  interpreted_name: string | null;
+  interpreted_brand: string | null;
+  interpreted_product_family: string | null;
+  interpreted_variant: string | null;
+  interpretation_category_hint: string | null;
+  interpretation_confidence_bps: number | null;
+  interpretation_source: "catalog" | "gemini" | null;
+  interpretation_model: string | null;
   quantity_milli: number;
   unit_price_cents: number | null;
   unit_price_mills: number | null;
@@ -885,6 +950,24 @@ interface ProductAliasRow {
   confirmation_source: "historical" | "member" | "receipt";
 }
 
+interface IntentFulfillmentRow {
+  intent_key: string;
+  receipt_key: string;
+  relation: "fulfills_intent" | "not_same";
+  confidence_bps: number;
+}
+
+interface ProductUnderstandingRow {
+  lookup_key: string;
+  canonical_name: string;
+  brand: string | null;
+  product_family: string | null;
+  variant: string | null;
+  category_hint: string | null;
+  confidence_bps: number;
+  model: string;
+}
+
 interface TripItemMatchRow {
   id: string;
   household_id: string;
@@ -896,6 +979,7 @@ interface TripItemMatchRow {
     | "exact_item_number"
     | "exact_product"
     | "confirmed_alias"
+    | "confirmed_intent"
     | "exact_name"
     | "member_confirmed";
   confidence_bps: number;
@@ -2644,22 +2728,27 @@ async function catalogMatchForListItem(
       .first<{ id: string; canonical_name: string }>();
     if (!product) throw new ApiError(404, "Product not found");
   } else {
+    const normalizedLabel = normalizeReceiptDescription(label);
     const candidates = await db
       .prepare(
         `SELECT DISTINCT products.id, products.canonical_name
          FROM products
          LEFT JOIN receipt_items ON receipt_items.product_id = products.id
+         LEFT JOIN product_aliases
+           ON product_aliases.product_id = products.id
+          AND product_aliases.household_id = products.household_id
          WHERE products.household_id = ?
            AND products.active = 1
            AND (
              LOWER(TRIM(products.canonical_name)) = LOWER(TRIM(?))
              OR products.costco_item_number = TRIM(?)
              OR LOWER(TRIM(receipt_items.raw_description)) = LOWER(TRIM(?))
+             OR product_aliases.normalized_description = ?
            )
          ORDER BY products.updated_at DESC, products.id ASC
          LIMIT 2`
       )
-      .bind(householdId, label, label, label)
+      .bind(householdId, label, label, label, normalizedLabel)
       .all<{ id: string; canonical_name: string }>();
     if (candidates.results.length === 1) {
       product = candidates.results[0];
@@ -3818,6 +3907,14 @@ interface ValidatedDraftItem {
   sourceLineNumber: number;
   costcoItemNumber: string | null;
   rawDescription: string;
+  interpretedName: string | null;
+  interpretedBrand: string | null;
+  interpretedProductFamily: string | null;
+  interpretedVariant: string | null;
+  interpretationCategoryHint: string | null;
+  interpretationConfidenceBps: number | null;
+  interpretationSource: "catalog" | "gemini" | null;
+  interpretationModel: string | null;
   quantityMilli: number;
   unitPriceCents: number | null;
   lineSubtotalCents: number;
@@ -3962,6 +4059,32 @@ function validateDraftItems(
       item.costcoItemNumber,
       `items[${index}].costcoItemNumber`
     );
+    const optionalInterpretationText = (field: string, maximum: number) =>
+      item[field] === undefined || item[field] === null || item[field] === ""
+        ? null
+        : requiredString(item[field], `items[${index}].${field}`, maximum);
+    const interpretedName = optionalInterpretationText("interpretedName", 140);
+    const interpretedBrand = optionalInterpretationText("interpretedBrand", 100);
+    const interpretedProductFamily = optionalInterpretationText("interpretedProductFamily", 100);
+    const interpretedVariant = optionalInterpretationText("interpretedVariant", 100);
+    const interpretationCategoryHint = optionalInterpretationText("interpretationCategoryHint", 80);
+    if (
+      interpretationCategoryHint &&
+      !REVIEWABLE_PRODUCT_CATEGORIES.has(interpretationCategoryHint as ProductCategoryKey)
+    ) {
+      throw new ApiError(400, `items[${index}].interpretationCategoryHint is invalid`);
+    }
+    const interpretationConfidenceBps = optionalInteger(
+      item.interpretationConfidenceBps,
+      `items[${index}].interpretationConfidenceBps`,
+      0,
+      10_000,
+    );
+    const interpretationSource =
+      item.interpretationSource === "catalog" || item.interpretationSource === "gemini"
+        ? item.interpretationSource
+        : null;
+    const interpretationModel = optionalInterpretationText("interpretationModel", 120);
     const quantityMilli =
       optionalInteger(
         item.quantityMilli,
@@ -4015,6 +4138,14 @@ function validateDraftItems(
       sourceLineNumber,
       costcoItemNumber,
       rawDescription,
+      interpretedName,
+      interpretedBrand,
+      interpretedProductFamily,
+      interpretedVariant,
+      interpretationCategoryHint,
+      interpretationConfidenceBps,
+      interpretationSource,
+      interpretationModel,
       quantityMilli,
       unitPriceCents,
       lineSubtotalCents,
@@ -4044,6 +4175,61 @@ function aliasKeyFor(
 
 function intentAliasKeyFor(normalizedDescription: string) {
   return `intent:${normalizedDescription}`;
+}
+
+function productUnderstandingLookupKeyFor(item: ValidatedDraftItem) {
+  return item.costcoItemNumber
+    ? `item:${item.costcoItemNumber}`
+    : `raw:${normalizeReceiptDescription(item.rawDescription)}`;
+}
+
+export async function trustedDraftInterpretations(
+  db: D1Database,
+  householdId: string,
+  items: ValidatedDraftItem[],
+) {
+  if (!items.some((item) => item.interpretedName)) return items;
+  const result = await db
+    .prepare(`SELECT lookup_key, canonical_name, brand, product_family, variant,
+                    category_hint, confidence_bps, model
+      FROM product_understandings WHERE household_id = ?`)
+    .bind(householdId)
+    .all<ProductUnderstandingRow>();
+  const byKey = new Map(result.results.map((row) => [row.lookup_key, row]));
+  return items.map((item) => {
+    const cached = byKey.get(productUnderstandingLookupKeyFor(item));
+    const matchesCache = Boolean(
+      cached &&
+      item.interpretationSource === "gemini" &&
+      item.interpretedName === cached.canonical_name &&
+      item.interpretationConfidenceBps === cached.confidence_bps &&
+      item.interpretationModel === cached.model,
+    );
+    if (!cached || !matchesCache) {
+      return {
+        ...item,
+        interpretedName: null,
+        interpretedBrand: null,
+        interpretedProductFamily: null,
+        interpretedVariant: null,
+        interpretationCategoryHint: null,
+        interpretationConfidenceBps: null,
+        interpretationSource: null,
+        interpretationModel: null,
+      };
+    }
+    return {
+      ...item,
+      interpretedName: cached.canonical_name,
+      interpretedBrand: cached.brand,
+      interpretedProductFamily: cached.product_family,
+      interpretedVariant: cached.variant,
+      interpretationCategoryHint: cached.category_hint,
+      interpretationConfidenceBps: cached.confidence_bps,
+      interpretationSource: "gemini" as const,
+      interpretationModel: cached.model,
+    };
+  });
 }
 
 async function resolveDraftProducts(
@@ -4143,6 +4329,13 @@ async function promoteAdHocReceiptProducts(
   for (const item of items) {
     if (receiptItemKind(item) === "discount") continue;
     const normalized = normalizeReceiptDescription(item.raw_description);
+    const trustedInterpretation = Boolean(
+      item.interpreted_name &&
+      (item.interpretation_confidence_bps ?? 0) >= 8_500,
+    );
+    const interpretedNormalized = trustedInterpretation
+      ? normalizeReceiptDescription(item.interpreted_name!)
+      : "";
     if (!normalized) continue;
 
     let product = item.product_id ? productsById.get(item.product_id) : undefined;
@@ -4159,12 +4352,14 @@ async function promoteAdHocReceiptProducts(
       if (product) confidenceBps = 9_900;
     }
     if (!product) {
-      product = productsByName.get(normalized);
+      product = productsByName.get(interpretedNormalized) ?? productsByName.get(normalized);
       if (product) confidenceBps = 9_400;
     }
 
     if (!product) {
-      const canonicalName = item.raw_description.trim();
+      const canonicalName = trustedInterpretation
+        ? item.interpreted_name!.trim()
+        : item.raw_description.trim();
       const classification = classifyReceiptItem({
         channel: "warehouse",
         itemNumber: item.costco_item_number ?? "",
@@ -4172,6 +4367,14 @@ async function promoteAdHocReceiptProducts(
         canonicalName,
         taxStatus: item.tax_status,
       });
+      const category =
+        trustedInterpretation &&
+        item.interpretation_category_hint &&
+        REVIEWABLE_PRODUCT_CATEGORIES.has(
+          item.interpretation_category_hint as ProductCategoryKey,
+        )
+          ? (item.interpretation_category_hint as ProductCategoryKey)
+          : classification.key;
       const productId = crypto.randomUUID();
       const now = nowIso();
       if (item.costco_item_number) {
@@ -4179,9 +4382,9 @@ async function promoteAdHocReceiptProducts(
           .prepare(
             `INSERT INTO products (
               id, household_id, costco_item_number, canonical_name,
-              category, category_status, catalog_revision,
+              category, category_status, catalog_revision, brand,
               active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'ad-hoc-receipt-v1', 1, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ad-hoc-receipt-v1', ?, 1, ?, ?)
             ON CONFLICT(household_id, costco_item_number) DO NOTHING`,
           )
           .bind(
@@ -4189,8 +4392,9 @@ async function promoteAdHocReceiptProducts(
             context.household.id,
             item.costco_item_number,
             canonicalName,
-            classification.key,
-            classification.status,
+            category,
+            trustedInterpretation ? "needs_review" : classification.status,
+            trustedInterpretation ? item.interpreted_brand : null,
             now,
             now,
           )
@@ -4208,10 +4412,10 @@ async function promoteAdHocReceiptProducts(
           .prepare(
             `INSERT INTO products (
               id, household_id, costco_item_number, canonical_name,
-              category, category_status, catalog_revision,
+              category, category_status, catalog_revision, brand,
               active, created_at, updated_at
             )
-            SELECT ?, ?, NULL, ?, ?, ?, 'ad-hoc-receipt-v1', 1, ?, ?
+            SELECT ?, ?, NULL, ?, ?, ?, 'ad-hoc-receipt-v1', ?, 1, ?, ?
             WHERE NOT EXISTS (
               SELECT 1 FROM products
               WHERE household_id = ? AND active = 1
@@ -4222,8 +4426,9 @@ async function promoteAdHocReceiptProducts(
             productId,
             context.household.id,
             canonicalName,
-            classification.key,
-            classification.status,
+            category,
+            trustedInterpretation ? "needs_review" : classification.status,
+            trustedInterpretation ? item.interpreted_brand : null,
             now,
             now,
             context.household.id,
@@ -4502,7 +4707,8 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
     productId: row.product_id,
     costcoItemNumber: row.costco_item_number,
     rawDescription: row.raw_description,
-    canonicalName: row.canonical_name ?? null,
+    canonicalName: row.canonical_name ?? row.interpreted_name ?? null,
+    canonicalNameAdvisory: !row.canonical_name && Boolean(row.interpreted_name),
     quantityMilli: row.quantity_milli,
     lineSubtotalCents: row.line_subtotal_cents,
     discountCents: row.discount_cents,
@@ -4690,7 +4896,7 @@ async function matchingInputs(
   tripId: string,
   receiptId: string
 ) {
-  const [intentResult, shoppingAdditionResult, receiptResult, aliasResult] = await Promise.all([
+  const [intentResult, shoppingAdditionResult, receiptResult, aliasResult, fulfillmentResult] = await Promise.all([
     db
       .prepare(
         `SELECT trip_intent_items.*, 0 AS added_after_freeze,
@@ -4749,6 +4955,11 @@ async function matchingInputs(
       .prepare(`SELECT * FROM product_aliases WHERE household_id = ?`)
       .bind(householdId)
       .all<ProductAliasRow>(),
+    db
+      .prepare(`SELECT intent_key, receipt_key, relation, confidence_bps
+        FROM intent_fulfillments WHERE household_id = ?`)
+      .bind(householdId)
+      .all<IntentFulfillmentRow>(),
   ]);
   const aliases: ConfirmedProductAlias[] = aliasResult.results.map((alias) => ({
     normalizedDescription: alias.normalized_description,
@@ -4756,6 +4967,14 @@ async function matchingInputs(
     costcoItemNumber: alias.costco_item_number,
     confirmed: true,
   }));
+  const fulfillments: ConfirmedIntentFulfillment[] = fulfillmentResult.results.map(
+    (entry) => ({
+      intentKey: entry.intent_key,
+      receiptKey: entry.receipt_key,
+      relation: entry.relation,
+      confidenceBps: entry.confidence_bps,
+    }),
+  );
   const shoppingListItemIds = new Set(
     shoppingAdditionResult.results
       .map((item) => item.list_item_id)
@@ -4771,6 +4990,7 @@ async function matchingInputs(
     intentRows,
     receiptRows: receiptResult.results,
     aliases,
+    fulfillments,
   };
 }
 
@@ -4781,6 +5001,8 @@ function persistedMatchType(
     reason === "descriptive_subset" ||
     reason === "fuzzy_candidate"
     ? "exact_name"
+    : reason === "confirmed_intent_fulfillment"
+      ? "confirmed_intent"
     : reason;
 }
 
@@ -4858,6 +5080,7 @@ async function rebuildTripItemMatches(
     intentItems: inputs.intentRows.map(toLogicIntent),
     receiptItems: inputs.receiptRows.map(toLogicReceipt),
     aliases: inputs.aliases,
+    fulfillments: inputs.fulfillments,
   });
   const automatic = matching.matches.filter(
     (match) =>
@@ -5367,6 +5590,7 @@ async function readClosedLoopReview(
     intentItems: inputs.intentRows.map(toLogicIntent),
     receiptItems: inputs.receiptRows.map(toLogicReceipt),
     aliases: inputs.aliases,
+    fulfillments: inputs.fulfillments,
   });
   const projectedShoppingMatches = projectShoppingAdditionMatches({
     householdId,
@@ -5582,7 +5806,8 @@ async function buildReceiptItemStatements(
   items: ValidatedDraftItem[],
   replaceExisting = false,
 ) {
-  const resolved = await resolveDraftProducts(db, householdId, items);
+  const trustedItems = await trustedDraftInterpretations(db, householdId, items);
+  const resolved = await resolveDraftProducts(db, householdId, trustedItems);
   const now = nowIso();
   const statements: D1PreparedStatement[] = [];
   if (replaceExisting) {
@@ -5599,12 +5824,15 @@ async function buildReceiptItemStatements(
         .prepare(
           `INSERT INTO receipt_items (
             id, receipt_transaction_id, product_id, source_line_number,
-            costco_item_number, raw_description, quantity_milli,
+            costco_item_number, raw_description, interpreted_name,
+            interpreted_brand, interpreted_product_family, interpreted_variant,
+            interpretation_category_hint, interpretation_confidence_bps,
+            interpretation_source, interpretation_model, quantity_milli,
             unit_price_cents, unit_price_mills, line_subtotal_cents,
             discount_cents, net_amount_cents, tax_status,
             normalization_status, is_return, match_confidence_bps,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           crypto.randomUUID(),
@@ -5613,6 +5841,14 @@ async function buildReceiptItemStatements(
           item.sourceLineNumber,
           item.costcoItemNumber,
           item.rawDescription,
+          item.interpretedName,
+          item.interpretedBrand,
+          item.interpretedProductFamily,
+          item.interpretedVariant,
+          item.interpretationCategoryHint,
+          item.interpretationConfidenceBps,
+          item.interpretationSource,
+          item.interpretationModel,
           item.quantityMilli,
           item.unitPriceCents,
           item.lineSubtotalCents,
@@ -6831,7 +7067,9 @@ async function rememberConfirmedIntentAlias(
 ) {
   const pair = await db
     .prepare(
-      `SELECT trip_intent_items.label, receipt_items.product_id,
+      `SELECT trip_intent_items.label,
+              trip_intent_items.product_id AS intent_product_id,
+              receipt_items.product_id AS receipt_product_id,
               receipt_items.raw_description, receipt_items.costco_item_number
        FROM trip_intent_items
        INNER JOIN receipt_items ON receipt_items.id = ?
@@ -6841,11 +7079,55 @@ async function rememberConfirmedIntentAlias(
     .bind(receiptItemId, intentItemId)
     .first<{
       label: string;
-      product_id: string | null;
+      intent_product_id: string | null;
+      receipt_product_id: string | null;
       raw_description: string;
       costco_item_number: string | null;
     }>();
-  if (!pair?.product_id) return;
+  const productId = pair?.intent_product_id ?? pair?.receipt_product_id ?? null;
+  if (!pair) return;
+
+  const intentKey = intentFulfillmentKey(pair.label);
+  const receiptKeys = receiptFulfillmentKeys({
+    costcoItemNumber: pair.costco_item_number,
+    rawDescription: pair.raw_description,
+    canonicalName: null,
+  });
+  if (intentKey !== "intent:" && receiptKeys.length) {
+    await db.batch(receiptKeys.map((receiptKey) =>
+      db.prepare(
+        `INSERT INTO intent_fulfillments (
+          id, household_id, intent_key, receipt_key,
+          raw_intent_label, raw_receipt_description, costco_item_number,
+          relation, confidence_bps, confirmed_by_member_id,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'fulfills_intent', 10000, ?, ?, ?)
+        ON CONFLICT(household_id, intent_key, receipt_key) DO UPDATE SET
+          raw_intent_label = excluded.raw_intent_label,
+          raw_receipt_description = excluded.raw_receipt_description,
+          costco_item_number = excluded.costco_item_number,
+          relation = 'fulfills_intent',
+          confidence_bps = 10000,
+          confirmed_by_member_id = excluded.confirmed_by_member_id,
+          updated_at = excluded.updated_at`,
+      ).bind(
+        crypto.randomUUID(),
+        context.household.id,
+        intentKey,
+        receiptKey,
+        pair.label,
+        pair.raw_description,
+        pair.costco_item_number,
+        context.member.id,
+        now,
+        now,
+      )
+    ));
+  }
+
+  // Product aliases improve catalog identity when either side is already tied
+  // to a product. Intent fulfillment above deliberately works without one.
+  if (!productId) return;
 
   const normalized = normalizeReceiptDescription(pair.label);
   if (!normalized) return;
@@ -6868,7 +7150,7 @@ async function rememberConfirmedIntentAlias(
       intentAliasKeyFor(normalized),
       pair.label,
       normalized,
-      pair.product_id,
+      productId,
       context.member.id,
       now,
       now,
@@ -6895,11 +7177,17 @@ async function rememberConfirmedIntentAlias(
       pair.raw_description,
       normalizeReceiptDescription(pair.raw_description),
       pair.costco_item_number,
-      pair.product_id,
+      productId,
       context.member.id,
       now,
       now,
     ),
+    db.prepare(
+      `UPDATE receipt_items
+       SET product_id = ?, normalization_status = 'normalized_from_history',
+           match_confidence_bps = 10000, updated_at = ?
+       WHERE id = ?`,
+    ).bind(productId, now, receiptItemId),
   ]);
 }
 
@@ -7126,7 +7414,7 @@ async function answerReviewQuestion(
     question.intent_item_id &&
     (question.receipt_item_id || replacementReceiptItemId)
   ) {
-    const receiptItemId = question.receipt_item_id ?? replacementReceiptItemId!;
+    const receiptItemId = replacementReceiptItemId ?? question.receipt_item_id!;
     const receiptItem = await db
       .prepare(
         `SELECT id FROM receipt_items

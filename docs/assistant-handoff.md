@@ -21,8 +21,16 @@ changing it.
   labeled as AI-generated, and a later household photo always replaces it as
   the primary image. External photo suggestions remain intentionally disabled.
 - Matching starts with strong textual evidence. A household can confirm a
-  receipt-line-to-list-item relationship once; that creates a reusable alias
-  for future receipts without broad semantic guessing.
+  receipt-line-to-list-item relationship once. Local Product Understanding and
+  Intent Matching v1 now records that fulfillment independently of catalog
+  identity, so a productless correction such as `Ziploc bags` to
+  `ZIPLC SLIDER` can be reused on a later receipt. Gemini may separately propose
+  a readable product name/family after strict extraction, but that metadata is
+  advisory and cannot auto-confirm the household match.
+- Receipt review preserves the frozen intent snapshot and projects included
+  `added_after_freeze` list rows beside it at read time. Strong matches to those
+  rows appear as `Added during trip + purchased`; only lines unmatched by both
+  layers appear as `Not on saved list`.
 - Completed trip intent and final-list evidence remain immutable. The owner can
   locally propose a replacement receipt for a completed trip; the old receipt
   stays authoritative until explicit confirmation, and every applied revision
@@ -123,6 +131,12 @@ changing it.
   new receipt/history/Product Memory handlers continue. This is required because
   the Sites-managed D1 is not visible in the owner's Wrangler account and the
   available Sites database connector is read-only; never guess a remote D1 ID.
+- Migration 0014 adds cached, household-scoped product understanding, nullable
+  interpretation provenance on receipt lines, and product-ID-independent
+  `intent_fulfillments`. The optional text-only Gemini stage runs only for
+  uncached receipt labels, never receives receipt totals or List state, and is
+  failure-tolerant. Full behavior and release gates are in
+  `docs/product-understanding-and-intent-matching-v1.md`.
 - The app accepts an optional `GEMINI_RECOVERY_MODEL` for pass 2; without it,
   pass 2 uses the primary configured model with the enhanced/section evidence.
   Verify and set a BasketSense recovery model during the release preflight if

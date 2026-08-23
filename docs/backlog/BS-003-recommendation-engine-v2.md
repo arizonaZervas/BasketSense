@@ -22,6 +22,9 @@ control and refusing to confuse purchase cadence with household inventory.
 - BS-001 evidence about real accepts, removals, freeze retention, and feedback.
 - Recommendation inputs must use only information available before the target
   trip; no future-data leakage.
+- Product Understanding and Intent Matching v1 may supply bounded product-family
+  and explicit fulfillment evidence. Gemini output itself may not rank,
+  auto-add, or suppress a recommendation.
 
 ## Smallest test
 
@@ -84,4 +87,3 @@ behavioral comparison.
 
 Pending. Attach the leakage-safe backtest, live shadow comparison, explanation
 examples, and Gate A decision.
-

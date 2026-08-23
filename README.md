@@ -22,9 +22,10 @@ a guilt-heavy budgeting exercise.
 - Uploads private receipt photos and Costco PDFs, supports Gemini-assisted OCR
   when configured, accepts manual correction, checks receipt arithmetic, and
   preserves raw Costco receipt wording.
-- Matches receipt lines to the frozen list with strong text rules, conservative
-  suggestions, and household-confirmed aliases. A confirmation teaches the
-  household’s own wording for future receipts rather than guessing silently.
+- Matches receipt lines against a combined review view: the immutable frozen
+  list plus items explicitly added after shopping began. Strong text rules,
+  conservative suggestions, and household-confirmed aliases keep original
+  intent separate from in-store additions without guessing silently.
 - Records item totals using the amount actually paid after Costco discounts;
   receipt, recap, and flash-card UI labels that amount as “Paid”.
 - Creates at most three evidence-triggered review questions after a trip and

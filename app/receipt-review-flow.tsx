@@ -13,7 +13,10 @@ import {
   PRODUCT_CATEGORY_PRESENTATION,
   type ProductCategoryKey,
 } from "./product-categories";
-import { isReceiptImageContentType } from "./receipt-upload-formats";
+import {
+  isReceiptImageContentType,
+  receiptUploadContentType,
+} from "./receipt-upload-formats";
 
 export type ClosedLoopReceipt = {
   id: string;
@@ -140,6 +143,14 @@ export type ReceiptDraftLine = {
   discountCents: number;
   kind: "item" | "discount";
   taxStatus: "taxable" | "non_taxable" | "unknown";
+  interpretedName?: string | null;
+  interpretedBrand?: string | null;
+  interpretedProductFamily?: string | null;
+  interpretedVariant?: string | null;
+  interpretationCategoryHint?: string | null;
+  interpretationConfidenceBps?: number | null;
+  interpretationSource?: "catalog" | "gemini" | null;
+  interpretationModel?: string | null;
 };
 
 type ReceiptDraft = {
@@ -166,7 +177,7 @@ export function comparisonExpectedCents(comparison: ClosedLoopComparison) {
 // The shared-site request gateway rejects multipart bodies before the receipt
 // route can apply its own 8 MB validation. Leave room for multipart metadata so
 // a camera photo that looks just under the limit does not still receive a 413.
-const LIVE_UPLOAD_SAFE_BYTES = Math.floor(1.5 * 1024 * 1024);
+const LIVE_UPLOAD_SAFE_BYTES = 900 * 1024;
 const RECEIPT_MIN_READABLE_WIDTH = 1_200;
 const RECEIPT_RECOVERY_TILE_OVERLAP = 0.18;
 
@@ -312,15 +323,28 @@ async function decodeReceiptImage(file: File): Promise<ReceiptImageSource> {
 }
 
 export async function prepareReceiptUpload(file: File) {
-  const contentType = file.type.toLowerCase();
-  if (!isReceiptImageContentType(contentType)) {
+  const contentType = receiptUploadContentType(file);
+  if (!contentType || !isReceiptImageContentType(contentType)) {
+    if (contentType && contentType !== file.type.toLowerCase()) {
+      return new File([file], file.name, {
+        type: contentType,
+        lastModified: file.lastModified,
+      });
+    }
     return file;
   }
 
   // Preserve already-uploadable photos byte-for-byte and avoid a large image
   // decode on memory-constrained phones.
-  if (file.size <= LIVE_UPLOAD_SAFE_BYTES) {
+  if (file.size <= LIVE_UPLOAD_SAFE_BYTES && file.type.toLowerCase() === contentType) {
     return file;
+  }
+
+  if (file.size <= LIVE_UPLOAD_SAFE_BYTES) {
+    return new File([file], file.name, {
+      type: contentType,
+      lastModified: file.lastModified,
+    });
   }
 
   try {
@@ -360,6 +384,12 @@ export async function prepareReceiptUpload(file: File) {
         compressed = await encode(Math.min(1_050, source.width), 0.52);
       }
       if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        compressed = await encode(Math.min(900, source.width), 0.44);
+      }
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
+        compressed = await encode(Math.min(840, source.width), 0.4);
+      }
+      if (!compressed || compressed.size > LIVE_UPLOAD_SAFE_BYTES) {
         throw new Error("BasketSense could not create a safe-size copy of this receipt photo.");
       }
       return new File([compressed], compressedReceiptFilename(file.name), {
@@ -385,7 +415,8 @@ export async function prepareReceiptUpload(file: File) {
  * keep long-receipt type large enough for the second extraction pass.
  */
 export async function prepareReceiptRecoveryAssets(file: File) {
-  if (!isReceiptImageContentType(file.type.toLowerCase())) return [] as File[];
+  const contentType = receiptUploadContentType(file);
+  if (!contentType || !isReceiptImageContentType(contentType)) return [] as File[];
   try {
     const source = await decodeReceiptImage(file);
     try {
@@ -579,6 +610,14 @@ export function draftFromParser(
       discountCents?: number | null;
       kind?: "item" | "discount";
       taxStatus?: "taxable" | "non_taxable" | "unknown";
+      interpretedName?: string | null;
+      interpretedBrand?: string | null;
+      interpretedProductFamily?: string | null;
+      interpretedVariant?: string | null;
+      interpretationCategoryHint?: string | null;
+      interpretationConfidenceBps?: number | null;
+      interpretationSource?: "catalog" | "gemini" | null;
+      interpretationModel?: string | null;
     }>;
   };
   const transactionType = transactionTypeOverride ??
@@ -632,6 +671,14 @@ export function draftFromParser(
         ? "discount"
         : "item"),
     taxStatus: item.taxStatus ?? "unknown",
+    interpretedName: item.interpretedName ?? null,
+    interpretedBrand: item.interpretedBrand ?? null,
+    interpretedProductFamily: item.interpretedProductFamily ?? null,
+    interpretedVariant: item.interpretedVariant ?? null,
+    interpretationCategoryHint: item.interpretationCategoryHint ?? null,
+    interpretationConfidenceBps: item.interpretationConfidenceBps ?? null,
+    interpretationSource: item.interpretationSource ?? null,
+    interpretationModel: item.interpretationModel ?? null,
   }));
   return {
     transactionType,
@@ -658,6 +705,18 @@ export function receiptDraftLineValue(item: ReceiptDraftLine, index: number) {
   const discountCents = looksLikeDiscount
     ? Math.abs(amountCents)
     : Math.max(0, item.discountCents);
+  const interpretation = item.interpretedName
+    ? {
+        interpretedName: item.interpretedName,
+        interpretedBrand: item.interpretedBrand ?? undefined,
+        interpretedProductFamily: item.interpretedProductFamily ?? undefined,
+        interpretedVariant: item.interpretedVariant ?? undefined,
+        interpretationCategoryHint: item.interpretationCategoryHint ?? undefined,
+        interpretationConfidenceBps: item.interpretationConfidenceBps ?? undefined,
+        interpretationSource: item.interpretationSource ?? undefined,
+        interpretationModel: item.interpretationModel ?? undefined,
+      }
+    : {};
   return {
     sourceLineNumber: index + 1,
     costcoItemNumber: item.itemNumber.trim() || undefined,
@@ -669,6 +728,7 @@ export function receiptDraftLineValue(item: ReceiptDraftLine, index: number) {
     discountCents,
     taxStatus: item.taxStatus,
     kind: looksLikeDiscount ? ("discount" as const) : ("item" as const),
+    ...interpretation,
   };
 }
 
@@ -679,6 +739,18 @@ export function receiptDraftLineValueForTransaction(
 ) {
   if (transactionType !== "return") return receiptDraftLineValue(item, index);
   const amountCents = -Math.abs(inputToCents(item.amount));
+  const interpretation = item.interpretedName
+    ? {
+        interpretedName: item.interpretedName,
+        interpretedBrand: item.interpretedBrand ?? undefined,
+        interpretedProductFamily: item.interpretedProductFamily ?? undefined,
+        interpretedVariant: item.interpretedVariant ?? undefined,
+        interpretationCategoryHint: item.interpretationCategoryHint ?? undefined,
+        interpretationConfidenceBps: item.interpretationConfidenceBps ?? undefined,
+        interpretationSource: item.interpretationSource ?? undefined,
+        interpretationModel: item.interpretationModel ?? undefined,
+      }
+    : {};
   return {
     sourceLineNumber: index + 1,
     costcoItemNumber: item.itemNumber.trim() || undefined,
@@ -691,6 +763,7 @@ export function receiptDraftLineValueForTransaction(
     discountCents: 0,
     taxStatus: item.taxStatus,
     kind: "item" as const,
+    ...interpretation,
   };
 }
 
@@ -1325,8 +1398,13 @@ export function ReceiptFlowDialog({
     setOcrStatus("Saving and reading your receipt privately");
     setOcrProgress(0.16);
     try {
-      if (file.size > LIVE_UPLOAD_SAFE_BYTES && isReceiptImageContentType(file.type.toLowerCase())) {
-        setOcrStatus("Preparing this large photo without shrinking the receipt text");
+      const receiptContentType = receiptUploadContentType(file);
+      if (
+        file.size > LIVE_UPLOAD_SAFE_BYTES &&
+        receiptContentType &&
+        isReceiptImageContentType(receiptContentType)
+      ) {
+        setOcrStatus("Preparing a safe-size photo and readable receipt sections");
         setOcrProgress(0.08);
       }
       // Do not decode a long phone photo twice in parallel. Two 10-megapixel
@@ -1366,7 +1444,7 @@ export function ReceiptFlowDialog({
       let body = await responseJson(
         response,
         response.status === 413
-          ? "This live site needs a smaller receipt upload. For a photo, try a clearer close-up or a file under 2 MB."
+          ? "This photo was still too large for the live upload after preparation. Try saving and reading it again, or choose a closer photo."
           : "The receipt could not be saved for review.",
       );
       let ingestion = body.ingestion as {
@@ -1745,7 +1823,24 @@ export function ReceiptFlowDialog({
     setDraft((current) => ({
       ...current,
       items: current.items.map((item) =>
-        item.clientId === id ? { ...item, [field]: value } : item,
+        item.clientId === id
+          ? {
+              ...item,
+              [field]: value,
+              ...((field === "itemNumber" || field === "description")
+                ? {
+                    interpretedName: null,
+                    interpretedBrand: null,
+                    interpretedProductFamily: null,
+                    interpretedVariant: null,
+                    interpretationCategoryHint: null,
+                    interpretationConfidenceBps: null,
+                    interpretationSource: null,
+                    interpretationModel: null,
+                  }
+                : {}),
+            }
+          : item,
       ),
     }));
   }
@@ -3057,7 +3152,7 @@ export function ClosedLoopReview({
   connected: boolean;
   sandboxMode?: boolean;
   onOpenReceipt: (step?: ReceiptStep) => void;
-  onRefresh: () => Promise<void>;
+  onRefresh: (nextClosedLoop?: ClosedLoopSnapshot) => Promise<void>;
   canEditReceipt?: boolean;
   receiptActionLabel?: string;
 }) {
@@ -3122,9 +3217,15 @@ export function ClosedLoopReview({
           ...details,
         }),
       });
-      await responseJson(response, "That answer could not be saved.");
-      await onRefresh();
+      const body = await responseJson(response, "That answer could not be saved.");
+      const nextClosedLoop =
+        body.closedLoop && typeof body.closedLoop === "object"
+          ? body.closedLoop as ClosedLoopSnapshot
+          : undefined;
+      await onRefresh(nextClosedLoop);
       setCatalogQuestionId(null);
+      setReceiptMatchQuestionId(null);
+      setReplacementReceiptItemId("");
     } catch (error) {
       setAnswerError(error instanceof Error ? error.message : "That answer could not be saved.");
     } finally {

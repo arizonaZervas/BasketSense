@@ -244,6 +244,64 @@ test("a confirmed household alias creates a high-confidence automatic match", ()
   assert.equal(result.matches[0].status, "auto_matched");
 });
 
+test("an explicit household fulfillment is remembered without catalog identity", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "intent-ziploc", label: "Ziploc bags" }],
+    receiptItems: [{
+      id: "receipt-ziploc",
+      costcoItemNumber: "1234567",
+      rawDescription: "ZIPLC SLIDER",
+      netAmountCents: 1499,
+    }],
+    fulfillments: [{
+      intentKey: "intent:ZIPLOC BAGS",
+      receiptKey: "item:1234567",
+      relation: "fulfills_intent",
+      confidenceBps: 10000,
+    }],
+  });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].status, "auto_matched");
+  assert.equal(result.matches[0].reason, "confirmed_intent_fulfillment");
+});
+
+test("an explicit not-same decision suppresses that intent and receipt pair", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "intent-suja", label: "Suja" }],
+    receiptItems: [{
+      id: "receipt-suja",
+      rawDescription: "SUJA DIGESTION",
+      netAmountCents: 1269,
+    }],
+    fulfillments: [{
+      intentKey: "intent:SUJA",
+      receiptKey: "description:SUJA DIGESTION",
+      relation: "not_same",
+      confidenceBps: 10000,
+    }],
+  });
+
+  assert.deepEqual(result.matches, []);
+});
+
+test("AI product understanding may suggest a match but cannot auto-confirm it", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "intent-ziploc", label: "Ziploc bags" }],
+    receiptItems: [{
+      id: "receipt-ziploc",
+      rawDescription: "UNRELATED PRINTED LABEL",
+      canonicalName: "Ziploc bags",
+      canonicalNameAdvisory: true,
+      netAmountCents: 1499,
+    }],
+  });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].status, "candidate");
+  assert.equal(result.matches[0].confidenceBps, 9200);
+});
+
 test("fuzzy name similarity can suggest a candidate but never auto-confirms it", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "intent-milk", label: "Organic whole milk" }],
@@ -443,6 +501,42 @@ test("matches Costco's WATR abbreviation to a live coconut-water list item", () 
     [["coconut-water-live", "coconut-water-receipt", "auto_matched"]],
   );
   assert.deepEqual(result.unmatchedReceiptItemIds, []);
+});
+
+test("matches common household wording to compact Costco receipt labels", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [
+      { id: "ziploc-plan", label: "Zip loc bags", includedAtFreeze: true },
+      { id: "suja-plan", label: "Suja digestion", includedAtFreeze: true },
+      { id: "cupcakes-plan", label: "Cup cakes", includedAtFreeze: true },
+    ],
+    receiptItems: [
+      { id: "ziploc-receipt", rawDescription: "ZIPLC SLIDER", netAmountCents: 1499 },
+      { id: "suja-receipt", rawDescription: "SUJADIGSTION", netAmountCents: 1269 },
+      { id: "cupcakes-receipt", rawDescription: "CUPCAKES", netAmountCents: 1599 },
+    ],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [match.intentItemId, match.receiptItemId, match.status]),
+    [
+      ["cupcakes-plan", "cupcakes-receipt", "auto_matched"],
+      ["suja-plan", "suja-receipt", "auto_matched"],
+      ["ziploc-plan", "ziploc-receipt", "auto_matched"],
+    ],
+  );
+});
+
+test("does not auto-match a bare brand across distinct Suja products", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "suja-plan", label: "Suja", includedAtFreeze: true }],
+    receiptItems: [
+      { id: "digestion", rawDescription: "SUJADIGSTION", netAmountCents: 1269 },
+      { id: "ginger", rawDescription: "SUJA GINGER SHOTS", netAmountCents: 1399 },
+    ],
+  });
+
+  assert.equal(result.matches.every((match) => match.status !== "auto_matched"), true);
 });
 
 test("matches Hershey's Nuggets to the household's saved Chocolates item", () => {

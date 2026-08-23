@@ -323,6 +323,14 @@ export const receiptItems = sqliteTable(
     sourceLineNumber: integer("source_line_number").notNull(),
     costcoItemNumber: text("costco_item_number"),
     rawDescription: text("raw_description").notNull(),
+    interpretedName: text("interpreted_name"),
+    interpretedBrand: text("interpreted_brand"),
+    interpretedProductFamily: text("interpreted_product_family"),
+    interpretedVariant: text("interpreted_variant"),
+    interpretationCategoryHint: text("interpretation_category_hint"),
+    interpretationConfidenceBps: integer("interpretation_confidence_bps"),
+    interpretationSource: text("interpretation_source"),
+    interpretationModel: text("interpretation_model"),
     quantityMilli: integer("quantity_milli").notNull().default(1000),
     unitPriceCents: integer("unit_price_cents"),
     unitPriceMills: integer("unit_price_mills"),
@@ -769,6 +777,80 @@ export const productAliases = sqliteTable(
   ]
 );
 
+export const productUnderstandings = sqliteTable(
+  "product_understandings",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    lookupKey: text("lookup_key").notNull(),
+    costcoItemNumber: text("costco_item_number"),
+    rawDescription: text("raw_description").notNull(),
+    canonicalName: text("canonical_name").notNull(),
+    brand: text("brand"),
+    productFamily: text("product_family"),
+    variant: text("variant"),
+    categoryHint: text("category_hint"),
+    confidenceBps: integer("confidence_bps").notNull(),
+    exactSkuKnown: integer("exact_sku_known", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    searchAliasesJson: text("search_aliases_json").notNull().default("[]"),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("product_understandings_household_lookup_unique").on(
+      table.householdId,
+      table.lookupKey
+    ),
+    index("product_understandings_item_number_idx").on(
+      table.householdId,
+      table.costcoItemNumber
+    ),
+  ]
+);
+
+export const intentFulfillments = sqliteTable(
+  "intent_fulfillments",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    intentKey: text("intent_key").notNull(),
+    receiptKey: text("receipt_key").notNull(),
+    rawIntentLabel: text("raw_intent_label").notNull(),
+    rawReceiptDescription: text("raw_receipt_description").notNull(),
+    costcoItemNumber: text("costco_item_number"),
+    relation: text("relation", { enum: ["fulfills_intent", "not_same"] })
+      .notNull(),
+    confidenceBps: integer("confidence_bps").notNull().default(10000),
+    confirmedByMemberId: text("confirmed_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("intent_fulfillments_household_pair_unique").on(
+      table.householdId,
+      table.intentKey,
+      table.receiptKey
+    ),
+    index("intent_fulfillments_household_intent_idx").on(
+      table.householdId,
+      table.intentKey
+    ),
+  ]
+);
+
 export const tripItemMatches = sqliteTable(
   "trip_item_matches",
   {
@@ -793,6 +875,7 @@ export const tripItemMatches = sqliteTable(
         "exact_item_number",
         "exact_product",
         "confirmed_alias",
+        "confirmed_intent",
         "exact_name",
         "member_confirmed",
       ],
@@ -903,6 +986,8 @@ export type ReceiptCorrection = typeof receiptCorrections.$inferSelect;
 export type ProductImageJob = typeof productImageJobs.$inferSelect;
 export type EmailOutbox = typeof emailOutbox.$inferSelect;
 export type ProductAlias = typeof productAliases.$inferSelect;
+export type ProductUnderstanding = typeof productUnderstandings.$inferSelect;
+export type IntentFulfillment = typeof intentFulfillments.$inferSelect;
 export type TripItemMatch = typeof tripItemMatches.$inferSelect;
 export type ReviewQuestion = typeof reviewQuestions.$inferSelect;
 export type BasketSenseSchemaMigration =
