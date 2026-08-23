@@ -549,6 +549,184 @@ test("matches common household wording to compact Costco receipt labels", () => 
   );
 });
 
+test("matches the exact singular household wording from the sandbox receipt", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [
+      { id: "ziploc-plan", label: "Ziploc bag", includedAtFreeze: true },
+      { id: "suja-plan", label: "Suja shots", includedAtFreeze: true },
+    ],
+    receiptItems: [
+      {
+        id: "ziploc-receipt",
+        costcoItemNumber: "1897234",
+        rawDescription: "ZIPLC SLIDER",
+        canonicalName: "Ziploc Slider Storage Bags",
+        netAmountCents: 1499,
+      },
+      {
+        id: "suja-receipt",
+        productId: "suja-digestion-product",
+        costcoItemNumber: "1847239",
+        rawDescription: "SUJADIGSTION",
+        canonicalName: "Suja Organic Digestion Shot",
+        semanticCanonicalName: "Suja Organic Digestion Shot",
+        semanticBrand: "Suja",
+        semanticProductFamily: "Juice & Wellness Shots",
+        semanticVariant: "Digestion",
+        semanticAliases: ["Suja Digestion", "wellness shot"],
+        semanticConfidenceBps: 9500,
+        semanticExactSkuKnown: true,
+        netAmountCents: 1269,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [
+      match.intentItemId,
+      match.receiptItemId,
+      match.status,
+      match.reason,
+    ]),
+    [
+      ["ziploc-plan", "ziploc-receipt", "auto_matched", "normalized_exact"],
+      ["suja-plan", "suja-receipt", "auto_matched", "semantic_fulfillment"],
+    ],
+  );
+  assert.deepEqual(result.unmatchedIntentItemIds, []);
+  assert.deepEqual(result.unmatchedReceiptItemIds, []);
+});
+
+test("does not promote a broad intent from an advisory AI name alone", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "suja-plan", label: "Suja shots", includedAtFreeze: true }],
+    receiptItems: [{
+      id: "suja-receipt",
+      rawDescription: "UNRELATED PRINTED LABEL",
+      canonicalName: "Suja Organic Digestion Shot",
+      canonicalNameAdvisory: true,
+      netAmountCents: 1269,
+    }],
+  });
+
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].status, "candidate");
+  assert.equal(result.matches[0].reason, "fuzzy_candidate");
+});
+
+test("a trusted LLM semantic alias can fulfill intent when the printed label is opaque", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "bags-plan", label: "Food storage bags" }],
+    receiptItems: [{
+      id: "bags-receipt",
+      costcoItemNumber: "1897234",
+      rawDescription: "OPAQUE COSTCO LABEL",
+      semanticCanonicalName: "Ziploc Slider Storage Bags",
+      semanticBrand: "Ziploc",
+      semanticProductFamily: "Food Storage Bags",
+      semanticVariant: "Slider",
+      semanticAliases: ["storage bags", "Ziploc bags"],
+      semanticConfidenceBps: 9500,
+      semanticExactSkuKnown: true,
+    }],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [match.status, match.reason, match.confidenceBps]),
+    [["auto_matched", "semantic_fulfillment", 9350]],
+  );
+});
+
+test("ambiguous semantic candidates stay reviewable instead of using ID order", () => {
+  const receiptItem = {
+    id: "suja-receipt",
+    costcoItemNumber: "1847239",
+    rawDescription: "SUJADIGSTION",
+    semanticCanonicalName: "Suja Organic Digestion Shot",
+    semanticBrand: "Suja",
+    semanticProductFamily: "Juice & Wellness Shots",
+    semanticVariant: "Digestion",
+    semanticAliases: ["Suja Digestion", "wellness shots"],
+    semanticConfidenceBps: 9500,
+    semanticExactSkuKnown: true,
+  };
+  for (const intentItems of [
+    [
+      { id: "a-suja", label: "Suja shots" },
+      { id: "z-juice", label: "Juice shots" },
+    ],
+    [
+      { id: "z-suja", label: "Suja shots" },
+      { id: "a-juice", label: "Juice shots" },
+    ],
+  ]) {
+    const result = matchReceiptItemsToIntent({ intentItems, receiptItems: [receiptItem] });
+    assert.equal(result.matches.length, 1);
+    assert.equal(result.matches[0].status, "candidate");
+    assert.equal(result.matches[0].reason, "semantic_fulfillment");
+  }
+});
+
+test("generic one-token semantic intents remain review-only", () => {
+  for (const label of ["shots", "bags"]) {
+    const result = matchReceiptItemsToIntent({
+      intentItems: [{ id: `plan-${label}`, label }],
+      receiptItems: [{
+        id: `receipt-${label}`,
+        costcoItemNumber: `sku-${label}`,
+        rawDescription: "OPAQUE COSTCO LABEL",
+        semanticCanonicalName:
+          label === "shots" ? "Suja Organic Digestion Shot" : "Ziploc Slider Storage Bags",
+        semanticProductFamily:
+          label === "shots" ? "Juice & Wellness Shots" : "Food Storage Bags",
+        semanticConfidenceBps: 9500,
+        semanticExactSkuKnown: true,
+      }],
+    });
+    assert.equal(result.matches.length, 1);
+    assert.equal(result.matches[0].status, "candidate");
+  }
+});
+
+test("unverified semantic evidence remains a reviewable candidate", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "bags-plan", label: "Food storage bags" }],
+    receiptItems: [{
+      id: "bags-receipt",
+      costcoItemNumber: "unknown-sku",
+      rawDescription: "OPAQUE COSTCO LABEL",
+      semanticProductFamily: "Food Storage Bags",
+      semanticConfidenceBps: 9100,
+      semanticExactSkuKnown: false,
+    }],
+  });
+
+  assert.deepEqual(
+    result.matches.map((match) => [match.status, match.reason, match.confidenceBps]),
+    [["candidate", "fuzzy_candidate", 9200]],
+  );
+});
+
+test("semantic family matching does not erase a conflicting product variant", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "suja-plan", label: "Suja Ginger Shots" }],
+    receiptItems: [{
+      id: "suja-receipt",
+      costcoItemNumber: "1847239",
+      rawDescription: "SUJADIGSTION",
+      semanticCanonicalName: "Suja Organic Digestion Shot",
+      semanticBrand: "Suja",
+      semanticProductFamily: "Juice & Wellness Shots",
+      semanticVariant: "Digestion",
+      semanticAliases: ["Suja Digestion", "wellness shot"],
+      semanticConfidenceBps: 9500,
+      semanticExactSkuKnown: true,
+    }],
+  });
+
+  assert.equal(result.matches.every((match) => match.status !== "auto_matched"), true);
+});
+
 test("does not auto-match a bare brand across distinct Suja products", () => {
   const result = matchReceiptItemsToIntent({
     intentItems: [{ id: "suja-plan", label: "Suja", includedAtFreeze: true }],

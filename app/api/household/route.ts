@@ -953,6 +953,13 @@ interface ReceiptItemRow {
   updated_at: string;
   canonical_name?: string | null;
   category?: string | null;
+  semantic_canonical_name?: string | null;
+  semantic_brand?: string | null;
+  semantic_product_family?: string | null;
+  semantic_variant?: string | null;
+  semantic_confidence_bps?: number | null;
+  semantic_exact_sku_known?: number | null;
+  semantic_search_aliases_json?: string | null;
 }
 
 interface IntentSnapshotRow {
@@ -1014,6 +1021,8 @@ interface ProductUnderstandingRow {
   variant: string | null;
   category_hint: string | null;
   confidence_bps: number;
+  exact_sku_known: number;
+  search_aliases_json: string;
   model: string;
 }
 
@@ -1029,6 +1038,7 @@ interface TripItemMatchRow {
     | "exact_product"
     | "confirmed_alias"
     | "confirmed_intent"
+    | "semantic_intent"
     | "exact_name"
     | "member_confirmed";
   confidence_bps: number;
@@ -4833,6 +4843,18 @@ function toLogicIntent(row: IntentItemRow): ReceiptIntentItem {
   };
 }
 
+function semanticAliases(row: ReceiptItemRow): string[] {
+  if (!row.semantic_search_aliases_json) return [];
+  try {
+    const value = JSON.parse(row.semantic_search_aliases_json);
+    return Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
   return {
     id: row.id,
@@ -4841,6 +4863,15 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
     rawDescription: row.raw_description,
     canonicalName: row.canonical_name ?? row.interpreted_name ?? null,
     canonicalNameAdvisory: !row.canonical_name && Boolean(row.interpreted_name),
+    semanticCanonicalName: row.semantic_canonical_name ?? row.interpreted_name ?? null,
+    semanticBrand: row.semantic_brand ?? row.interpreted_brand ?? null,
+    semanticProductFamily:
+      row.semantic_product_family ?? row.interpreted_product_family ?? null,
+    semanticVariant: row.semantic_variant ?? row.interpreted_variant ?? null,
+    semanticAliases: semanticAliases(row),
+    semanticConfidenceBps:
+      row.semantic_confidence_bps ?? row.interpretation_confidence_bps ?? null,
+    semanticExactSkuKnown: Boolean(row.semantic_exact_sku_known),
     quantityMilli: row.quantity_milli,
     lineSubtotalCents: row.line_subtotal_cents,
     discountCents: row.discount_cents,
@@ -5028,7 +5059,14 @@ async function matchingInputs(
   tripId: string,
   receiptId: string
 ) {
-  const [intentResult, shoppingAdditionResult, receiptResult, aliasResult, fulfillmentResult] = await Promise.all([
+  const [
+    intentResult,
+    shoppingAdditionResult,
+    receiptResult,
+    aliasResult,
+    fulfillmentResult,
+    understandingResult,
+  ] = await Promise.all([
     db
       .prepare(
         `SELECT trip_intent_items.*, 0 AS added_after_freeze,
@@ -5092,6 +5130,13 @@ async function matchingInputs(
         FROM intent_fulfillments WHERE household_id = ?`)
       .bind(householdId)
       .all<IntentFulfillmentRow>(),
+    db
+      .prepare(`SELECT lookup_key, canonical_name, brand, product_family, variant,
+                       category_hint, confidence_bps, exact_sku_known,
+                       search_aliases_json, model
+        FROM product_understandings WHERE household_id = ?`)
+      .bind(householdId)
+      .all<ProductUnderstandingRow>(),
   ]);
   const aliases: ConfirmedProductAlias[] = aliasResult.results.map((alias) => ({
     normalizedDescription: alias.normalized_description,
@@ -5118,9 +5163,30 @@ async function matchingInputs(
     ),
     ...shoppingAdditionResult.results,
   ].sort((left, right) => left.sort_order - right.sort_order);
+  const understandingsByKey = new Map(
+    understandingResult.results.map((entry) => [entry.lookup_key, entry]),
+  );
+  const receiptRows = receiptResult.results.map((item) => {
+    const lookupKey = item.costco_item_number
+      ? `item:${item.costco_item_number}`
+      : `raw:${normalizeReceiptDescription(item.raw_description)}`;
+    const understanding = understandingsByKey.get(lookupKey);
+    return understanding
+      ? {
+          ...item,
+          semantic_canonical_name: understanding.canonical_name,
+          semantic_brand: understanding.brand,
+          semantic_product_family: understanding.product_family,
+          semantic_variant: understanding.variant,
+          semantic_confidence_bps: understanding.confidence_bps,
+          semantic_exact_sku_known: understanding.exact_sku_known,
+          semantic_search_aliases_json: understanding.search_aliases_json,
+        }
+      : item;
+  });
   return {
     intentRows,
-    receiptRows: receiptResult.results,
+    receiptRows,
     aliases,
     fulfillments,
   };
@@ -5137,6 +5203,8 @@ function persistedMatchType(
       ? "confirmed_alias"
       : reason === "confirmed_intent_fulfillment" || reason === "confirmed_substitute"
       ? "confirmed_intent"
+      : reason === "semantic_fulfillment"
+        ? "semantic_intent"
     : reason;
 }
 

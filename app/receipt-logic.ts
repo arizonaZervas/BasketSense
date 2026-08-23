@@ -558,6 +558,13 @@ export interface MatchableReceiptItem {
   rawDescription?: string | null;
   canonicalName?: string | null;
   canonicalNameAdvisory?: boolean;
+  semanticCanonicalName?: string | null;
+  semanticBrand?: string | null;
+  semanticProductFamily?: string | null;
+  semanticVariant?: string | null;
+  semanticAliases?: string[];
+  semanticConfidenceBps?: number | null;
+  semanticExactSkuKnown?: boolean;
   quantityMilli?: number | null;
   netAmountCents?: number | null;
   lineSubtotalCents?: number | null;
@@ -606,6 +613,7 @@ export interface ReceiptIntentMatch {
     | "exact_product"
     | "normalized_exact"
     | "descriptive_subset"
+    | "semantic_fulfillment"
     | "fuzzy_candidate";
   expectedQuantityMilli: number;
   actualQuantityMilli: number;
@@ -642,6 +650,14 @@ function normalizeMatchDescription(value: string): string {
     .trim();
 }
 
+// Keep durable fulfillment keys stable while making ordinary comparisons
+// insensitive to the singular/plural wording households commonly use.
+function normalizeComparableDescription(value: string): string {
+  return normalizeMatchDescription(value)
+    .replace(/\bBAGS\b/g, "BAG")
+    .replace(/\bSHOTS\b/g, "SHOT");
+}
+
 export function intentFulfillmentKey(value: string) {
   return `intent:${normalizeMatchDescription(value)}`;
 }
@@ -661,6 +677,7 @@ export function receiptFulfillmentKeys(
 }
 
 const AMBIGUOUS_BRAND_ONLY_TOKENS = new Set(["KIRKLAND", "KS", "SUJA", "ZIPLOC"]);
+const SEMANTIC_AUTO_MATCH_MARGIN_BPS = 100;
 
 const COSTCO_ITEM_MATCH_ALIASES: Record<string, readonly string[]> = {
   // Hershey's Nuggets. Costco abbreviates the receipt line to NUGGETS, while
@@ -673,7 +690,21 @@ function receiptMatchDescriptions(item: MatchableReceiptItem): string[] {
     ? COSTCO_ITEM_MATCH_ALIASES[item.costcoItemNumber] ?? []
     : [];
   return [...new Set([item.rawDescription, item.canonicalName, ...itemAliases]
-    .map((value) => normalizeMatchDescription(value ?? ""))
+    .map((value) => normalizeComparableDescription(value ?? ""))
+    .filter(Boolean))];
+}
+
+function semanticMatchDescriptions(item: MatchableReceiptItem): string[] {
+  const brandAndFamily = [item.semanticBrand, item.semanticProductFamily]
+    .filter(Boolean)
+    .join(" ");
+  return [...new Set([
+    item.semanticCanonicalName,
+    item.semanticProductFamily,
+    brandAndFamily,
+    ...(item.semanticAliases ?? []),
+  ]
+    .map((value) => normalizeComparableDescription(value ?? ""))
     .filter(Boolean))];
 }
 
@@ -716,10 +747,10 @@ function aliasTargetsIntent(
   ) {
     return true;
   }
-  const normalizedIntent = normalizeMatchDescription(labelForIntent(intent));
+  const normalizedIntent = normalizeComparableDescription(labelForIntent(intent));
   if (
     alias.canonicalName &&
-      normalizeMatchDescription(alias.canonicalName) ===
+      normalizeComparableDescription(alias.canonicalName) ===
         normalizedIntent
   ) {
     return true;
@@ -729,7 +760,7 @@ function aliasTargetsIntent(
     if (candidate.confirmed === false || !aliasesShareTarget(alias, candidate)) return false;
     const candidateLabel =
       candidate.normalizedDescription ?? candidate.alias ?? candidate.rawDescription ?? "";
-    return normalizeMatchDescription(candidateLabel) === normalizedIntent;
+    return normalizeComparableDescription(candidateLabel) === normalizedIntent;
   });
 }
 
@@ -796,12 +827,13 @@ function scorePair(
     ...receipt,
     canonicalName: null,
   });
+  const normalizedSemanticReceipts = semanticMatchDescriptions(receipt);
   const confirmedAlias = aliases.find((alias) => {
     if (alias.confirmed === false) return false;
     const aliasLabel =
       alias.normalizedDescription ?? alias.alias ?? alias.rawDescription ?? "";
     return (
-      normalizedReceipts.includes(normalizeMatchDescription(aliasLabel)) &&
+      normalizedReceipts.includes(normalizeComparableDescription(aliasLabel)) &&
       aliasTargetsIntent(alias, intent, aliases)
     );
   });
@@ -813,7 +845,7 @@ function scorePair(
     return { confidenceBps: 9_800, reason: "exact_product" };
   }
 
-  const normalizedIntent = normalizeMatchDescription(labelForIntent(intent));
+  const normalizedIntent = normalizeComparableDescription(labelForIntent(intent));
   if (normalizedIntent && normalizedRawReceipts.includes(normalizedIntent)) {
     return { confidenceBps: 9_400, reason: "normalized_exact" };
   }
@@ -838,6 +870,28 @@ function scorePair(
     return { confidenceBps: 9_300, reason: "descriptive_subset" };
   }
 
+  const semanticIntentMatch =
+    normalizedSemanticReceipts.includes(normalizedIntent) ||
+    normalizedSemanticReceipts.some((receiptDescription) =>
+      isDescriptiveSubset(normalizedIntent, receiptDescription),
+    );
+  if (
+    !intent.productId &&
+    !intent.costcoItemNumber &&
+    semanticIntentMatch
+  ) {
+    const semanticIntentTokenCount = normalizedIntent.split(" ").filter(Boolean).length;
+    const trustedSemanticEvidence = Boolean(
+      receipt.costcoItemNumber &&
+      receipt.semanticExactSkuKnown &&
+      (receipt.semanticConfidenceBps ?? 0) >= 9_300 &&
+      semanticIntentTokenCount >= 2,
+    );
+    return trustedSemanticEvidence
+      ? { confidenceBps: 9_350, reason: "semantic_fulfillment" }
+      : { confidenceBps: 9_200, reason: "fuzzy_candidate" };
+  }
+
   if (
     !intent.productId &&
     !intent.costcoItemNumber &&
@@ -847,6 +901,17 @@ function scorePair(
     )
   ) {
     return { confidenceBps: 9_200, reason: "fuzzy_candidate" };
+  }
+
+  if (
+    !intent.productId &&
+    !intent.costcoItemNumber &&
+    !receipt.canonicalNameAdvisory &&
+    normalizedReceipts.some((receiptDescription) =>
+      isDescriptiveSubset(normalizedIntent, receiptDescription),
+    )
+  ) {
+    return { confidenceBps: 9_300, reason: "descriptive_subset" };
   }
 
   const similarity = Math.max(
@@ -902,6 +967,30 @@ export function matchReceiptItemsToIntent(input: {
         quantityDistance: Math.abs(expectedQuantityMilli - actualQuantityMilli),
       });
     }
+  }
+
+  for (const candidate of possible) {
+    if (
+      candidate.status !== "auto_matched" ||
+      candidate.reason !== "semantic_fulfillment"
+    ) {
+      continue;
+    }
+    const hasCloseCompetitor = possible.some((other) => {
+      if (other === candidate) return false;
+      const competesForReceipt =
+        other.receiptItemId === candidate.receiptItemId &&
+        other.intentItemId !== candidate.intentItemId;
+      const competesForIntent =
+        other.intentItemId === candidate.intentItemId &&
+        other.receiptItemId !== candidate.receiptItemId;
+      return (
+        (competesForReceipt || competesForIntent) &&
+        candidate.confidenceBps - other.confidenceBps <
+          SEMANTIC_AUTO_MATCH_MARGIN_BPS
+      );
+    });
+    if (hasCloseCompetitor) candidate.status = "candidate";
   }
 
   possible.sort(

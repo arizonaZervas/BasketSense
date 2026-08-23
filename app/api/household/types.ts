@@ -91,6 +91,7 @@ export interface TripItemMatchSummary {
     | "exact_product"
     | "confirmed_alias"
     | "confirmed_intent"
+    | "semantic_intent"
     | "exact_name"
     | "member_confirmed";
   confidenceBps: number;

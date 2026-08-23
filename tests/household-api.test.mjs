@@ -3121,6 +3121,129 @@ function productForListItem(state, listItem) {
   return product;
 }
 
+test("cached Gemini product semantics fulfill a broader household intent end to end", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "semantic-intent@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const now = "2026-08-23T12:00:00.000Z";
+    db.database
+      .prepare(`INSERT INTO products (
+        id, household_id, costco_item_number, canonical_name,
+        category, active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run(
+        "semantic-suja-product",
+        initial.household.id,
+        "1847239",
+        "Suja Organic Digestion Shot",
+        "groceries_beverages",
+        now,
+        now,
+      );
+    db.database
+      .prepare(`INSERT INTO product_understandings (
+        id, household_id, lookup_key, costco_item_number, raw_description,
+        canonical_name, brand, product_family, variant, category_hint,
+        confidence_bps, exact_sku_known, search_aliases_json, provider, model,
+        prompt_version, schema_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)`)
+      .run(
+        "semantic-suja-understanding",
+        initial.household.id,
+        "item:1847239",
+        "1847239",
+        "SUJADIGSTION",
+        "Suja Organic Digestion Shot",
+        "Suja",
+        "Juice & Wellness Shots",
+        "Digestion",
+        "groceries_beverages",
+        9500,
+        1,
+        JSON.stringify(["Suja Digestion", "wellness shot"]),
+        "gemini-test",
+        "costco-line-understanding-v1",
+        "basketsense-product-understanding-v1",
+        now,
+        now,
+      );
+
+    const addResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "Suja shots",
+        source: "manual",
+        section: "essentials",
+        included: true,
+        estimatedPriceCents: 1299,
+      }),
+      db,
+    );
+    assert.equal(addResponse.status, 201);
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "freeze_trip",
+            tripId: initial.currentTrip.id,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+
+    const line = {
+      ...receiptDraftLine({
+        sourceLineNumber: 1,
+        costcoItemNumber: "1847239",
+        rawDescription: "SUJADIGSTION",
+        unitPriceCents: 1269,
+        lineSubtotalCents: 1269,
+      }),
+      interpretedName: "Suja Organic Digestion Shot",
+      interpretedBrand: "Suja",
+      interpretedProductFamily: "Juice & Wellness Shots",
+      interpretedVariant: "Digestion",
+      interpretationCategoryHint: "groceries_beverages",
+      interpretationConfidenceBps: 9500,
+      interpretationSource: "gemini",
+      interpretationModel: "gemini-test",
+    };
+    const ingestResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "ingest_receipt_draft",
+        clientDraftId: "semantic-suja-receipt",
+        tripId: initial.currentTrip.id,
+        purchasedAt: receiptTimestampForTrip(initial.currentTrip),
+        subtotalCents: 1269,
+        taxCents: 0,
+        totalCents: 1269,
+        discountCents: 0,
+        items: [line],
+      }),
+      db,
+    );
+    assert.equal(ingestResponse.status, 200);
+    const ingested = await responseJson(ingestResponse);
+    assert.equal(ingested.comparison.buckets.matched.length, 1);
+    assert.equal(ingested.comparison.buckets.receiptOnly.length, 0);
+    assert.equal(
+      db.database
+        .prepare(`SELECT match_type FROM trip_item_matches
+          WHERE receipt_transaction_id = ? LIMIT 1`)
+        .get(ingested.receiptId).match_type,
+      "semantic_intent",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("receipt ingestion repairs an OCR year error from the linked trip date", async () => {
   const db = new D1DatabaseAdapter();
   try {
