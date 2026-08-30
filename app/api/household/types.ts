@@ -194,8 +194,15 @@ export interface TripReviewHistoryEntry {
   correctionCount: number;
 }
 
+export interface SkippedWeekHistoryEntry {
+  tripId: string;
+  scheduledFor: string;
+  skippedAt: string;
+}
+
 export interface TripReviewHistoryResponse {
   history: TripReviewHistoryEntry[];
+  skippedWeeks: SkippedWeekHistoryEntry[];
 }
 
 export interface HouseholdSummary {
@@ -225,6 +232,13 @@ export interface TripSummary {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TripSkipSummary {
+  tripId: string;
+  originalScheduledFor: string;
+  returnScheduledFor: string;
+  skippedDates: string[];
 }
 
 export interface TripListItemSummary {
@@ -341,6 +355,7 @@ export interface HouseholdBootstrapResponse {
   currentUser: HouseholdMemberSummary;
   members: HouseholdMemberSummary[];
   currentTrip: TripSummary;
+  currentTripSkip: TripSkipSummary | null;
   recentTrips: TripSummary[];
   listItems: TripListItemSummary[];
   products: ProductSummary[];
@@ -362,6 +377,7 @@ export type HouseholdCoreResponse = Pick<
   | "currentUser"
   | "members"
   | "currentTrip"
+  | "currentTripSkip"
   | "listItems"
   | "products"
   | "currentTripReceipt"
@@ -375,6 +391,7 @@ export interface HouseholdInsightsResponse {
 
 export interface HouseholdListResponse {
   currentTrip: TripSummary;
+  currentTripSkip: TripSkipSummary | null;
   listItems: TripListItemSummary[];
 }
 
@@ -605,6 +622,12 @@ export type HouseholdPatchRequest =
   | {
       action: "unfreeze_trip";
       tripId: string;
+    }
+  | {
+      action: "set_trip_skip";
+      tripId: string;
+      skipCount: number;
+      expectedScheduledFor: string;
     }
   | {
       action: "reopen_sandbox_trip";

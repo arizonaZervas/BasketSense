@@ -155,12 +155,17 @@ function isAttachedCostcoDiscountLine(
       (current.itemNumber === previous.itemNumber ||
         current.rawDescription.includes(previous.itemNumber))
   );
+  const canonicalDiscountShape =
+    current.lineSubtotalCents <= 0 && current.netAmountCents < 0;
+  const zeroNetSavingsShape =
+    current.lineSubtotalCents === current.discountCents &&
+    current.netAmountCents === 0 &&
+    descriptionLooksAttached;
   return Boolean(
     previous &&
       previous.lineSubtotalCents > 0 &&
-      current.lineSubtotalCents <= 0 &&
-      current.netAmountCents < 0 &&
       current.discountCents > 0 &&
+      (canonicalDiscountShape || zeroNetSavingsShape) &&
       (itemNumberLinksToPrevious ||
         (!current.itemNumber && descriptionLooksAttached))
   );

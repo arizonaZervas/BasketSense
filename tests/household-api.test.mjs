@@ -182,6 +182,12 @@ function receiptTimestampForTrip(trip, time = "10:30:00") {
   return `${trip.scheduledFor}T${time}-07:00`;
 }
 
+function weeksAfter(dateValue, weeks) {
+  const date = new Date(`${dateValue}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + weeks * 7);
+  return date.toISOString().slice(0, 10);
+}
+
 test("D1 dashboard matches the audited historical view before client cutover", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -1848,7 +1854,7 @@ test("list scope returns only the live trip without rerunning household bootstra
     );
     assert.equal(scopedResponse.status, 200);
     const scoped = await responseJson(scopedResponse);
-    assert.deepEqual(Object.keys(scoped).sort(), ["currentTrip", "listItems"]);
+    assert.deepEqual(Object.keys(scoped).sort(), ["currentTrip", "currentTripSkip", "listItems"]);
     assert.equal(scoped.currentTrip.id, initial.currentTrip.id);
     assert.equal(scoped.listItems.length, initial.listItems.length - 1);
     assert.ok(!scoped.listItems.some((item) => item.id === sweetCorn.id));
@@ -1877,6 +1883,176 @@ test("list scope returns only the live trip without rerunning household bootstra
         .count,
       1,
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("planning trips can skip, change, synchronize, and undo weeks without changing list intent", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const owner = "skip-owner@example.test";
+    const partner = "skip-partner@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(owner, "GET", undefined, "?view=core"), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const originalDate = initial.currentTrip.scheduledFor;
+    const originalItems = initial.listItems;
+    const originalFeedbackCount = db.database
+      .prepare("SELECT COUNT(*) AS count FROM feedback WHERE trip_id = ?")
+      .get(tripId).count;
+    assert.equal(initial.currentTripSkip, null);
+
+    db.database
+      .prepare(
+        `INSERT INTO household_members (
+           id, household_id, user_email, display_name, role
+         ) VALUES (?, ?, ?, ?, 'member')`,
+      )
+      .run("skip-partner-member", initial.household.id, partner, "Partner");
+
+    const oneWeekResponse = await handleHouseholdPatch(
+      householdRequest(owner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 1,
+        expectedScheduledFor: originalDate,
+      }),
+      db,
+    );
+    assert.equal(oneWeekResponse.status, 200);
+    const oneWeek = await responseJson(oneWeekResponse);
+    assert.equal(oneWeek.currentTrip.scheduledFor, weeksAfter(originalDate, 1));
+    assert.ok(oneWeek.currentTrip.listRevision > initial.currentTrip.listRevision);
+    assert.deepEqual(oneWeek.currentTripSkip, {
+      tripId,
+      originalScheduledFor: originalDate,
+      returnScheduledFor: weeksAfter(originalDate, 1),
+      skippedDates: [originalDate],
+    });
+
+    const partnerPoll = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(
+          partner,
+          "GET",
+          undefined,
+          `?scope=list&tripId=${encodeURIComponent(tripId)}&revision=${initial.currentTrip.listRevision}`,
+        ),
+        db,
+      ),
+    );
+    assert.equal(partnerPoll.currentTrip.scheduledFor, weeksAfter(originalDate, 1));
+    assert.deepEqual(partnerPoll.currentTripSkip.skippedDates, [originalDate]);
+    assert.deepEqual(partnerPoll.listItems, originalItems);
+
+    const threeWeekResponse = await handleHouseholdPatch(
+      householdRequest(partner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 3,
+        expectedScheduledFor: weeksAfter(originalDate, 1),
+      }),
+      db,
+    );
+    assert.equal(threeWeekResponse.status, 200);
+    const threeWeek = await responseJson(threeWeekResponse);
+    assert.equal(threeWeek.currentTrip.scheduledFor, weeksAfter(originalDate, 3));
+    assert.deepEqual(threeWeek.currentTripSkip.skippedDates, [
+      originalDate,
+      weeksAfter(originalDate, 1),
+      weeksAfter(originalDate, 2),
+    ]);
+
+    const staleResponse = await handleHouseholdPatch(
+      householdRequest(owner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 2,
+        expectedScheduledFor: weeksAfter(originalDate, 1),
+      }),
+      db,
+    );
+    assert.equal(staleResponse.status, 409);
+
+    const history = await responseJson(
+      await handleHouseholdGet(
+        householdRequest(owner, "GET", undefined, "?view=review-history"),
+        db,
+      ),
+    );
+    assert.deepEqual(
+      history.skippedWeeks.map((entry) => entry.scheduledFor).sort(),
+      [originalDate, weeksAfter(originalDate, 1), weeksAfter(originalDate, 2)],
+    );
+
+    const collisionDate = weeksAfter(originalDate, 2);
+    db.database
+      .prepare(
+        `INSERT INTO trips (id, household_id, scheduled_for, status)
+         VALUES ('skip-collision-trip', ?, ?, 'completed')`,
+      )
+      .run(initial.household.id, collisionDate);
+    const collisionResponse = await handleHouseholdPatch(
+      householdRequest(owner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 2,
+        expectedScheduledFor: weeksAfter(originalDate, 3),
+      }),
+      db,
+    );
+    assert.equal(collisionResponse.status, 409);
+    db.database.prepare("DELETE FROM trips WHERE id = 'skip-collision-trip'").run();
+
+    const undoResponse = await handleHouseholdPatch(
+      householdRequest(owner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 0,
+        expectedScheduledFor: weeksAfter(originalDate, 3),
+      }),
+      db,
+    );
+    assert.equal(undoResponse.status, 200);
+    const undone = await responseJson(undoResponse);
+    assert.equal(undone.currentTrip.scheduledFor, originalDate);
+    assert.equal(undone.currentTripSkip, null);
+    assert.equal(
+      db.database.prepare("SELECT COUNT(*) AS count FROM trip_skips WHERE trip_id = ?").get(tripId).count,
+      0,
+    );
+    assert.equal(
+      db.database.prepare("SELECT COUNT(*) AS count FROM feedback WHERE trip_id = ?").get(tripId).count,
+      originalFeedbackCount,
+    );
+
+    const restored = await responseJson(
+      await handleHouseholdGet(householdRequest(owner, "GET", undefined, "?view=core"), db),
+    );
+    assert.deepEqual(restored.listItems, originalItems);
+    assert.equal(restored.currentTripSkip, null);
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(owner, "PATCH", { action: "freeze_trip", tripId }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    const frozenSkip = await handleHouseholdPatch(
+      householdRequest(owner, "PATCH", {
+        action: "set_trip_skip",
+        tripId,
+        skipCount: 1,
+        expectedScheduledFor: originalDate,
+      }),
+      db,
+    );
+    assert.equal(frozenSkip.status, 409);
   } finally {
     db.close();
   }
@@ -4095,14 +4271,14 @@ test("receipt discounts fold into the product paid price and stay out of additio
           }),
           {
             sourceLineNumber: 2,
-            costcoItemNumber: null,
-            rawDescription: "INSTANT SAVINGS",
+            costcoItemNumber: apparelProduct.costcoItemNumber,
+            rawDescription: `00001868328 / ${apparelProduct.costcoItemNumber}`,
             quantityMilli: 1000,
             unitPriceCents: null,
-            lineSubtotalCents: 0,
+            lineSubtotalCents: 1200,
             discountCents: 1200,
-            netAmountCents: -1200,
-            kind: "discount",
+            netAmountCents: 0,
+            kind: "item",
             taxStatus: "non_taxable",
           },
         ],

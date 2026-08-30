@@ -230,6 +230,39 @@ test("keeps shopping undo and catalog keyboard focus behavior wired", async () =
   assert.match(reviewSource, /Review receipt lines/);
 });
 
+test("skip week stays accessible, responsive, and separate from trip completion", async () => {
+  const response = await render();
+  const html = await response.text();
+  const dashboardSource = await readFile(
+    new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
+    "utf8",
+  );
+  const prepSource = await readFile(
+    new URL("../app/saturday-prep.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(html, /Skip week/i);
+  assert.match(dashboardSource, /action: "set_trip_skip"/);
+  assert.match(dashboardSource, /expectedScheduledFor: household\.currentTrip\.scheduledFor/);
+  assert.match(dashboardSource, /Next Costco trip/);
+  assert.match(dashboardSource, /Vacation break/);
+  assert.match(dashboardSource, /Skip Costco weeks/);
+  assert.match(dashboardSource, /aria-modal="true"/);
+  assert.match(dashboardSource, /skippedWeeks\.map/);
+  assert.match(prepSource, /basketsense-saturday-prep:\$\{tripId\}:\$\{scheduledFor\}/);
+  assert.match(styles, /\.skip-week-backdrop/);
+  assert.match(styles, /max-height: min\(82dvh, 720px\)/);
+  assert.match(styles, /env\(safe-area-inset-bottom\)/);
+  assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.skip-week-dialog/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.skip-week-backdrop/);
+  assert.match(styles, /\.skip-week-field select[\s\S]*color: var\(--ink\)/);
+});
+
 test("keeps sandbox review answers in the owner-only test household", async () => {
   const dashboardSource = await readFile(
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),

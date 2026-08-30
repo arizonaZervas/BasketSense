@@ -10,7 +10,7 @@ type SchemaMigrationRow = {
 const schemaUpgradePromises = new WeakMap<D1Database, Promise<void>>();
 
 export const LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID =
-  "0015_recommendation_shadow";
+  "0016_trip_skips";
 
 const RECEIPT_INGESTION_REBUILD_STATEMENTS = [
   `DROP TABLE IF EXISTS __basketsense_new_receipt_ingestions`,
@@ -223,6 +223,25 @@ const RECOMMENDATION_SHADOW_STATEMENTS = [
     ON recommendation_shadow_candidates (run_id, rank)`,
 ];
 
+const TRIP_SKIP_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS trip_skips (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    skipped_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (skipped_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_skips_household_scheduled_for_unique
+    ON trip_skips (household_id, scheduled_for)`,
+  `CREATE INDEX IF NOT EXISTS trip_skips_trip_scheduled_for_idx
+    ON trip_skips (trip_id, scheduled_for)`,
+];
+
 function changeCount(result: D1Result<unknown>) {
   return Number(result.meta?.changes ?? 0);
 }
@@ -386,8 +405,12 @@ async function performSchemaUpgrades(db: D1Database) {
     await addColumnIfMissing(db, "receipt_items", "interpretation_model", "interpretation_model TEXT");
   });
 
-  await runClaimedMigration(db, LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID, async () => {
+  await runClaimedMigration(db, "0015_recommendation_shadow", async () => {
     await db.batch(RECOMMENDATION_SHADOW_STATEMENTS.map((statement) => db.prepare(statement)));
+  });
+
+  await runClaimedMigration(db, LATEST_BASKETSENSE_SCHEMA_MIGRATION_ID, async () => {
+    await db.batch(TRIP_SKIP_STATEMENTS.map((statement) => db.prepare(statement)));
   });
 }
 

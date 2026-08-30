@@ -152,14 +152,18 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM intent_fulfillments").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_runs").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_candidates").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM trip_skips").get().count, 0);
+    const tripSkipForeignKeys = database.prepare("PRAGMA foreign_key_list('trip_skips')").all();
+    assert.equal(tripSkipForeignKeys.length, 3);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM basketsense_schema_migrations WHERE status = 'completed'").get().count,
-      6,
+      7,
     );
     assert.equal(database.prepare("PRAGMA foreign_key_check").all().length, 0);
 
     await ensureBasketSenseSchemaUpgrades(new DatabaseAdapter(database));
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM receipt_ingestions").get().count, 1);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM trip_skips").get().count, 0);
     assert.equal(database.prepare("PRAGMA foreign_key_check").all().length, 0);
 
     database.exec(

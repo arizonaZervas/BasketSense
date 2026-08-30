@@ -204,6 +204,36 @@ export const trips = sqliteTable(
   ]
 );
 
+export const tripSkips = sqliteTable(
+  "trip_skips",
+  {
+    id: text("id").primaryKey(),
+    householdId: text("household_id")
+      .notNull()
+      .references(() => households.id, { onDelete: "cascade" }),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    scheduledFor: text("scheduled_for").notNull(),
+    skippedByMemberId: text("skipped_by_member_id").references(
+      () => householdMembers.id,
+      { onDelete: "set null" }
+    ),
+    createdAt: text("created_at").notNull().default(timestampDefault),
+    updatedAt: text("updated_at").notNull().default(timestampDefault),
+  },
+  (table) => [
+    uniqueIndex("trip_skips_household_scheduled_for_unique").on(
+      table.householdId,
+      table.scheduledFor
+    ),
+    index("trip_skips_trip_scheduled_for_idx").on(
+      table.tripId,
+      table.scheduledFor
+    ),
+  ]
+);
+
 export const tripListItems = sqliteTable(
   "trip_list_items",
   {

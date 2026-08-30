@@ -8052,3 +8052,270 @@ button.price-point:hover {
     margin-left: 6px;
   }
 }
+
+/* Skip-week scheduling keeps the planning controls compact while preserving a
+   full-size, accessible decision surface on touch devices. */
+.trip-skip-notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  max-width: 860px;
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-control);
+  background: var(--surface-success);
+  padding: 12px 14px;
+}
+
+.trip-skip-mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--forest);
+  color: var(--on-forest);
+  font-weight: 800;
+}
+
+.trip-skip-notice strong,
+.trip-skip-notice p {
+  margin: 0;
+}
+
+.trip-skip-notice p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trip-skip-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trip-skip-actions button,
+.skip-week-button {
+  min-height: 44px;
+}
+
+.skip-week-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--forest-dark) 58%, transparent);
+  padding: 24px;
+  animation: skip-week-fade 160ms ease-out;
+}
+
+.skip-week-dialog {
+  width: min(100%, 460px);
+  max-height: min(720px, calc(100dvh - 48px));
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: var(--paper-strong);
+  box-shadow: var(--popover-shadow);
+  color: var(--ink);
+  padding: 22px;
+  animation: skip-week-enter 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.skip-week-heading,
+.skip-week-dialog-actions,
+.skipped-week-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.skip-week-heading h2,
+.skip-week-heading p,
+.skipped-week-history h2 {
+  margin: 0;
+}
+
+.skip-week-heading h2 {
+  margin-top: 3px;
+  font-size: 24px;
+}
+
+.skip-week-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.skip-week-field select {
+  width: 100%;
+  min-height: 48px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--control-bg);
+  color: var(--ink);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 16px;
+}
+
+.skip-week-field select:focus-visible {
+  border-color: var(--forest);
+  outline: 3px solid color-mix(in srgb, var(--focus-ring) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.skip-week-preview {
+  display: grid;
+  gap: 4px;
+  margin: 16px 0 24px;
+  border-left: 3px solid var(--forest);
+  background: var(--surface-success);
+  padding: 13px 14px;
+}
+
+.skip-week-preview span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.skip-week-preview strong {
+  font-size: 20px;
+}
+
+.skip-week-dialog-actions {
+  justify-content: flex-end;
+}
+
+.skip-week-error {
+  margin: -8px 0 18px;
+  color: var(--danger-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trip-skip-error {
+  max-width: 860px;
+}
+
+.skip-week-dialog-actions button {
+  min-height: 44px;
+}
+
+.skipped-week-history {
+  display: grid;
+  max-width: 860px;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+.skipped-week-history-heading h2 {
+  font-size: 18px;
+}
+
+.skipped-week-history-heading > span {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.skipped-week-history ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skipped-week-history li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.skipped-week-history time {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.skipped-week-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--review);
+}
+
+@keyframes skip-week-fade {
+  from { opacity: 0; }
+}
+
+@keyframes skip-week-enter {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+}
+
+@media (max-width: 640px) {
+  .trip-skip-notice {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .trip-skip-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .skip-week-backdrop {
+    place-items: end stretch;
+    padding: 0;
+  }
+
+  .skip-week-dialog {
+    width: 100%;
+    max-height: min(82dvh, 720px);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 18px 18px 0 0;
+    padding: 20px 18px calc(18px + env(safe-area-inset-bottom));
+    animation-name: skip-week-sheet-enter;
+  }
+
+  .skip-week-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .skip-week-dialog-actions button {
+    width: 100%;
+  }
+}
+
+@keyframes skip-week-sheet-enter {
+  from { opacity: 0; transform: translateY(24px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skip-week-backdrop,
+  .skip-week-dialog {
+    animation: none;
+  }
+}

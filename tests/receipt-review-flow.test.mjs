@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   comparisonExpectedCents,
+  draftFromClosedLoop,
   draftFromParser,
   receiptDraftLineValue,
   receiptDraftLineValueForTransaction,
@@ -70,6 +71,89 @@ test("the review draft preserves an extracted product discount through save", ()
     taxStatus: "non_taxable",
     kind: "item",
   });
+});
+
+test("receipt drafts hide zero-net savings rows and retain one combined discount", () => {
+  const receipt = {
+    purchasedAt: "2026-08-30",
+    subtotalCents: 6800,
+    taxCents: 0,
+    totalCents: 6800,
+    discountCents: 1200,
+  };
+  const items = [
+    {
+      id: "product-line",
+      itemNumber: "1868328",
+      rawDescription: "HOUSEHOLD PRODUCT",
+      quantityMilli: 1000,
+      unitPriceCents: 8000,
+      lineSubtotalCents: 8000,
+      discountCents: 0,
+      netAmountCents: 8000,
+      kind: "item",
+      taxStatus: "non_taxable",
+    },
+    {
+      id: "savings-line",
+      itemNumber: "1868328",
+      rawDescription: "00001868328 / 1868328",
+      quantityMilli: 1000,
+      unitPriceCents: null,
+      lineSubtotalCents: 1200,
+      discountCents: 1200,
+      netAmountCents: 0,
+      kind: "item",
+      taxStatus: "non_taxable",
+    },
+  ];
+
+  const parsedDraft = draftFromParser({ ...receipt, items });
+  assert.equal(parsedDraft.discount, "12.00");
+  assert.equal(parsedDraft.items.length, 1);
+  assert.equal(parsedDraft.items[0].amount, "68.00");
+  assert.equal(parsedDraft.items[0].discountCents, 1200);
+
+  const reopenedDraft = draftFromClosedLoop({
+    receipt: { id: "receipt", ...receipt },
+    items: items.map((item) => ({
+      ...item,
+      costcoItemNumber: item.itemNumber,
+    })),
+  });
+  assert.equal(reopenedDraft.discount, "12.00");
+  assert.equal(reopenedDraft.items.length, 1);
+  assert.equal(reopenedDraft.items[0].clientId, "product-line");
+  assert.equal(reopenedDraft.items[0].amount, "68.00");
+});
+
+test("receipt-level rewards stay in the discount total but out of product review", () => {
+  const draft = draftFromParser({
+    subtotalCents: 6800,
+    taxCents: 0,
+    totalCents: 6600,
+    discountCents: 200,
+    items: [
+      {
+        itemNumber: "100001",
+        rawDescription: "HOUSEHOLD PRODUCT",
+        lineSubtotalCents: 6800,
+        discountCents: 0,
+        netAmountCents: 6800,
+      },
+      {
+        rawDescription: "EXECUTIVE REWARD",
+        lineSubtotalCents: 0,
+        discountCents: 200,
+        netAmountCents: -200,
+        kind: "discount",
+      },
+    ],
+  });
+
+  assert.equal(draft.discount, "2.00");
+  assert.equal(draft.items.length, 1);
+  assert.equal(draft.items[0].description, "HOUSEHOLD PRODUCT");
 });
 
 test("the review draft carries advisory product understanding into receipt persistence", () => {

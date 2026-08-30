@@ -78,6 +78,8 @@ import type {
   TripItemMatchSummary,
   TripListItemSummary,
   TripReviewHistoryEntry,
+  SkippedWeekHistoryEntry,
+  TripSkipSummary,
   TripStatus,
   TripSummary,
 } from "./types";
@@ -251,6 +253,22 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     ON trips (household_id, scheduled_for)`,
   `CREATE INDEX IF NOT EXISTS trips_household_status_idx
     ON trips (household_id, status)`,
+  `CREATE TABLE IF NOT EXISTS trip_skips (
+    id TEXT PRIMARY KEY NOT NULL,
+    household_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    scheduled_for TEXT NOT NULL,
+    skipped_by_member_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (household_id) REFERENCES households(id) ON DELETE CASCADE,
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE,
+    FOREIGN KEY (skipped_by_member_id) REFERENCES household_members(id) ON DELETE SET NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS trip_skips_household_scheduled_for_unique
+    ON trip_skips (household_id, scheduled_for)`,
+  `CREATE INDEX IF NOT EXISTS trip_skips_trip_scheduled_for_idx
+    ON trip_skips (trip_id, scheduled_for)`,
   `CREATE TABLE IF NOT EXISTS trip_list_items (
     id TEXT PRIMARY KEY NOT NULL,
     trip_id TEXT NOT NULL,
@@ -827,6 +845,16 @@ interface TripRow {
   frozen_at: string | null;
   completed_at: string | null;
   created_by_member_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TripSkipRow {
+  id: string;
+  household_id: string;
+  trip_id: string;
+  scheduled_for: string;
+  skipped_by_member_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1660,6 +1688,32 @@ function saturdayAfter(dateValue: string) {
   return date.toISOString().slice(0, 10);
 }
 
+function addWeeks(dateValue: string, weeks: number) {
+  let result = dateValue;
+  for (let index = 0; index < weeks; index += 1) {
+    result = saturdayAfter(result);
+  }
+  return result;
+}
+
+function isSaturdayDate(dateValue: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) return false;
+  const date = new Date(`${dateValue}T12:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.getUTCDay() === 6;
+}
+
+function householdDate(timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
 function requiredString(
   value: unknown,
   field: string,
@@ -1880,7 +1934,13 @@ async function bootstrapHousehold(
     throw new ApiError(500, "Unable to initialize the Saturday trip");
   }
 
-  await seedSaturdayList(db, currentTrip, now);
+  const activeSkip = await db
+    .prepare(`SELECT 1 AS active FROM trip_skips WHERE trip_id = ? LIMIT 1`)
+    .bind(currentTrip.id)
+    .first<{ active: number }>();
+  if (!activeSkip) {
+    await seedSaturdayList(db, currentTrip, now);
+  }
 
   const revisionedTrip = await authorizedTrip(
     db,
@@ -2042,6 +2102,20 @@ function tripSummary(row: TripRow): TripSummary {
     completedAt: row.completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function tripSkipSummary(
+  trip: TripRow,
+  rows: readonly TripSkipRow[],
+): TripSkipSummary | null {
+  if (rows.length === 0) return null;
+  const skippedDates = rows.map((row) => row.scheduled_for).sort();
+  return {
+    tripId: trip.id,
+    originalScheduledFor: skippedDates[0],
+    returnScheduledFor: trip.scheduled_for,
+    skippedDates,
   };
 }
 
@@ -2312,6 +2386,13 @@ async function readHouseholdCoreState(
          LIMIT 1`,
       )
       .bind(context.household.id, context.currentTrip.id),
+    db
+      .prepare(
+        `SELECT * FROM trip_skips
+         WHERE trip_id = ? AND household_id = ?
+         ORDER BY scheduled_for ASC`,
+      )
+      .bind(context.currentTrip.id, context.household.id),
   ]);
 
   const members = results[0].results as unknown as MemberRow[];
@@ -2323,6 +2404,7 @@ async function readHouseholdCoreState(
   const currentTripReceipt = results[4].results[0] as
     | { id: string; trip_id: string; is_provisional: number }
     | undefined;
+  const currentTripSkips = results[5].results as unknown as TripSkipRow[];
 
   return {
     historyRevision,
@@ -2334,6 +2416,7 @@ async function readHouseholdCoreState(
     currentUser: memberSummary(context.member),
     members: members.map(memberSummary),
     currentTrip: tripSummary(context.currentTrip),
+    currentTripSkip: tripSkipSummary(context.currentTrip, currentTripSkips),
     listItems: listItems.map(listItemSummary),
     products: products.map(productSummary),
     currentTripReceipt: currentTripReceipt
@@ -2851,18 +2934,29 @@ async function readHouseholdListState(
   db: D1Database,
   context: HouseholdContext
 ): Promise<HouseholdListResponse> {
-  const listItems = await db
-    .prepare(
-      `SELECT * FROM trip_list_items
-       WHERE trip_id = ?
-       ORDER BY sort_order ASC, created_at ASC`
-    )
-    .bind(context.currentTrip.id)
-    .all<ListItemRow>();
+  const results = await db.batch([
+    db
+      .prepare(
+        `SELECT * FROM trip_list_items
+         WHERE trip_id = ?
+         ORDER BY sort_order ASC, created_at ASC`
+      )
+      .bind(context.currentTrip.id),
+    db
+      .prepare(
+        `SELECT * FROM trip_skips
+         WHERE trip_id = ? AND household_id = ?
+         ORDER BY scheduled_for ASC`,
+      )
+      .bind(context.currentTrip.id, context.household.id),
+  ]);
+  const listItems = results[0].results as unknown as ListItemRow[];
+  const tripSkips = results[1].results as unknown as TripSkipRow[];
 
   return {
     currentTrip: tripSummary(context.currentTrip),
-    listItems: listItems.results.map(listItemSummary),
+    currentTripSkip: tripSkipSummary(context.currentTrip, tripSkips),
+    listItems: listItems.map(listItemSummary),
   };
 }
 
@@ -3946,6 +4040,184 @@ async function freezeTrip(
   });
 }
 
+async function setTripSkip(
+  db: D1Database,
+  context: HouseholdContext,
+  body: Record<string, unknown>,
+) {
+  const tripId = requiredString(body.tripId, "tripId", 128);
+  const expectedScheduledFor = requiredString(
+    body.expectedScheduledFor,
+    "expectedScheduledFor",
+    10,
+  );
+  const skipCount = optionalInteger(body.skipCount, "skipCount", 0, 12);
+  if (skipCount === null) {
+    throw new ApiError(400, "skipCount is required");
+  }
+  if (!isSaturdayDate(expectedScheduledFor)) {
+    throw new ApiError(400, "expectedScheduledFor must be a Saturday");
+  }
+
+  const trip = await authorizedTrip(db, context.household.id, tripId);
+  if (trip.id !== context.currentTrip.id) {
+    throw new ApiError(409, "Only the current planning trip can be skipped");
+  }
+  if (trip.status !== "planning") {
+    throw new ApiError(409, "A week can only be skipped before shopping starts");
+  }
+  if (trip.scheduled_for !== expectedScheduledFor) {
+    throw new ApiError(
+      409,
+      "The trip date changed on another device. Refresh and try again",
+    );
+  }
+
+  const existing = await db
+    .prepare(
+      `SELECT * FROM trip_skips
+       WHERE trip_id = ? AND household_id = ?
+       ORDER BY scheduled_for ASC`,
+    )
+    .bind(trip.id, context.household.id)
+    .all<TripSkipRow>();
+  const existingSkips = existing.results;
+  const originalScheduledFor =
+    existingSkips[0]?.scheduled_for ?? trip.scheduled_for;
+  if (!isSaturdayDate(originalScheduledFor)) {
+    throw new ApiError(409, "This trip does not have a valid Saturday date");
+  }
+  if (skipCount === 0 && existingSkips.length === 0) {
+    throw new ApiError(409, "This trip does not have an active break to undo");
+  }
+
+  const today = householdDate(context.household.time_zone);
+  const returnScheduledFor = addWeeks(originalScheduledFor, skipCount);
+  if (skipCount === 0 && originalScheduledFor < today) {
+    throw new ApiError(
+      409,
+      "That Saturday has passed. Choose a future return week instead",
+    );
+  }
+  if (
+    skipCount > 0 &&
+    originalScheduledFor < today &&
+    returnScheduledFor <= today
+  ) {
+    throw new ApiError(409, "Choose the next future Saturday or a later week");
+  }
+
+  const collision = await db
+    .prepare(
+      `SELECT id FROM trips
+       WHERE household_id = ? AND scheduled_for = ? AND id <> ?
+       LIMIT 1`,
+    )
+    .bind(context.household.id, returnScheduledFor, trip.id)
+    .first<{ id: string }>();
+  if (collision) {
+    throw new ApiError(409, "Another trip already uses that Saturday");
+  }
+
+  const skippedDates = Array.from({ length: skipCount }, (_, index) =>
+    addWeeks(originalScheduledFor, index),
+  );
+  const updatedAt = nowIso();
+  const statements = [
+    db
+      .prepare(
+        `UPDATE trips
+         SET scheduled_for = ?, list_revision = list_revision + 1, updated_at = ?
+         WHERE id = ? AND household_id = ? AND status = 'planning'
+           AND scheduled_for = ?`,
+      )
+      .bind(
+        returnScheduledFor,
+        updatedAt,
+        trip.id,
+        context.household.id,
+        expectedScheduledFor,
+      ),
+    db
+      .prepare(
+        `DELETE FROM trip_skips
+         WHERE trip_id = ? AND household_id = ?
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = ? AND trips.household_id = ?
+               AND trips.scheduled_for = ? AND trips.updated_at = ?
+           )`,
+      )
+      .bind(
+        trip.id,
+        context.household.id,
+        trip.id,
+        context.household.id,
+        returnScheduledFor,
+        updatedAt,
+      ),
+    ...skippedDates.map((scheduledFor) =>
+      db
+        .prepare(
+          `INSERT INTO trip_skips (
+             id, household_id, trip_id, scheduled_for,
+             skipped_by_member_id, created_at, updated_at
+           )
+           SELECT ?, ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = ? AND trips.household_id = ?
+               AND trips.scheduled_for = ? AND trips.updated_at = ?
+           )`,
+        )
+        .bind(
+          `trip-skip-${trip.id}-${scheduledFor}`,
+          context.household.id,
+          trip.id,
+          scheduledFor,
+          context.member.id,
+          updatedAt,
+          updatedAt,
+          trip.id,
+          context.household.id,
+          returnScheduledFor,
+          updatedAt,
+        ),
+    ),
+  ];
+
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch(statements);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/UNIQUE constraint failed|constraint failed/i.test(message)) {
+      throw new ApiError(409, "Another trip already uses that Saturday");
+    }
+    throw error;
+  }
+  if (Number(results[0]?.meta?.changes ?? 0) === 0) {
+    throw new ApiError(
+      409,
+      "The trip changed on another device. Refresh and try again",
+    );
+  }
+
+  const updatedTrip = await authorizedTrip(db, context.household.id, trip.id);
+  const updatedSkips = await db
+    .prepare(
+      `SELECT * FROM trip_skips
+       WHERE trip_id = ? AND household_id = ?
+       ORDER BY scheduled_for ASC`,
+    )
+    .bind(trip.id, context.household.id)
+    .all<TripSkipRow>();
+  return json({
+    currentTrip: tripSummary(updatedTrip),
+    currentTripSkip: tripSkipSummary(updatedTrip, updatedSkips.results),
+  });
+}
+
 async function unfreezeTrip(
   db: D1Database,
   context: HouseholdContext,
@@ -4197,13 +4469,22 @@ function draftDiscountAppliesToPrevious(
   previous: ValidatedDraftItem | undefined,
   current: ValidatedDraftItem
 ) {
+  const descriptionLooksAttached =
+    /\b(?:coupon|discount|instant\s+savings|rebate|mfr)\b/i.test(
+      current.rawDescription
+    ) || /^\d+\s*\/\s*\d+$/.test(current.rawDescription);
+  const canonicalDiscountShape =
+    current.kind === "discount" && current.netAmountCents < 0;
+  const zeroNetSavingsShape =
+    current.lineSubtotalCents === current.discountCents &&
+    current.netAmountCents === 0 &&
+    descriptionLooksAttached;
   if (
     !previous ||
     previous.kind !== "item" ||
     previous.lineSubtotalCents <= 0 ||
-    current.kind !== "discount" ||
     current.discountCents <= 0 ||
-    current.netAmountCents >= 0
+    (!canonicalDiscountShape && !zeroNetSavingsShape)
   ) {
     return false;
   }
@@ -4216,11 +4497,7 @@ function draftDiscountAppliesToPrevious(
       )
     );
   }
-  return (
-    /\b(?:coupon|discount|instant\s+savings|rebate|mfr)\b/i.test(
-      current.rawDescription
-    ) || /^\d+\s*\/\s*\d+$/.test(current.rawDescription)
-  );
+  return descriptionLooksAttached;
 }
 
 function foldAttachedDraftDiscounts(items: ValidatedDraftItem[]) {
@@ -4396,9 +4673,20 @@ function validateDraftItems(
       item.taxStatus === "taxable" || item.taxStatus === "non_taxable"
         ? item.taxStatus
         : "unknown";
+    const descriptionLooksLikeDiscount =
+      /^\d+\s*\/\s*\d+$/.test(rawDescription) ||
+      /\b(?:coupon|discount|instant\s+savings|rebate|reward|mfr)\b/i.test(
+        rawDescription,
+      );
+    const zeroNetSavingsShape =
+      discountCents > 0 &&
+      lineSubtotalCents === discountCents &&
+      netAmountCents === 0 &&
+      descriptionLooksLikeDiscount;
     const kind =
       item.kind === "discount" ||
-      (discountCents > 0 && lineSubtotalCents <= 0 && netAmountCents < 0)
+      (discountCents > 0 && lineSubtotalCents <= 0 && netAmountCents < 0) ||
+      zeroNetSavingsShape
         ? "discount"
         : "item";
 
@@ -5863,6 +6151,30 @@ async function readTripReviewHistory(
     auditFlag: row.audit_flag,
     openQuestionCount: row.open_question_count,
     correctionCount: row.correction_count,
+  }));
+}
+
+async function readSkippedWeekHistory(
+  db: D1Database,
+  householdId: string,
+): Promise<SkippedWeekHistoryEntry[]> {
+  const result = await db
+    .prepare(
+      `SELECT trip_id, scheduled_for, created_at
+       FROM trip_skips
+       WHERE household_id = ?
+       ORDER BY scheduled_for DESC, created_at DESC`,
+    )
+    .bind(householdId)
+    .all<{
+      trip_id: string;
+      scheduled_for: string;
+      created_at: string;
+    }>();
+  return result.results.map((row) => ({
+    tripId: row.trip_id,
+    scheduledFor: row.scheduled_for,
+    skippedAt: row.created_at,
   }));
 }
 
@@ -8195,6 +8507,7 @@ export async function handleHouseholdGet(
     if (view === "review-history") {
       return json({
         history: await readTripReviewHistory(db, context.household.id),
+        skippedWeeks: await readSkippedWeekHistory(db, context.household.id),
       });
     }
     if (view === "trip-review") {
@@ -8288,6 +8601,9 @@ export async function handleHouseholdPatch(
     }
     if (action === "unfreeze_trip") {
       return await unfreezeTrip(db, context, body);
+    }
+    if (action === "set_trip_skip") {
+      return await setTripSkip(db, context, body);
     }
     if (action === "reopen_sandbox_trip") {
       return await reopenSandboxTrip(db, context, body);

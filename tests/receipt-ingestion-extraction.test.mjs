@@ -89,6 +89,27 @@ test("adjacent instant savings fold even when the reader omits the repeated item
   assert.equal(parsed.lines[0].netAmountCents, 1199);
 });
 
+test("zero-net Gemini savings rows fold into products instead of becoming catalog lines", () => {
+  const draft = validDraft();
+  draft.lines.push({
+    itemNumber: "225355",
+    rawDescription: "0000386577 / 225355",
+    quantityMilli: 1000,
+    lineSubtotalCents: 300,
+    discountCents: 300,
+    netAmountCents: 0,
+    taxStatus: "non_taxable",
+    confidenceBps: 9300,
+    needsReview: false,
+  });
+  const parsed = parseExtractedReceiptDraft(draft);
+  assert.equal(parsed.lines.length, 1);
+  assert.equal(parsed.lines[0].lineSubtotalCents, 1499);
+  assert.equal(parsed.lines[0].discountCents, 300);
+  assert.equal(parsed.lines[0].netAmountCents, 1199);
+  assert.equal(parsed.discountCents, 900);
+});
+
 test("receipt-level rewards remain separate discount evidence", () => {
   const draft = validDraft();
   draft.lines.push({

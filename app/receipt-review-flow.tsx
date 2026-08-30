@@ -163,6 +163,31 @@ type ReceiptDraft = {
   items: ReceiptDraftLine[];
 };
 
+type ParsedReceiptDraftItem = {
+  id?: string | null;
+  costcoItemNumber?: string | null;
+  itemNumber?: string | null;
+  rawDescription?: string | null;
+  description?: string | null;
+  lineSubtotalCents?: number | null;
+  netAmountCents?: number | null;
+  amountCents?: number | null;
+  quantityMilli?: number | null;
+  quantity?: number | null;
+  unitPriceCents?: number | null;
+  discountCents?: number | null;
+  kind?: "item" | "discount";
+  taxStatus?: "taxable" | "non_taxable" | "unknown" | null;
+  interpretedName?: string | null;
+  interpretedBrand?: string | null;
+  interpretedProductFamily?: string | null;
+  interpretedVariant?: string | null;
+  interpretationCategoryHint?: string | null;
+  interpretationConfidenceBps?: number | null;
+  interpretationSource?: "catalog" | "gemini" | null;
+  interpretationModel?: string | null;
+};
+
 export type ReceiptStep = "capture" | "check" | "bridge";
 
 const money = new Intl.NumberFormat("en-US", {
@@ -530,39 +555,97 @@ function blankDraft(): ReceiptDraft {
   };
 }
 
-function draftFromClosedLoop(closedLoop: ClosedLoopSnapshot | null | undefined) {
+function parsedDiscountAppliesToPrevious(
+  previous: ParsedReceiptDraftItem | undefined,
+  current: ParsedReceiptDraftItem,
+) {
+  const previousItemNumber =
+    previous?.costcoItemNumber ?? previous?.itemNumber ?? "";
+  const currentItemNumber =
+    current.costcoItemNumber ?? current.itemNumber ?? "";
+  const description = current.rawDescription ?? current.description ?? "";
+  const descriptionLooksAttached =
+    /^\d+\s*\/\s*\d+$/.test(description) ||
+    /\b(?:coupon|discount|instant\s+savings|rebate|mfr)\b/i.test(description);
+  const itemNumberLinksToPrevious = Boolean(
+    previousItemNumber &&
+      (currentItemNumber === previousItemNumber ||
+        description.includes(previousItemNumber)),
+  );
+  const lineSubtotalCents = current.lineSubtotalCents ?? 0;
+  const discountCents = Math.max(0, current.discountCents ?? 0);
+  const netAmountCents =
+    current.netAmountCents ?? lineSubtotalCents - discountCents;
+  const canonicalDiscountShape =
+    lineSubtotalCents <= 0 && netAmountCents < 0;
+  const zeroNetSavingsShape =
+    lineSubtotalCents === discountCents &&
+    netAmountCents === 0 &&
+    descriptionLooksAttached;
+  return Boolean(
+    previous &&
+      (previous.kind ?? "item") === "item" &&
+      (previous.lineSubtotalCents ?? 0) > 0 &&
+      discountCents > 0 &&
+      (canonicalDiscountShape || zeroNetSavingsShape) &&
+      (itemNumberLinksToPrevious ||
+        (!currentItemNumber && descriptionLooksAttached)),
+  );
+}
+
+function parsedItemIsDiscountEvidence(item: ParsedReceiptDraftItem) {
+  const description = item.rawDescription ?? item.description ?? "";
+  const lineSubtotalCents = item.lineSubtotalCents ?? 0;
+  const discountCents = Math.max(0, item.discountCents ?? 0);
+  const netAmountCents =
+    item.netAmountCents ?? lineSubtotalCents - discountCents;
+  const descriptionLooksLikeDiscount =
+    /^\d+\s*\/\s*\d+$/.test(description) ||
+    /\b(?:coupon|discount|instant\s+savings|rebate|reward|mfr)\b/i.test(
+      description,
+    );
+  return Boolean(
+    item.kind === "discount" ||
+      (discountCents > 0 && lineSubtotalCents <= 0 && netAmountCents < 0) ||
+      (discountCents > 0 &&
+        lineSubtotalCents === discountCents &&
+        netAmountCents === 0 &&
+        descriptionLooksLikeDiscount),
+  );
+}
+
+function foldAttachedParsedDiscounts(items: ParsedReceiptDraftItem[]) {
+  const folded: ParsedReceiptDraftItem[] = [];
+  for (const sourceItem of items) {
+    const item = { ...sourceItem };
+    const previous = folded.at(-1);
+    if (parsedDiscountAppliesToPrevious(previous, item) && previous) {
+      previous.discountCents =
+        Math.max(0, previous.discountCents ?? 0) +
+        Math.max(0, item.discountCents ?? 0);
+      previous.netAmountCents =
+        (previous.lineSubtotalCents ?? 0) - previous.discountCents;
+      continue;
+    }
+    folded.push(item);
+  }
+  return folded;
+}
+
+export function draftFromClosedLoop(
+  closedLoop: ClosedLoopSnapshot | null | undefined,
+) {
   const receipt = closedLoop?.receipt;
   if (!receipt) return blankDraft();
-  return {
+  return draftFromParser({
     transactionType: receipt.transactionType === "return" ? "return" : "warehouse",
-    purchasedOn: (receipt.purchasedAt ?? receipt.purchasedOn ?? todayInputValue()).slice(
-      0,
-      10,
-    ),
-    subtotal: centsToInput(receipt.subtotalCents),
-    tax: centsToInput(receipt.taxCents),
-    total: centsToInput(receipt.totalCents),
-    discount: centsToInput(receipt.discountCents),
-    items: closedLoop?.items?.length
-      ? closedLoop.items.map((item) => ({
-          clientId: item.id ?? clientId(),
-          itemNumber: item.costcoItemNumber ?? "",
-          description: item.rawDescription ?? item.description ?? "",
-          amount: centsToInput(item.netAmountCents ?? item.lineSubtotalCents),
-          quantityMilli: item.quantityMilli ?? 1000,
-          unitPriceCents: item.unitPriceCents ?? null,
-          discountCents: Math.max(0, item.discountCents ?? 0),
-          kind:
-            item.kind ??
-            ((item.discountCents ?? 0) > 0 &&
-            (item.lineSubtotalCents ?? 0) <= 0 &&
-            (item.netAmountCents ?? 0) < 0
-              ? "discount"
-              : "item"),
-          taxStatus: item.taxStatus ?? "unknown",
-        }))
-      : [blankLine()],
-  } satisfies ReceiptDraft;
+    purchasedAt: receipt.purchasedAt ?? receipt.purchasedOn,
+    subtotalCents: receipt.subtotalCents,
+    taxCents: receipt.taxCents,
+    totalCents: receipt.totalCents,
+    discountCents: receipt.discountCents,
+    items: closedLoop?.items ?? [],
+  });
 }
 
 function receiptDateForExpectedTrip(
@@ -596,35 +679,14 @@ export function draftFromParser(
     taxCents?: number | null;
     totalCents?: number | null;
     discountCents?: number | null;
-    items?: Array<{
-      costcoItemNumber?: string | null;
-      itemNumber?: string | null;
-      rawDescription?: string | null;
-      description?: string | null;
-      lineSubtotalCents?: number | null;
-      netAmountCents?: number | null;
-      amountCents?: number | null;
-      quantityMilli?: number | null;
-      quantity?: number | null;
-      unitPriceCents?: number | null;
-      discountCents?: number | null;
-      kind?: "item" | "discount";
-      taxStatus?: "taxable" | "non_taxable" | "unknown";
-      interpretedName?: string | null;
-      interpretedBrand?: string | null;
-      interpretedProductFamily?: string | null;
-      interpretedVariant?: string | null;
-      interpretationCategoryHint?: string | null;
-      interpretationConfidenceBps?: number | null;
-      interpretationSource?: "catalog" | "gemini" | null;
-      interpretationModel?: string | null;
-    }>;
+    items?: ParsedReceiptDraftItem[];
   };
   const transactionType = transactionTypeOverride ??
     (parsed.transactionType === "return" ? "return" : "warehouse");
   const displayCents = (amount: number | null | undefined) =>
     centsToInput(transactionType === "return" && amount ? Math.abs(amount) : amount);
-  const representedDiscountCents = (parsed.items ?? []).reduce(
+  const parsedItems = foldAttachedParsedDiscounts(parsed.items ?? []);
+  const representedDiscountCents = parsedItems.reduce(
     (sum, item) => sum + Math.max(0, item.discountCents ?? 0),
     0,
   );
@@ -645,8 +707,8 @@ export function draftFromParser(
           Math.abs(printedDiscountGapCents - representedDiscountCents) <= 5
         ? printedDiscountGapCents
         : 0;
-  const items = (parsed.items ?? []).map((item) => ({
-    clientId: clientId(),
+  const items = parsedItems.filter((item) => !parsedItemIsDiscountEvidence(item)).map((item) => ({
+    clientId: item.id ?? clientId(),
     itemNumber: item.costcoItemNumber ?? item.itemNumber ?? "",
     description: item.rawDescription ?? item.description ?? "",
     amount: displayCents(

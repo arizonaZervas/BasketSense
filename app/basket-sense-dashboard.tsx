@@ -25,6 +25,8 @@ import type {
   HouseholdListResponse,
   ProductMemorySummary,
   ProductPrimaryImageSummary,
+  SkippedWeekHistoryEntry,
+  TripSkipSummary,
   TripReviewHistoryEntry,
   TripReviewHistoryResponse,
 } from "./api/household/types";
@@ -151,6 +153,7 @@ type HouseholdSnapshot = {
   currentUser: HouseholdMember;
   members: HouseholdMember[];
   currentTrip: SharedTrip;
+  currentTripSkip: TripSkipSummary | null;
   listItems: SharedListItem[];
   products: SharedProduct[];
   currentTripReceipt: {
@@ -234,6 +237,35 @@ function formatFullDate(value: string) {
 
 function formatShortDate(value: string) {
   return shortDate.format(dateFromIso(value));
+}
+
+function addDateWeeks(value: string, weeks: number) {
+  const date = dateFromIso(value);
+  date.setUTCDate(date.getUTCDate() + weeks * 7);
+  return date.toISOString().slice(0, 10);
+}
+
+function dateInTimeZone(timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+function earliestFutureSkipCount(
+  originalScheduledFor: string,
+  timeZone: string,
+) {
+  const today = dateInTimeZone(timeZone);
+  for (let count = 1; count <= 12; count += 1) {
+    if (addDateWeeks(originalScheduledFor, count) > today) return count;
+  }
+  return 13;
 }
 
 function formatAuditRange(
@@ -450,6 +482,7 @@ export function BasketSenseDashboard({
     useState<DeferredViewStatus>("idle");
   const [reviewHistoryError, setReviewHistoryError] = useState<string | null>(null);
   const [reviewHistory, setReviewHistory] = useState<TripReviewHistoryEntry[]>([]);
+  const [skippedWeeks, setSkippedWeeks] = useState<SkippedWeekHistoryEntry[]>([]);
   const [selectedReviewReceiptId, setSelectedReviewReceiptId] = useState<string | null>(null);
   const [selectedTripReview, setSelectedTripReview] =
     useState<ClosedLoopSnapshot | null>(null);
@@ -762,6 +795,7 @@ export function BasketSenseDashboard({
             return {
               ...current,
               currentTrip: snapshot.currentTrip,
+              currentTripSkip: snapshot.currentTripSkip,
               listItems: keepPendingCheckedStates(snapshot.listItems),
             };
           });
@@ -1406,6 +1440,34 @@ export function BasketSenseDashboard({
     });
   }
 
+  async function setTripSkip(skipCount: number) {
+    if (!household) return false;
+    const saved = await performWrite("set-trip-skip", {
+      method: "PATCH",
+      body: {
+        action: "set_trip_skip",
+        tripId: household.currentTrip.id,
+        skipCount,
+        expectedScheduledFor: household.currentTrip.scheduledFor,
+      },
+      successMessage:
+        skipCount === 0
+          ? "Vacation break removed"
+          : `Next Costco trip moved to ${formatFullDate(
+              addDateWeeks(
+                household.currentTripSkip?.originalScheduledFor ??
+                  household.currentTrip.scheduledFor,
+                skipCount,
+              ),
+            )}`,
+    });
+    if (saved) {
+      setReviewHistoryStatus("idle");
+      setReviewHistoryError(null);
+    }
+    return saved;
+  }
+
   async function reopenSandboxTrip(receiptId: string, tripId: string) {
     const reopened = await performWrite("reopen-sandbox-trip", {
       method: "PATCH",
@@ -1494,6 +1556,7 @@ export function BasketSenseDashboard({
           throw new Error(apiErrorMessage(body, "Trip review history could not be loaded."));
         }
         setReviewHistory(body.history);
+        setSkippedWeeks(Array.isArray(body.skippedWeeks) ? body.skippedWeeks : []);
         const preferredId =
           selectedReviewReceiptId && body.history.some((entry) => entry.receiptId === selectedReviewReceiptId)
             ? selectedReviewReceiptId
@@ -1750,6 +1813,7 @@ export function BasketSenseDashboard({
             recentlyCheckedItemId={recentlyCheckedItemId}
             onFreeze={freezeTrip}
             onUnfreeze={unfreezeTrip}
+            onSetTripSkip={setTripSkip}
             onCopy={copyList}
             onOpenReceipt={(step) => void openCurrentReceiptFlow(step)}
           />
@@ -1821,6 +1885,7 @@ export function BasketSenseDashboard({
           <ReviewTab
             closedLoop={displayedTripReview}
             history={reviewHistory}
+            skippedWeeks={skippedWeeks}
             selectedReceiptId={selectedReviewReceiptId}
             historyStatus={reviewHistoryStatus}
             historyError={reviewHistoryError}
@@ -2066,6 +2131,7 @@ function ThisWeekTab({
   recentlyCheckedItemId,
   onFreeze,
   onUnfreeze,
+  onSetTripSkip,
   onCopy,
   onOpenReceipt,
 }: {
@@ -2089,6 +2155,7 @@ function ThisWeekTab({
   recentlyCheckedItemId: string | null;
   onFreeze: () => void;
   onUnfreeze: () => void;
+  onSetTripSkip: (skipCount: number) => Promise<boolean>;
   onCopy: () => void;
   onOpenReceipt: (step?: ReceiptStep) => void;
 }) {
@@ -2103,6 +2170,8 @@ function ThisWeekTab({
   const [estimateDraft, setEstimateDraft] = useState("");
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [showListComplete, setShowListComplete] = useState(false);
+  const [skipDialogOpen, setSkipDialogOpen] = useState(false);
+  const [skipCount, setSkipCount] = useState(1);
   const [imagePreview, setImagePreview] = useState<ProductImagePreview | null>(null);
   const estimateReturnFocus = useRef<HTMLButtonElement | null>(null);
   const estimateReturnItemId = useRef<string | null>(null);
@@ -2110,12 +2179,14 @@ function ThisWeekTab({
   const quickItemRef = useRef<HTMLInputElement>(null);
   const unfreezeTriggerRef = useRef<HTMLButtonElement>(null);
   const startShoppingRef = useRef<HTMLButtonElement>(null);
+  const skipTriggerRef = useRef<HTMLButtonElement>(null);
   const previousTripState = useRef<{
     id: string;
     status: TripStatus;
   } | null>(null);
   const previousRemainingItemCount = useRef<number | null>(null);
   const trip = household?.currentTrip;
+  const tripSkip = household?.currentTripSkip ?? null;
   const tripId = trip?.id ?? null;
   const tripStatus = trip?.status ?? null;
   const items = household?.listItems ?? [];
@@ -2370,11 +2441,24 @@ function ThisWeekTab({
     if (saved) closeEstimateEditor();
   }
 
+  function openSkipDialog() {
+    const originalScheduledFor = tripSkip?.originalScheduledFor ?? trip?.scheduledFor;
+    const minimum = originalScheduledFor && household
+      ? earliestFutureSkipCount(originalScheduledFor, household.household.timeZone)
+      : 1;
+    setSkipCount(Math.max(tripSkip?.skippedDates.length ?? 1, minimum));
+    setSkipDialogOpen(true);
+  }
+
+  async function saveTripSkip() {
+    if (await onSetTripSkip(skipCount)) setSkipDialogOpen(false);
+  }
+
   return (
     <div className="page week-page">
       <section className="page-heading with-controls">
         <div>
-          <h1>This Saturday</h1>
+          <h1>{tripSkip ? "Next Costco trip" : "This Saturday"}</h1>
           <p>{formatFullDate(trip?.scheduledFor ?? suggestionPlanDate)}</p>
         </div>
         <div className="heading-actions">
@@ -2382,14 +2466,25 @@ function ThisWeekTab({
             Copy list
           </button>
           {!shoppingStarted ? (
-            <button
-              ref={startShoppingRef}
-              className="primary-button start-shopping-button"
-              onClick={onFreeze}
-              disabled={!household || !included.length || pendingWrites.has("freeze-trip")}
-            >
-              {pendingWrites.has("freeze-trip") ? "Starting…" : "Start shopping"}
-            </button>
+            <>
+              <button
+                ref={skipTriggerRef}
+                type="button"
+                className="secondary-button skip-week-button"
+                onClick={openSkipDialog}
+                disabled={!household || pendingWrites.has("set-trip-skip")}
+              >
+                {tripSkip ? "Change break" : "Skip week"}
+              </button>
+              <button
+                ref={startShoppingRef}
+                className="primary-button start-shopping-button"
+                onClick={onFreeze}
+                disabled={!household || !included.length || pendingWrites.has("freeze-trip")}
+              >
+                {pendingWrites.has("freeze-trip") ? "Starting…" : "Start shopping"}
+              </button>
+            </>
           ) : (
             <>
               <span className="frozen-pill">Shopping started</span>
@@ -2429,6 +2524,39 @@ function ThisWeekTab({
           )}
         </div>
       </section>
+
+      {tripSkip && !shoppingStarted ? (
+        <section className="trip-skip-notice" aria-label="Vacation break">
+          <span className="trip-skip-mark" aria-hidden="true">→</span>
+          <div>
+            <strong>Vacation break</strong>
+            <p>
+              {new Intl.ListFormat("en-US", {
+                style: "long",
+                type: "conjunction",
+              }).format(tripSkip.skippedDates.map(formatShortDate))} skipped
+            </p>
+          </div>
+          <div className="trip-skip-actions">
+            <button type="button" className="text-button" onClick={openSkipDialog}>
+              Change
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => void onSetTripSkip(0)}
+              disabled={pendingWrites.has("set-trip-skip")}
+            >
+              {pendingWrites.has("set-trip-skip") ? "Saving…" : "Undo"}
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {failedWrites["set-trip-skip"] ? (
+        <div className="inline-write-error trip-skip-error" role="alert">
+          <span>{failedWrites["set-trip-skip"].message}</span>
+        </div>
+      ) : null}
 
       <ol className="trip-phases" aria-label="Trip progress">
         <li className="complete"><span>1</span>Plan</li>
@@ -3011,6 +3139,160 @@ function ThisWeekTab({
           onClose={() => setImagePreview(null)}
         />
       ) : null}
+      {skipDialogOpen && trip ? (
+        <SkipWeekDialog
+          originalScheduledFor={
+            tripSkip?.originalScheduledFor ?? trip.scheduledFor
+          }
+          skipCount={skipCount}
+          minimumSkipCount={earliestFutureSkipCount(
+            tripSkip?.originalScheduledFor ?? trip.scheduledFor,
+            household?.household.timeZone ?? "America/Los_Angeles",
+          )}
+          pending={pendingWrites.has("set-trip-skip")}
+          error={failedWrites["set-trip-skip"]?.message ?? null}
+          returnFocusRef={skipTriggerRef}
+          onSkipCountChange={setSkipCount}
+          onSave={() => void saveTripSkip()}
+          onClose={() => setSkipDialogOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function SkipWeekDialog({
+  originalScheduledFor,
+  skipCount,
+  minimumSkipCount,
+  pending,
+  error,
+  returnFocusRef,
+  onSkipCountChange,
+  onSave,
+  onClose,
+}: {
+  originalScheduledFor: string;
+  skipCount: number;
+  minimumSkipCount: number;
+  pending: boolean;
+  error: string | null;
+  returnFocusRef: { current: HTMLButtonElement | null };
+  onSkipCountChange: (value: number) => void;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  const dialog = useRef<HTMLElement | null>(null);
+  const returnDate = addDateWeeks(originalScheduledFor, skipCount);
+  const hasAvailableReturn = minimumSkipCount <= 12;
+
+  useEffect(() => {
+    const returnElement = returnFocusRef.current;
+    const previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButton.current?.focus();
+    const handleKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const focusable = Array.from(
+        dialog.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeys);
+    return () => {
+      window.removeEventListener("keydown", handleKeys);
+      document.body.style.overflow = previousBodyOverflow;
+      returnElement?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
+  return (
+    <div
+      className="skip-week-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose();
+      }}
+    >
+      <section
+        ref={dialog}
+        className="skip-week-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="skip-week-title"
+      >
+        <div className="skip-week-heading">
+          <div>
+            <p className="section-label">Vacation break</p>
+            <h2 id="skip-week-title">Skip Costco weeks</h2>
+          </div>
+          <button
+            ref={closeButton}
+            type="button"
+            className="close-button"
+            aria-label="Close skip week"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+        <label className="skip-week-field">
+          <span>Weeks away</span>
+          <select
+            value={skipCount}
+            onChange={(event) => onSkipCountChange(Number(event.target.value))}
+          >
+            {Array.from(
+              { length: Math.max(0, 13 - minimumSkipCount) },
+              (_, index) => minimumSkipCount + index,
+            ).map((count) => (
+              <option key={count} value={count}>
+                {count} {count === 1 ? "week" : "weeks"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="skip-week-preview" aria-live="polite">
+          <span>Next trip</span>
+          <strong>
+            {hasAvailableReturn
+              ? formatFullDate(returnDate)
+              : "No return within 12 weeks"}
+          </strong>
+        </div>
+        {error ? (
+          <p className="skip-week-error" role="alert">{error}</p>
+        ) : null}
+        <div className="skip-week-dialog-actions">
+          <button type="button" className="secondary-button" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onSave}
+            disabled={pending || !hasAvailableReturn}
+          >
+            {pending ? "Saving…" : "Save break"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -5012,6 +5294,7 @@ function ProductsTab({
 function ReviewTab({
   closedLoop,
   history,
+  skippedWeeks,
   selectedReceiptId,
   historyStatus,
   historyError,
@@ -5026,6 +5309,7 @@ function ReviewTab({
 }: {
   closedLoop: ClosedLoopSnapshot | null;
   history: TripReviewHistoryEntry[];
+  skippedWeeks: SkippedWeekHistoryEntry[];
   selectedReceiptId: string | null;
   historyStatus: DeferredViewStatus;
   historyError: string | null;
@@ -5044,6 +5328,24 @@ function ReviewTab({
       <section className="page-heading">
         <h1>Receipt recaps</h1>
       </section>
+
+      {skippedWeeks.length ? (
+        <section className="card skipped-week-history" aria-labelledby="skipped-week-history-title">
+          <div className="skipped-week-history-heading">
+            <h2 id="skipped-week-history-title">Skipped weeks</h2>
+            <span>{skippedWeeks.length}</span>
+          </div>
+          <ol>
+            {skippedWeeks.map((entry) => (
+              <li key={`${entry.tripId}:${entry.scheduledFor}`}>
+                <span className="skipped-week-dot" aria-hidden="true" />
+                <time dateTime={entry.scheduledFor}>{formatFullDate(entry.scheduledFor)}</time>
+                <span>Skipped</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
 
       {historyStatus === "loading" && !history.length ? (
         <section className="card review-history-loading" role="status" aria-busy="true">

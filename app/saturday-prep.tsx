@@ -63,7 +63,7 @@ export function SaturdayPrepExperience({
   pendingItemIds: ReadonlySet<string>;
   onAdd: (item: SaturdayPrepItem, trigger: HTMLButtonElement) => void;
 }) {
-  const storageKey = `basketsense-saturday-prep:${tripId}`;
+  const storageKey = `basketsense-saturday-prep:${tripId}:${scheduledFor}`;
   const [status, setStatus] = useState<"idle" | "open" | "dismissed" | "complete">(
     () => {
       if (typeof window === "undefined") return "idle";
