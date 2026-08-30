@@ -122,3 +122,39 @@ test("recommendation v2 backtests are cutoff-safe and report bounded metrics", (
   assert.equal(backtest.catalogCoverage, 0.75);
   assert.ok(backtest.falsePositiveBurden >= 0);
 });
+
+test("recommendation v2 learns only from completed earlier recommendation cycles", () => {
+  const baseProduct = catalog.find((product) => product.productId === "bags");
+  const baseline = evaluateRecommendationCatalog({
+    products: [baseProduct],
+    asOfDate: "2026-07-18",
+  });
+  const currentCycleResponse = evaluateRecommendationCatalog({
+    products: [{
+      ...baseProduct,
+      outcomes: [{
+        recordedAt: "2026-07-10T12:00:00.000Z",
+        cycleDate: "2026-07-18",
+        value: "removed",
+      }],
+    }],
+    asOfDate: "2026-07-18",
+  });
+  assert.deepEqual(currentCycleResponse, baseline);
+
+  const priorCycleResponse = evaluateRecommendationCatalog({
+    products: [{
+      ...baseProduct,
+      outcomes: [{
+        recordedAt: "2026-07-10T12:00:00.000Z",
+        cycleDate: "2026-07-11",
+        value: "removed",
+      }],
+    }],
+    asOfDate: "2026-07-18",
+  });
+  assert.equal(
+    priorCycleResponse.assessments[0].scoreBps,
+    baseline.assessments[0].scoreBps - 300,
+  );
+});

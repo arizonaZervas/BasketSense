@@ -1569,6 +1569,253 @@ test("visible v2 cutover removes only legacy draft ideas", async () => {
   }
 });
 
+test("visible v2 learns the latest explicit response and retained recommendations", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "recommendation-learning@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const candidate = initial.listItems.find(
+      (item) => item.id.startsWith("seed-v2-") && !item.included,
+    );
+    const automaticRecommendation = initial.listItems.find(
+      (item) => item.id.startsWith("seed-v2-") && item.included,
+    );
+    assert.ok(candidate);
+    assert.ok(automaticRecommendation);
+    const responseFeedbackId =
+      `recommendation-response:${initial.household.id}:${candidate.id}`;
+
+    const accept = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: candidate.id,
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(accept.status, 200);
+    const acceptedFeedback = db.database
+      .prepare(
+        `SELECT kind, value, list_item_id, product_id
+         FROM feedback WHERE id = ?`,
+      )
+      .get(responseFeedbackId);
+    assert.equal(acceptedFeedback.kind, "recommendation_response");
+    assert.equal(acceptedFeedback.value, "accepted");
+    assert.equal(acceptedFeedback.list_item_id, candidate.id);
+    assert.equal(acceptedFeedback.product_id, candidate.productId);
+
+    const remove = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "set_item_included",
+        itemId: candidate.id,
+        included: false,
+      }),
+      db,
+    );
+    assert.equal(remove.status, 200);
+    assert.equal(
+      db.database
+        .prepare(`SELECT value FROM feedback WHERE id = ?`)
+        .get(responseFeedbackId).value,
+      "removed",
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE list_item_id = ? AND kind = 'recommendation_response'
+             AND id LIKE 'recommendation-response:%'`,
+        )
+        .get(candidate.id).count,
+      1,
+      "Retries and reversals keep one latest explicit response per recommendation",
+    );
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "set_item_included",
+            itemId: candidate.id,
+            included: true,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "freeze_trip",
+            tripId: initial.currentTrip.id,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    assert.ok(
+      db.database
+        .prepare(
+          `SELECT id FROM feedback WHERE id = ?`,
+        )
+        .get(responseFeedbackId),
+      "An explicitly accepted recommendation keeps one canonical cycle response",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT value FROM feedback WHERE id = ?`)
+        .get(responseFeedbackId).value,
+      "accepted",
+    );
+    assert.ok(
+      db.database
+        .prepare(
+          `SELECT id FROM feedback
+           WHERE id = ? AND value = 'kept'`,
+        )
+        .get(
+          `recommendation-response:${initial.household.id}:${automaticRecommendation.id}`,
+        ),
+      "An automatic recommendation retained in the frozen plan becomes future evidence",
+    );
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", {
+            action: "unfreeze_trip",
+            tripId: initial.currentTrip.id,
+          }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE trip_id = ? AND value = 'kept'
+             AND id LIKE 'recommendation-response:%'`,
+        )
+        .get(initial.currentTrip.id).count,
+      0,
+      "Undoing shopping removes provisional retention evidence",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT value FROM feedback WHERE id = ?`)
+        .get(responseFeedbackId).value,
+      "accepted",
+      "The household's explicit Add decision remains durable",
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("v2 response learning is atomic with its list mutation", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "recommendation-learning-atomic@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const candidate = initial.listItems.find(
+      (item) => item.id.startsWith("seed-v2-") && !item.included,
+    );
+    assert.ok(candidate);
+    db.failNextBatchMatching(/INSERT INTO feedback/);
+
+    const originalConsoleError = console.error;
+    let response;
+    try {
+      console.error = () => undefined;
+      response = await handleHouseholdPatch(
+        householdRequest(email, "PATCH", {
+          action: "set_item_included",
+          itemId: candidate.id,
+          included: true,
+        }),
+        db,
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(response.status, 500);
+    assert.equal(
+      db.database
+        .prepare(`SELECT included FROM trip_list_items WHERE id = ?`)
+        .get(candidate.id).included,
+      0,
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT COUNT(*) AS count FROM feedback WHERE list_item_id = ?`)
+        .get(candidate.id).count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("v2 retention learning rolls back with a failed freeze", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "recommendation-freeze-atomic@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    db.failNextBatchMatching(/INSERT INTO feedback/);
+
+    const originalConsoleError = console.error;
+    let response;
+    try {
+      console.error = () => undefined;
+      response = await handleHouseholdPatch(
+        householdRequest(email, "PATCH", {
+          action: "freeze_trip",
+          tripId: initial.currentTrip.id,
+        }),
+        db,
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(response.status, 500);
+    assert.equal(
+      db.database
+        .prepare(`SELECT status FROM trips WHERE id = ?`)
+        .get(initial.currentTrip.id).status,
+      "planning",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_intent_snapshots WHERE trip_id = ?`)
+        .get(initial.currentTrip.id).count,
+      0,
+    );
+    assert.equal(
+      db.database
+        .prepare(
+          `SELECT COUNT(*) AS count FROM feedback
+           WHERE trip_id = ? AND kind = 'recommendation_response'`,
+        )
+        .get(initial.currentTrip.id).count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("list scope returns only the live trip without rerunning household bootstrap", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -4958,6 +5205,9 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
     assert.equal(ingest.comparison.unresolvedCents, 0);
     assert.ok(catalogQuestion);
     assert.ok(catalogQuestion.receiptItemId);
+    const feedbackCountBeforeClaim = db.database
+      .prepare(`SELECT COUNT(*) AS count FROM feedback`)
+      .get().count;
 
     db.database
       .prepare(
@@ -4978,7 +5228,7 @@ test("an unknown receipt item becomes a catalog product only after an explicit n
     assert.equal(claimedByPartner.status, 409);
     assert.equal(
       db.database.prepare(`SELECT COUNT(*) AS count FROM feedback`).get().count,
-      0,
+      feedbackCountBeforeClaim,
       "A claimed question must not run catalog or feedback side effects",
     );
     db.database

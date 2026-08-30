@@ -3535,7 +3535,7 @@ async function setListItemBoolean(
 
   let changes = 0;
   if (column === "included") {
-    const update = await db
+    const updateStatement = db
       .prepare(statement)
       .bind(
         value ? 1 : 0,
@@ -3544,9 +3544,41 @@ async function setListItemBoolean(
         now,
         item.id,
         context.household.id
-      )
-      .run();
-    changes = update.meta.changes ?? 0;
+      );
+    const isV2RecommendationTransition =
+      item.id.startsWith("seed-v2-") &&
+      item.product_id !== null &&
+      Boolean(item.included) !== value;
+    if (isV2RecommendationTransition) {
+      const results = await db.batch([
+        updateStatement,
+        db
+          .prepare(
+            `INSERT INTO feedback (
+               id, household_id, trip_id, list_item_id, product_id,
+               kind, value, created_by_member_id, created_at
+             ) VALUES (?, ?, ?, ?, ?, 'recommendation_response', ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               value = excluded.value,
+               created_by_member_id = excluded.created_by_member_id,
+               created_at = excluded.created_at`
+          )
+          .bind(
+            `recommendation-response:${context.household.id}:${item.id}`,
+            context.household.id,
+            item.trip_id,
+            item.id,
+            item.product_id,
+            value ? "accepted" : "removed",
+            context.member.id,
+            now
+          ),
+      ]);
+      changes = results[0]?.meta.changes ?? 0;
+    } else {
+      const update = await updateStatement.run();
+      changes = update.meta.changes ?? 0;
+    }
   } else {
     const update = await db
       .prepare(statement)
@@ -3857,6 +3889,34 @@ async function freezeTrip(
              )`
         )
         .bind(now, now, trip.id, context.household.id),
+      db
+        .prepare(
+          `INSERT INTO feedback (
+             id, household_id, trip_id, list_item_id, product_id,
+             kind, value, created_by_member_id, created_at
+           )
+           SELECT 'recommendation-response:' || ? || ':' || item.id,
+                  ?, item.trip_id,
+                  item.id, item.product_id, 'recommendation_response',
+                  'kept', ?, ?
+           FROM trip_list_items AS item
+           INNER JOIN trips ON trips.id = item.trip_id
+           WHERE item.trip_id = ?
+             AND trips.household_id = ?
+             AND trips.status = 'frozen'
+             AND item.included_at_freeze = 1
+             AND item.product_id IS NOT NULL
+             AND item.id LIKE 'seed-v2-%'
+           ON CONFLICT(id) DO NOTHING`
+        )
+        .bind(
+          context.household.id,
+          context.household.id,
+          context.member.id,
+          now,
+          trip.id,
+          context.household.id
+        ),
     ]);
   }
 
@@ -3939,6 +3999,15 @@ async function unfreezeTrip(
   const results = await db.batch([
     db
       .prepare(
+        `DELETE FROM feedback
+         WHERE household_id = ? AND trip_id = ?
+           AND kind = 'recommendation_response'
+           AND value = 'kept'
+           AND id LIKE 'recommendation-response:%'`
+      )
+      .bind(context.household.id, trip.id),
+    db
+      .prepare(
         `DELETE FROM trip_intent_snapshots
          WHERE trip_id = ?
            AND EXISTS (
@@ -4004,7 +4073,7 @@ async function unfreezeTrip(
       ),
   ]);
 
-  if ((results[2]?.meta.changes ?? 0) < 1) {
+  if ((results[3]?.meta.changes ?? 0) < 1) {
     const receiptAfterRace = await db
       .prepare(
         `SELECT id FROM receipt_transactions
@@ -7577,16 +7646,21 @@ async function recommendationV2Catalog(
     ).bind(householdId).all<{ product_id: string; created_at: string; value: string }>(),
     db.prepare(
       `SELECT COALESCE(feedback.product_id, receipt_items.product_id) AS product_id,
-              feedback.created_at, feedback.value
+              feedback.created_at, feedback.value,
+              trips.scheduled_for AS cycle_date
        FROM feedback
        LEFT JOIN receipt_items ON receipt_items.id = feedback.receipt_item_id
+       LEFT JOIN trips ON trips.id = feedback.trip_id
        WHERE feedback.household_id = ?
          AND feedback.kind IN (
            'recommendation_response', 'duplicate_signal', 'waste_signal',
            'regret_signal', 'fulfillment_reason'
          )
+         AND (feedback.trip_id IS NULL OR trips.status = 'completed')
          AND COALESCE(feedback.product_id, receipt_items.product_id) IS NOT NULL`,
-    ).bind(householdId).all<{ product_id: string; created_at: string; value: string }>(),
+    ).bind(householdId).all<{
+      product_id: string; created_at: string; value: string; cycle_date: string | null;
+    }>(),
   ]);
 
   return products.results.map((product) => ({
@@ -7610,7 +7684,11 @@ async function recommendationV2Catalog(
       })),
     outcomes: outcomes.results
       .filter((event) => event.product_id === product.id)
-      .map((event) => ({ recordedAt: event.created_at, value: event.value })),
+      .map((event) => ({
+        recordedAt: event.created_at,
+        cycleDate: event.cycle_date,
+        value: event.value,
+      })),
   }));
 }
 

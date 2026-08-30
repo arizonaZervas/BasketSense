@@ -24,6 +24,7 @@ export type RecommendationV2MemoryEvent = {
 
 export type RecommendationV2OutcomeEvent = {
   recordedAt: string;
+  cycleDate?: string | null;
   value: string;
 };
 
@@ -195,7 +196,7 @@ function scoreProduct(
     ? median(quantities.map((quantity) => Math.abs(quantity - typicalQuantity))) ?? typicalQuantity
     : null;
   const outcomes = (product.outcomes ?? []).filter(
-    (event) => dateOnly(event.recordedAt) < dateOnly(asOfDate),
+    (event) => dateOnly(event.cycleDate ?? event.recordedAt) < dateOnly(asOfDate),
   );
   const positiveOutcomes = outcomes.filter((event) =>
     ["buy_again", "accepted", "kept", "fulfilled"].includes(event.value),
