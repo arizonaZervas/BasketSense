@@ -1505,7 +1505,7 @@ async function seedSaturdayList(
     : await visibleRecommendationV1(db, trip);
   const existing = await db
     .prepare(
-      `SELECT id, product_id, included, checked
+      `SELECT id, product_id, included, checked, estimated_price_cents
        FROM trip_list_items WHERE trip_id = ?`
     )
     .bind(trip.id)
@@ -1514,6 +1514,7 @@ async function seedSaturdayList(
       product_id: string | null;
       included: number;
       checked: number;
+      estimated_price_cents: number | null;
     }>();
   const selectedIds = new Set(recommendations.map((recommendation) => recommendation.id));
   const legacyPrefix = `seed-${trip.scheduled_for}-`;
@@ -1574,6 +1575,51 @@ async function seedSaturdayList(
   });
 
   await runPreparedInChunks(db, statements);
+
+  if (trip.status !== "planning") return;
+  const existingByProductId = new Map(
+    existing.results
+      .filter((item) => !removableIds.has(item.id) && item.product_id)
+      .map((item) => [item.product_id!, item]),
+  );
+  const estimateBackfills = recommendations.flatMap((recommendation) => {
+    const existingItem = existingByProductId.get(recommendation.productId);
+    if (
+      !existingItem ||
+      existingItem.estimated_price_cents !== null ||
+      recommendation.estimatedPriceCents === null ||
+      recommendation.estimatedPriceCents <= 0
+    ) {
+      return [];
+    }
+    return [{
+      itemId: existingItem.id,
+      estimatedPriceCents: recommendation.estimatedPriceCents,
+    }];
+  });
+  if (!estimateBackfills.length) return;
+
+  await db.batch(
+    estimateBackfills.map((candidate) =>
+      db.prepare(
+        `UPDATE trip_list_items
+         SET estimated_price_cents = ?, updated_at = ?
+         WHERE id = ? AND trip_id = ? AND estimated_price_cents IS NULL
+           AND EXISTS (
+             SELECT 1 FROM trips
+             WHERE trips.id = trip_list_items.trip_id
+               AND trips.household_id = ?
+               AND trips.status = 'planning'
+           )`,
+      ).bind(
+        candidate.estimatedPriceCents,
+        now,
+        candidate.itemId,
+        trip.id,
+        trip.household_id,
+      )
+    ),
+  );
 }
 
 type VisibleRecommendationEngine = "v1" | "v2";
@@ -8054,7 +8100,21 @@ async function recommendationV2Catalog(
       `SELECT receipt_items.product_id,
               substr(receipt_transactions.purchased_at, 1, 10) AS purchased_on,
               SUM(receipt_items.quantity_milli) AS quantity_milli,
-              CAST(ROUND(AVG(receipt_items.unit_price_cents)) AS INTEGER) AS unit_price_cents
+              CAST(ROUND(AVG(
+                CASE
+                  WHEN receipt_items.unit_price_cents > 0
+                    THEN receipt_items.unit_price_cents
+                  WHEN receipt_items.quantity_milli > 0
+                   AND receipt_items.line_subtotal_cents > 0
+                    THEN receipt_items.line_subtotal_cents * 1000.0 /
+                         receipt_items.quantity_milli
+                  WHEN receipt_items.quantity_milli > 0
+                   AND receipt_items.net_amount_cents > 0
+                    THEN receipt_items.net_amount_cents * 1000.0 /
+                         receipt_items.quantity_milli
+                  ELSE NULL
+                END
+              )) AS INTEGER) AS unit_price_cents
        FROM receipt_items
        INNER JOIN receipt_transactions ON receipt_transactions.id = receipt_items.receipt_transaction_id
        WHERE receipt_transactions.household_id = ?

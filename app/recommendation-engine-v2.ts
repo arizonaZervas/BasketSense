@@ -182,6 +182,9 @@ function scoreProduct(
     ? null
     : median(intervals.map((interval) => Math.abs(interval - medianIntervalDays)));
   const latest = purchases.at(-1);
+  const latestKnownPrice = [...purchases]
+    .reverse()
+    .find((event) => (event.unitPriceCents ?? 0) > 0)?.unitPriceCents ?? null;
   const daysSinceLastPurchase = latest
     ? daysBetween(latest.purchasedOn, asOfDate)
     : null;
@@ -276,7 +279,7 @@ function scoreProduct(
     rank: null,
     section,
     reason,
-    estimatedPriceCents: latest?.unitPriceCents ?? null,
+    estimatedPriceCents: latestKnownPrice,
     components,
     evidence: {
       purchaseCount: purchases.length,

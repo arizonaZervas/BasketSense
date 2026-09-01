@@ -92,6 +92,21 @@ test("recommendation v2 evaluates the entire catalog and never promotes one-off 
   ));
 });
 
+test("recommendation v2 keeps the latest known price when the newest receipt omits it", () => {
+  const run = evaluateRecommendationCatalog({
+    products: [{
+      ...catalog[0],
+      purchases: [
+        ...catalog[0].purchases,
+        { purchasedOn: "2026-07-19", quantityMilli: 1000, unitPriceCents: null },
+      ],
+    }],
+    asOfDate: "2026-07-26",
+  });
+
+  assert.equal(run.assessments[0].estimatedPriceCents, 1449);
+});
+
 test("recommendation v2 backtests are cutoff-safe and report bounded metrics", () => {
   const beforeFuturePurchase = evaluateRecommendationCatalog({
     products: catalog,

@@ -1576,6 +1576,117 @@ test("visible recommendation v2 backfills candidates without overwriting spouse 
   }
 });
 
+test("visible recommendation v2 derives missing unit prices and backfills only planning nulls", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "recommendation-estimate-backfill@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const tripId = initial.currentTrip.id;
+    const milk = initial.listItems.find(
+      (item) => item.label === "Kirkland Signature organic 2% milk",
+    );
+    const preserved = initial.listItems.find((item) => item.id !== milk?.id);
+    assert.ok(milk?.productId);
+    assert.ok(preserved);
+    const milkProduct = productForListItem(initial, milk);
+
+    db.database
+      .prepare(
+        `UPDATE trip_list_items
+         SET estimated_price_cents = CASE WHEN id = ? THEN NULL ELSE 777 END
+         WHERE id IN (?, ?)`,
+      )
+      .run(milk.id, milk.id, preserved.id);
+
+    const purchasedOn = new Date(`${initial.currentTrip.scheduledFor}T12:00:00.000Z`);
+    purchasedOn.setUTCDate(purchasedOn.getUTCDate() - 1);
+    const purchasedAt = purchasedOn.toISOString();
+    const now = "2035-01-01T00:00:00.000Z";
+    db.database
+      .prepare(
+        `INSERT INTO receipt_transactions (
+          id, household_id, trip_id, source_transaction_key,
+          transaction_type, source_type, purchased_at, item_gross_cents,
+          item_count, subtotal_cents, tax_cents, discount_cents, total_cents,
+          household_funded_cents, external_funding_cents, audit_flag,
+          parse_status, created_at, updated_at
+        ) VALUES (
+          'recommendation-estimate-transaction', ?, NULL,
+          'recommendation-estimate-transaction', 'warehouse', 'manual', ?,
+          3198, 2, 3198, 0, 0, 3198, 3198, 0,
+          'test_missing_unit_price', 'reconciled', ?, ?
+        )`,
+      )
+      .run(initial.household.id, purchasedAt, now, now);
+    db.database
+      .prepare(
+        `INSERT INTO receipt_items (
+          id, receipt_transaction_id, product_id, source_line_number,
+          costco_item_number, raw_description, quantity_milli,
+          unit_price_cents, line_subtotal_cents, discount_cents,
+          net_amount_cents, tax_status, normalization_status, is_return,
+          created_at, updated_at
+        ) VALUES (
+          'recommendation-estimate-item', 'recommendation-estimate-transaction',
+          ?, 1, ?, 'KS ORG 2% MK', 2000, NULL, 3198, 0, 3198,
+          'non_taxable', 'normalized_from_history', 0, ?, ?
+        )`,
+      )
+      .run(milk.productId, milkProduct.costcoItemNumber, now, now);
+
+    const beforeRevision = db.database
+      .prepare(`SELECT list_revision FROM trips WHERE id = ?`)
+      .get(tripId).list_revision;
+    const backfilled = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.equal(
+      backfilled.listItems.find((item) => item.id === milk.id).estimatedPriceCents,
+      1599,
+    );
+    assert.equal(
+      backfilled.listItems.find((item) => item.id === preserved.id).estimatedPriceCents,
+      777,
+      "An explicit household estimate must never be overwritten",
+    );
+    assert.ok(backfilled.currentTrip.listRevision > beforeRevision);
+
+    const stable = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.equal(stable.currentTrip.listRevision, backfilled.currentTrip.listRevision);
+
+    assert.equal(
+      (
+        await handleHouseholdPatch(
+          householdRequest(email, "PATCH", { action: "freeze_trip", tripId }),
+          db,
+        )
+      ).status,
+      200,
+    );
+    db.database
+      .prepare(`UPDATE trip_list_items SET estimated_price_cents = NULL WHERE id = ?`)
+      .run(milk.id);
+    const frozenRevision = db.database
+      .prepare(`SELECT list_revision FROM trips WHERE id = ?`)
+      .get(tripId).list_revision;
+    const frozen = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    assert.equal(
+      frozen.listItems.find((item) => item.id === milk.id).estimatedPriceCents,
+      null,
+      "Frozen trips must remain immutable",
+    );
+    assert.equal(frozen.currentTrip.listRevision, frozenRevision);
+  } finally {
+    db.close();
+  }
+});
+
 test("visible v2 cutover removes only legacy draft ideas", async () => {
   const db = new D1DatabaseAdapter();
   try {
