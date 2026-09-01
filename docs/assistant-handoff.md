@@ -106,11 +106,54 @@ changing it.
   only when they are recommendation-owned drafts. Manual rows and anything
   included or checked survive, and no non-essential V2 idea is auto-added.
 - Recommendation V1 remains intact behind the single
-  `visibleRecommendationEngine()` server switch. Until the new Sites version
-  is verified, private Sites version 85 is the production rollback.
+  `visibleRecommendationEngine()` server switch. Commit
+  `80674914b917d2d46e97044cdf905512283824ec` is deployed as private Sites
+  version 86. The clean functional rollback is to flip that switch to `v1`
+  and deploy; that path also removes V2-owned draft rows. Sites version 85 is
+  the emergency binary rollback, but its older code does not know how to clean
+  V2 draft IDs.
 - Focused D1 tests prove candidate backfill, repeat-read idempotency, legacy
   draft cleanup, preservation of a legacy active choice, and unchanged
   owner-only diagnostic behavior.
+
+## 2026-08-29 Recommendation V2.1 learning release
+
+- Commit `a5fd1e0a3adddb7326cf62b4f5a9092b2b2497a8` is deployed as private
+  Sites version 89.
+- Explicit Add and Remove decisions now record one household-scoped
+  recommendation response atomically with the List mutation. Freeze records
+  provisional `kept` evidence only for untouched automatically included V2
+  recommendations; unfreeze removes only that provisional evidence.
+- Only completed earlier cycles contribute recommendation-response evidence to
+  future scoring, preventing same-cycle leakage. No migration was required.
+- Release gates passed with 179/179 BasketSense-only tests, targeted lint,
+  scoped TypeScript, a production build, and zero post-deployment Site error
+  events. Version 88 / commit
+  `2ec13ff3019b92625a247d2e0da123067134e3a3` is the emergency binary rollback;
+  the V1 server switch remains the functional rollback.
+
+## 2026-08-31 receipt/order recovery and intent-resolution release
+
+- The release candidate hardens both weekly and ad-hoc receipt review. A saved
+  successful ingestion can restore a reopened zero-placeholder draft, genuine
+  household edits stay authoritative, discard clears the entire draft state,
+  and a zero-dollar purchase cannot become official spending.
+- The receipt reader now recognizes Costco.com purchase/return confirmations,
+  validates line arithmetic before accepting extraction, and sends incomplete
+  drafts through the existing recovery reader. Discount lines remain excluded
+  from product review/catalog while their combined value is retained once in
+  the receipt discount total.
+- Product Intent Resolution v2 separates exact-product aliases from broader
+  intent aliases, refreshes stale semantic understanding, and lets completed
+  Recaps benefit from newer trusted knowledge without writing on read.
+- Release validation passed 198/198 BasketSense-only tests, targeted lint, a
+  production build, and responsive localhost checks at 320, 390, 720, and
+  1440 pixels in Warm, Light, and Dark themes. The authenticated local sandbox
+  confirmed that untouched zero placeholders keep Save & compare disabled.
+- Private Sites version 90 / commit
+  `d0717d3ec1265bbad4f200517bc60e1281b08d36` is the pre-release rollback
+  anchor. Leave additive schema changes in place during an application
+  rollback.
 
 ## Released feature details
 
@@ -222,18 +265,19 @@ changing it.
   tooling to inspect its live URL, version, and access policy; do not create a
   replacement site, D1 database, or R2 bucket.
 - Preserve the live access boundary and verify it before every deployment. On
-  2026-08-23, the Site reported `workspace_all` at access revision 21, one
+  2026-08-29, the Site reported `workspace_all` at access revision 23, one
   account entry, no external visitors, and no workspace or tenant groups. This
   differs from the earlier custom two-account policy recorded on 2026-08-15.
-  The owner explicitly approved version 84 while preserving the 2026-08-23
-  policy unchanged. Do not print or copy account identifiers into repository
+  The owner explicitly approved version 89 while preserving this policy
+  unchanged. Do not print or copy account identifiers into repository
   docs, and do not treat the older custom policy as current without a fresh
   Sites check.
 - The latest verified production source commit is
-  `090e562e2885c3562d90142ed9c83c8766c324fc`, deployed as Sites version 85.
-  The immediate code rollback is Sites version 84 / commit
-  `9dd651f1b02cd72af049993379f24c6782ec5112`; leave migrations in place during
-  an app rollback.
+  `a5fd1e0a3adddb7326cf62b4f5a9092b2b2497a8`, deployed as Sites version 89.
+  Prefer a one-line `visibleRecommendationEngine()` switch back to V1 and a
+  new deploy for a functional rollback. Sites version 88 / commit
+  `2ec13ff3019b92625a247d2e0da123067134e3a3` is the emergency binary rollback;
+  leave migrations in place during either rollback.
 
 ## Hard scope boundaries
 

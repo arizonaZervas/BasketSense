@@ -1,7 +1,12 @@
 import type { ExtractedReceiptDraft, ExtractedReceiptLine } from "./extraction";
-
-export const PRODUCT_UNDERSTANDING_SCHEMA_VERSION = "basketsense-product-understanding-v1";
-export const PRODUCT_UNDERSTANDING_PROMPT_VERSION = "costco-line-understanding-v1";
+export {
+  PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+  PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+} from "../../../product-understanding-contract";
+import {
+  PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+  PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+} from "../../../product-understanding-contract";
 
 export type ProductUnderstanding = {
   lookupKey: string;
@@ -13,6 +18,7 @@ export type ProductUnderstanding = {
   confidenceBps: number;
   exactSkuKnown: boolean;
   searchAliases: string[];
+  intentAliases: string[];
   source: "catalog" | "gemini";
   model: string | null;
 };
@@ -31,7 +37,10 @@ type CachedUnderstandingRow = {
   confidence_bps: number;
   exact_sku_known: number;
   search_aliases_json: string;
+  intent_aliases_json: string;
   model: string;
+  prompt_version: string;
+  schema_version: string;
 };
 
 type CatalogUnderstandingRow = {
@@ -77,6 +86,7 @@ const productUnderstandingSchema = {
           "confidenceBps",
           "exactSkuKnown",
           "searchAliases",
+          "intentAliases",
         ],
         properties: {
           lookupKey: { type: "string", minLength: 1, maxLength: 240 },
@@ -88,6 +98,11 @@ const productUnderstandingSchema = {
           confidenceBps: { type: "integer", minimum: 0, maximum: 10000 },
           exactSkuKnown: { type: "boolean" },
           searchAliases: {
+            type: "array",
+            maxItems: 8,
+            items: { type: "string", minLength: 1, maxLength: 100 },
+          },
+          intentAliases: {
             type: "array",
             maxItems: 8,
             items: { type: "string", minLength: 1, maxLength: 100 },
@@ -171,6 +186,7 @@ export function parseProductUnderstandings(
       confidenceBps: row.confidenceBps as number,
       exactSkuKnown: row.exactSkuKnown,
       searchAliases: parseSearchAliases(row.searchAliases),
+      intentAliases: parseSearchAliases(row.intentAliases),
       source: "gemini",
       model,
     });
@@ -190,7 +206,7 @@ export function buildProductUnderstandingRequest(
     contents: [{
       role: "user",
       parts: [{
-        text: `Understand these Costco receipt product labels. This step is descriptive only: do not decide whether an item was planned, recommended, valuable, or a household match. Keep meaningful variants separate (for example flavors or distinct Suja products). Use the item number as SKU evidence only when you truly know it. Prefer a concise household-readable canonical name, a broad product family useful for matching, and short search aliases. Never invent price, quantity, tax, or receipt totals.\n\nInputs:\n${JSON.stringify(inputs)}\n\nReturn exactly this JSON contract:\n${JSON.stringify(productUnderstandingSchema)}`,
+        text: `Understand these abbreviated Costco receipt product labels. This step is descriptive only: do not decide whether an item was planned, recommended, valuable, or a household match. Expand opaque register abbreviations into a concise household-readable canonical name. Keep meaningful variants separate (for example flavors, distinct Suja products, or different sizes when they change what the shopper intended). Use the item number as SKU evidence only when you truly know it.\n\nReturn two deliberately different alias sets:\n- searchAliases: alternative names for this exact product or variant, including brand shorthand a household may type. Do not put a generic family-only phrase here.\n- intentAliases: broader shopping-list phrases this exact product can reasonably fulfill, such as a product family. Do not include a phrase when a meaningful variant makes fulfillment uncertain.\n\nNever invent price, quantity, tax, or receipt totals.\n\nInputs:\n${JSON.stringify(inputs)}\n\nReturn exactly this JSON contract:\n${JSON.stringify(productUnderstandingSchema)}`,
       }],
     }],
     generationConfig: {
@@ -217,6 +233,7 @@ async function ensureProductUnderstandingTable(db: D1Database) {
       confidence_bps INTEGER NOT NULL,
       exact_sku_known INTEGER NOT NULL DEFAULT 0,
       search_aliases_json TEXT NOT NULL DEFAULT '[]',
+      intent_aliases_json TEXT NOT NULL DEFAULT '[]',
       provider TEXT NOT NULL,
       model TEXT NOT NULL,
       prompt_version TEXT NOT NULL,
@@ -230,6 +247,13 @@ async function ensureProductUnderstandingTable(db: D1Database) {
     db.prepare(`CREATE INDEX IF NOT EXISTS product_understandings_item_number_idx
       ON product_understandings (household_id, costco_item_number)`),
   ]);
+  const columns = await db.prepare(`PRAGMA table_info('product_understandings')`)
+    .all<{ name: string }>();
+  if (!columns.results.some((column) => column.name === "intent_aliases_json")) {
+    await db.prepare(
+      `ALTER TABLE product_understandings ADD intent_aliases_json TEXT NOT NULL DEFAULT '[]'`,
+    ).run();
+  }
 }
 
 function fromCachedRow(row: CachedUnderstandingRow): ProductUnderstanding {
@@ -248,6 +272,16 @@ function fromCachedRow(row: CachedUnderstandingRow): ProductUnderstanding {
     confidenceBps: row.confidence_bps,
     exactSkuKnown: Boolean(row.exact_sku_known),
     searchAliases: aliases,
+    intentAliases: (() => {
+      try {
+        const value = JSON.parse(row.intent_aliases_json);
+        return Array.isArray(value)
+          ? value.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
+          : [];
+      } catch {
+        return [];
+      }
+    })(),
     source: "gemini",
     model: row.model,
   };
@@ -255,8 +289,13 @@ function fromCachedRow(row: CachedUnderstandingRow): ProductUnderstanding {
 
 async function cachedUnderstandings(db: D1Database, householdId: string) {
   const [cache, catalog] = await Promise.all([
-    db.prepare(`SELECT * FROM product_understandings WHERE household_id = ?`)
-      .bind(householdId).all<CachedUnderstandingRow>(),
+    db.prepare(`SELECT * FROM product_understandings
+      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+      .bind(
+        householdId,
+        PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+        PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+      ).all<CachedUnderstandingRow>(),
     db.prepare(`SELECT costco_item_number, canonical_name, brand, category
       FROM products WHERE household_id = ? AND active = 1 AND costco_item_number IS NOT NULL`)
       .bind(householdId).all<CatalogUnderstandingRow>(),
@@ -265,6 +304,7 @@ async function cachedUnderstandings(db: D1Database, householdId: string) {
   for (const product of catalog.results) {
     if (!product.costco_item_number) continue;
     const lookupKey = `item:${product.costco_item_number}`;
+    if (result.has(lookupKey)) continue;
     result.set(lookupKey, {
       lookupKey,
       canonicalName: product.canonical_name,
@@ -275,6 +315,7 @@ async function cachedUnderstandings(db: D1Database, householdId: string) {
       confidenceBps: 10000,
       exactSkuKnown: true,
       searchAliases: [],
+      intentAliases: [],
       source: "catalog",
       model: null,
     });
@@ -321,9 +362,9 @@ async function persistUnderstandings(
     return db.prepare(`INSERT INTO product_understandings (
       id, household_id, lookup_key, costco_item_number, raw_description,
       canonical_name, brand, product_family, variant, category_hint,
-      confidence_bps, exact_sku_known, search_aliases_json, provider, model,
+      confidence_bps, exact_sku_known, search_aliases_json, intent_aliases_json, provider, model,
       prompt_version, schema_version, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)
     ON CONFLICT(household_id, lookup_key) DO UPDATE SET
       raw_description = excluded.raw_description,
       canonical_name = excluded.canonical_name,
@@ -334,6 +375,7 @@ async function persistUnderstandings(
       confidence_bps = excluded.confidence_bps,
       exact_sku_known = excluded.exact_sku_known,
       search_aliases_json = excluded.search_aliases_json,
+      intent_aliases_json = excluded.intent_aliases_json,
       model = excluded.model,
       prompt_version = excluded.prompt_version,
       schema_version = excluded.schema_version,
@@ -344,6 +386,7 @@ async function persistUnderstandings(
         understanding.brand, understanding.productFamily, understanding.variant,
         understanding.categoryHint, understanding.confidenceBps,
         understanding.exactSkuKnown ? 1 : 0, JSON.stringify(understanding.searchAliases),
+        JSON.stringify(understanding.intentAliases),
         understanding.model, PRODUCT_UNDERSTANDING_PROMPT_VERSION,
         PRODUCT_UNDERSTANDING_SCHEMA_VERSION, now, now,
       );
@@ -369,7 +412,7 @@ export async function understandReceiptProducts({
   const uniqueLines = new Map(candidates.map((line) => [productUnderstandingLookupKey(line), line]));
   const understood = await cachedUnderstandings(db, householdId);
   const unresolved = [...uniqueLines.entries()]
-    .filter(([lookupKey]) => !understood.has(lookupKey))
+    .filter(([lookupKey]) => understood.get(lookupKey)?.source !== "gemini")
     .map(([, line]) => line);
   if (unresolved.length) {
     const generated = await requestGeminiUnderstandings({ apiKey, model, lines: unresolved });

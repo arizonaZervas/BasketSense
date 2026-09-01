@@ -1,5 +1,6 @@
 import {
   extractReceiptWithGemini,
+  extractedReceiptNeedsRecovery,
   ReceiptExtractionError,
   receiptExtractionErrorCode,
   RECEIPT_EXTRACTION_SCHEMA_VERSION,
@@ -259,6 +260,26 @@ async function authorizeIngestion(db: D1Database, email: string, ingestionId: st
   return row;
 }
 
+async function latestAuthorizedIngestionForReceipt(
+  db: D1Database,
+  email: string,
+  receiptId: string,
+) {
+  return db
+    .prepare(
+      `SELECT receipt_ingestions.*
+       FROM receipt_ingestions
+       INNER JOIN household_members
+         ON household_members.household_id = receipt_ingestions.household_id
+       WHERE receipt_ingestions.receipt_transaction_id = ?
+         AND lower(household_members.user_email) = ?
+       ORDER BY receipt_ingestions.updated_at DESC, receipt_ingestions.created_at DESC
+       LIMIT 1`,
+    )
+    .bind(receiptId, email)
+    .first<IngestionRow>();
+}
+
 function requiredText(value: FormDataEntryValue | string | null, field: string, max = 180) {
   if (typeof value !== "string" || !value.trim()) {
     throw new IngestionApiError(400, `${field} is required`);
@@ -482,7 +503,7 @@ async function nativeExtractReceipt({
     let extracted = firstPass;
     let extractionPass = 1;
     let usedModel = model;
-    if (!firstPass || firstPass.draft.lines.length === 0) {
+    if (!firstPass || extractedReceiptNeedsRecovery(firstPass.draft)) {
       const recoverySources = await readRecoverySources(bucket, ingestion);
       try {
         extracted = await extractReceiptWithGemini({
@@ -550,7 +571,7 @@ async function nativeExtractReceipt({
     await db
       .prepare(`UPDATE receipt_ingestions
         SET status = 'awaiting_review', provider = 'gemini', model = ?,
-            prompt_version = 'costco-receipt-extraction-v1',
+            prompt_version = 'costco-transaction-extraction-v2',
             schema_version = ?, extraction_artifact_key = ?,
             error_code = NULL, provider_response_id = ?,
             provider_finish_reason = ?, provider_duration_ms = ?,
@@ -848,10 +869,26 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
   try {
     const email = authenticatedEmail(request);
-    const ingestionId = requiredText(new URL(request.url).searchParams.get("id"), "id", 128);
+    const url = new URL(request.url);
+    const rawIngestionId = url.searchParams.get("id");
+    const rawReceiptId = url.searchParams.get("receiptId");
+    if ((rawIngestionId === null) === (rawReceiptId === null)) {
+      throw new IngestionApiError(400, "Choose either id or receiptId");
+    }
     const { db, bucket } = await runtime();
     await ensureIngestionSchema(db);
-    const ingestion = await authorizeIngestion(db, email, ingestionId);
+    const ingestion = rawIngestionId
+      ? await authorizeIngestion(
+          db,
+          email,
+          requiredText(rawIngestionId, "id", 128),
+        )
+      : await latestAuthorizedIngestionForReceipt(
+          db,
+          email,
+          requiredText(rawReceiptId, "receiptId", 128),
+        );
+    if (!ingestion) return responseJson({ ingestion: null });
     const draft = await readArtifact(bucket, ingestion);
     return responseJson({ ingestion: publicIngestion(ingestion, draft) });
   } catch (error) {

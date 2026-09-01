@@ -51,6 +51,13 @@ export type ClosedLoopReceiptItem = {
   category?: ProductCategoryKey | null;
 };
 
+export type ClosedLoopIntentItem = {
+  id?: string;
+  label?: string | null;
+  estimatedPriceCents?: number | null;
+  quantityMilli?: number | null;
+};
+
 export type ClosedLoopQuestion = {
   id: string;
   purpose?: string | null;
@@ -121,7 +128,7 @@ type SpotlightBucket = {
 export type ClosedLoopSnapshot = {
   receipt?: ClosedLoopReceipt | null;
   items?: ClosedLoopReceiptItem[];
-  intentItems?: unknown[];
+  intentItems?: ClosedLoopIntentItem[];
   matches?: unknown[];
   comparison?: ClosedLoopComparison | null;
   questions?: ClosedLoopQuestion[];
@@ -203,6 +210,7 @@ export function comparisonExpectedCents(comparison: ClosedLoopComparison) {
 // route can apply its own 8 MB validation. Leave room for multipart metadata so
 // a camera photo that looks just under the limit does not still receive a 413.
 const LIVE_UPLOAD_SAFE_BYTES = 900 * 1024;
+const RECEIPT_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
 const RECEIPT_MIN_READABLE_WIDTH = 1_200;
 const RECEIPT_RECOVERY_TILE_OVERLAP = 0.18;
 
@@ -829,14 +837,40 @@ export function receiptDraftLineValueForTransaction(
   };
 }
 
-function hasMeaningfulDraftData(draft: ReceiptDraft) {
+export function hasMeaningfulDraftData(draft: ReceiptDraft) {
   return Boolean(
-    draft.subtotal.trim() ||
-      draft.tax.trim() ||
-      draft.total.trim() ||
-      draft.discount.trim() ||
-      draft.items.some((item) => item.itemNumber.trim() || item.description.trim() || item.amount.trim()),
+    inputToCents(draft.subtotal) !== 0 ||
+      inputToCents(draft.tax) !== 0 ||
+      inputToCents(draft.total) !== 0 ||
+      inputToCents(draft.discount) !== 0 ||
+      draft.items.some(
+        (item) =>
+          item.itemNumber.trim() ||
+          item.description.trim() ||
+          inputToCents(item.amount) !== 0,
+      ),
   );
+}
+
+export function canFinalizeReceiptDraft(
+  draft: ReceiptDraft,
+  arithmeticReconciled: boolean,
+) {
+  const hasPrintedTotals = Boolean(draft.subtotal.trim() && draft.total.trim());
+  return hasPrintedTotals && hasMeaningfulDraftData(draft) && arithmeticReconciled;
+}
+
+function fileSizeMegabytes(bytes: number) {
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 1024 * 1024 ? 2 : 1)} MB`;
+}
+
+export function receiptUploadTooLargeMessage(original: File, prepared: File) {
+  const contentType = receiptUploadContentType(prepared) ?? receiptUploadContentType(original);
+  const kind = contentType === "application/pdf" ? "PDF" : "photo";
+  if (prepared.size > RECEIPT_UPLOAD_MAX_BYTES) {
+    return `This ${kind} is ${fileSizeMegabytes(prepared.size)} after preparation. Choose a file under 8 MB.`;
+  }
+  return `The live site rejected this ${kind} at ${fileSizeMegabytes(prepared.size)}, even though it is below BasketSense’s 8 MB limit. Try once more; if it repeats, choose a smaller export.`;
 }
 
 function correctionDraftSummary(draft: ReceiptDraft) {
@@ -900,15 +934,21 @@ async function fetchWithTimeout(
   }
 }
 
-function normalizeBuckets(
+export function normalizeBuckets(
   comparison: ClosedLoopComparison | null | undefined,
   receiptItems: ClosedLoopReceiptItem[] = [],
+  intentItems: ClosedLoopIntentItem[] = [],
 ) {
   const buckets = comparison?.buckets;
   if (!buckets) return [];
   const receiptItemById = new Map(
     receiptItems
       .filter((item): item is ClosedLoopReceiptItem & { id: string } => Boolean(item.id))
+      .map((item) => [item.id, item]),
+  );
+  const intentItemById = new Map(
+    intentItems
+      .filter((item): item is ClosedLoopIntentItem & { id: string } => Boolean(item.id))
       .map((item) => [item.id, item]),
   );
   if (Array.isArray(buckets)) {
@@ -928,35 +968,63 @@ function normalizeBuckets(
       label?: string;
       amountCents?: number | null;
       itemCount?: number | null;
-      items?: Array<{ label?: string; amountCents?: number | null }>;
+      items?: SpotlightItem[];
     };
     if (typeof value === "number") {
       details = { amountCents: value, items: [] };
     } else if (Array.isArray(value)) {
-      const matchedReceiptItems = value.flatMap((entry) => {
+      const spotlightItems = value.flatMap((entry): SpotlightItem[] => {
         const receiptItemId =
           entry && typeof entry === "object" && "receiptItemId" in entry
             ? String(entry.receiptItemId ?? "")
             : "";
         const receiptItem = receiptItemById.get(receiptItemId);
-        return receiptItem ? [receiptItem] : [];
+        if (receiptItem) {
+          const amountCents = receiptItem.netAmountCents ?? receiptItem.lineSubtotalCents ?? null;
+          return [{
+            label:
+              receiptItem.rawDescription ??
+              receiptItem.canonicalName ??
+              receiptItem.description ??
+              "Receipt item",
+            amountCents,
+            note:
+              amountCents === null
+                ? undefined
+                : receiptItem.discountCents
+                  ? `Paid ${money.format(amountCents / 100)} after Costco savings`
+                  : `Paid ${money.format(amountCents / 100)} on this receipt`,
+          }];
+        }
+        const intentItemId =
+          entry && typeof entry === "object" && "intentItemId" in entry
+            ? String(entry.intentItemId ?? "")
+            : "";
+        const intentItem = intentItemById.get(intentItemId);
+        if (!intentItem) return [];
+        const estimateCents = Number.isInteger(intentItem.estimatedPriceCents)
+          ? Math.round(
+              ((intentItem.estimatedPriceCents as number) *
+                (intentItem.quantityMilli ?? 1000)) /
+                1000,
+            )
+          : null;
+        return [{
+          label: intentItem.label?.trim() || "Saved-list item",
+          amountCents: estimateCents,
+          note:
+            estimateCents === null
+              ? "No saved estimate"
+              : `Saved-list estimate ${money.format(estimateCents / 100)}`,
+        }];
       });
       details = {
         itemCount: value.length,
-        amountCents: matchedReceiptItems.reduce(
-          (sum, item) => sum + (item.netAmountCents ?? item.lineSubtotalCents ?? 0),
+        amountCents: spotlightItems.reduce(
+          (sum, item) => sum + (item.amountCents ?? 0),
           0,
         ),
-        items: matchedReceiptItems.map((item) => ({
-          label: item.rawDescription ?? item.canonicalName ?? item.description ?? "Receipt item",
-          amountCents: item.netAmountCents ?? item.lineSubtotalCents ?? null,
-          note:
-            item.netAmountCents === null || item.netAmountCents === undefined
-              ? undefined
-              : item.discountCents
-                ? `Paid ${money.format(item.netAmountCents / 100)} after Costco savings`
-                : `Paid ${money.format(item.netAmountCents / 100)} on this receipt`,
-        })),
+        items: spotlightItems,
       };
     } else {
       details = value;
@@ -1100,6 +1168,7 @@ export function ReceiptFlowDialog({
   const [receiptUploadRequestId, setReceiptUploadRequestId] = useState(clientId);
   const [pollReceiptIngestion, setPollReceiptIngestion] = useState(false);
   const [pendingParsedDraft, setPendingParsedDraft] = useState<unknown>(null);
+  const [draftEdited, setDraftEdited] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
@@ -1132,6 +1201,7 @@ export function ReceiptFlowDialog({
       setReceiptUploadRequestId(clientId());
       setPollReceiptIngestion(false);
       setPendingParsedDraft(null);
+      setDraftEdited(false);
       appliedIngestionDraftId.current = null;
       setStep(initialStep);
       setWorkingClosedLoop(closedLoop ?? null);
@@ -1168,9 +1238,65 @@ export function ReceiptFlowDialog({
           parseStatus?: string;
         };
         const items = Array.isArray(body.items) ? body.items : [];
+        const reopenedDraft = draftFromParser({ ...receipt, items });
+        const preserveReopenedDraft = hasMeaningfulDraftData(reopenedDraft);
         setReceiptId(standaloneReceiptId);
-        setDraft(draftFromParser({ ...receipt, items }));
+        setDraft(reopenedDraft);
+        setDraftEdited(preserveReopenedDraft);
         setStep(receipt.parseStatus === "reconciled" ? "bridge" : "check");
+
+        if (receipt.parseStatus !== "reconciled") {
+          const ingestionResponse = await fetchWithTimeout(
+            `/api/receipt-ingestion?receiptId=${encodeURIComponent(standaloneReceiptId)}`,
+            { method: "GET", headers: { Accept: "application/json" } },
+            12_000,
+          );
+          const ingestionBody = await responseJson(
+            ingestionResponse,
+            "The saved receipt reader result could not be restored.",
+          );
+          if (cancelled || !ingestionBody.ingestion) return;
+          const ingestion = ingestionBody.ingestion as {
+            id?: unknown;
+            status?: unknown;
+            attemptCount?: unknown;
+            error?: unknown;
+            draft?: unknown;
+          };
+          if (typeof ingestion.id !== "string") return;
+          setReceiptIngestionId(ingestion.id);
+          if (typeof ingestion.attemptCount === "number") {
+            setOcrAttemptCount(ingestion.attemptCount);
+          }
+          if (
+            ingestion.status === "awaiting_review" &&
+            ingestion.draft &&
+            typeof ingestion.draft === "object"
+          ) {
+            setOcrProgress(1);
+            if (preserveReopenedDraft) {
+              setPendingParsedDraft(ingestion.draft);
+              setOcrStatus("Receipt draft restored — your saved edits are still in place");
+            } else {
+              setDraft(
+                draftFromParser(
+                  ingestion.draft,
+                  null,
+                  reopenedDraft.transactionType,
+                ),
+              );
+              setDraftEdited(false);
+              appliedIngestionDraftId.current = ingestion.id;
+              setOcrStatus("Receipt restored — check the totals and products");
+            }
+          } else if (ingestion.status === "failed") {
+            setOcrError(
+              typeof ingestion.error === "string" && ingestion.error
+                ? `The saved receipt is ready to retry: ${ingestion.error}`
+                : "The saved receipt is ready to retry.",
+            );
+          }
+        }
       } catch (error) {
         if (!cancelled) {
           setSaveError(error instanceof Error ? error.message : "The saved Costco receipt could not be reopened.");
@@ -1223,7 +1349,7 @@ export function ReceiptFlowDialog({
           if (appliedIngestionDraftId.current === receiptIngestionId) return;
           setOcrProgress(1);
           setOcrError(null);
-          if (hasMeaningfulDraftData(draft)) {
+          if (draftEdited || hasMeaningfulDraftData(draft)) {
             setPendingParsedDraft(ingestion.draft);
             setOcrStatus("Draft ready — your edits are still in place");
           } else {
@@ -1232,6 +1358,7 @@ export function ReceiptFlowDialog({
               tripScheduledFor,
               standalone ? draft.transactionType : undefined,
             ));
+            setDraftEdited(false);
             appliedIngestionDraftId.current = receiptIngestionId;
             setPendingParsedDraft(null);
             setOcrStatus("Draft ready to check");
@@ -1273,6 +1400,7 @@ export function ReceiptFlowDialog({
     };
   }, [
     draft,
+    draftEdited,
     open,
     pollReceiptIngestion,
     receiptIngestionId,
@@ -1420,7 +1548,8 @@ export function ReceiptFlowDialog({
 
   const hasRequiredReceiptValues =
     Boolean(draft.subtotal.trim()) && Boolean(draft.total.trim());
-  const canFinalize = hasRequiredReceiptValues && arithmetic.isReconciled;
+  const hasReceiptEvidence = hasMeaningfulDraftData(draft);
+  const canFinalize = canFinalizeReceiptDraft(draft, arithmetic.isReconciled);
   const correctionReadyToApply =
     !correction ||
     Boolean(
@@ -1473,6 +1602,9 @@ export function ReceiptFlowDialog({
       // bitmaps plus tall canvases can exhaust iOS WebKit memory, causing the
       // old path to silently send the oversized original and receive a 413.
       const uploadFile = await prepareReceiptUpload(file);
+      if (uploadFile.size > RECEIPT_UPLOAD_MAX_BYTES) {
+        throw new Error(receiptUploadTooLargeMessage(file, uploadFile));
+      }
       setOcrStatus("Preparing clearer receipt sections for recovery");
       setOcrProgress(0.13);
       const recoveryAssets = await prepareReceiptRecoveryAssets(uploadFile);
@@ -1506,7 +1638,7 @@ export function ReceiptFlowDialog({
       let body = await responseJson(
         response,
         response.status === 413
-          ? "This photo was still too large for the live upload after preparation. Try saving and reading it again, or choose a closer photo."
+          ? receiptUploadTooLargeMessage(file, uploadFile)
           : "The receipt could not be saved for review.",
       );
       let ingestion = body.ingestion as {
@@ -1574,7 +1706,7 @@ export function ReceiptFlowDialog({
       if (status === "awaiting_review" && ingestion.draft && typeof ingestion.draft === "object") {
         setPollReceiptIngestion(false);
         setOcrProgress(1);
-        if (hasMeaningfulDraftData(draft)) {
+        if (draftEdited || hasMeaningfulDraftData(draft)) {
           setPendingParsedDraft(ingestion.draft);
           setOcrStatus("Draft ready — your edits are still in place");
         } else {
@@ -1583,6 +1715,7 @@ export function ReceiptFlowDialog({
             standalone ? null : tripScheduledFor,
             standalone ? draft.transactionType : undefined,
           ));
+          setDraftEdited(false);
           appliedIngestionDraftId.current = ingestion.id;
           setOcrStatus(
             ingestion.extractionPass === 2
@@ -1748,7 +1881,7 @@ export function ReceiptFlowDialog({
         setPollReceiptIngestion(false);
         setOcrProgress(1);
         setOcrError(null);
-        if (hasMeaningfulDraftData(draft)) {
+        if (draftEdited || hasMeaningfulDraftData(draft)) {
           setPendingParsedDraft(ingestion.draft);
           setOcrStatus(`Receipt read on attempt ${attemptCount} — your edits are still in place`);
         } else {
@@ -1757,6 +1890,7 @@ export function ReceiptFlowDialog({
             standalone ? null : tripScheduledFor,
             standalone ? draft.transactionType : undefined,
           ));
+          setDraftEdited(false);
           appliedIngestionDraftId.current = receiptIngestionId;
           setOcrStatus(`Receipt read on attempt ${attemptCount} — check the totals and items`);
           setStep("check");
@@ -1882,6 +2016,7 @@ export function ReceiptFlowDialog({
 
   function updateLine(id: string, field: "itemNumber" | "description" | "amount", value: string) {
     cancelReceiptOcr();
+    setDraftEdited(true);
     setDraft((current) => ({
       ...current,
       items: current.items.map((item) =>
@@ -1909,6 +2044,7 @@ export function ReceiptFlowDialog({
 
   function updateLineKind(id: string, kind: ReceiptDraftLine["kind"]) {
     cancelReceiptOcr();
+    setDraftEdited(true);
     setDraft((current) => ({
       ...current,
       items: current.items.map((item) =>
@@ -1921,6 +2057,7 @@ export function ReceiptFlowDialog({
     transactionType: ReceiptDraft["transactionType"],
   ) {
     cancelReceiptOcr();
+    setDraftEdited(true);
     setDraft((current) => ({
       ...current,
       transactionType,
@@ -1939,6 +2076,7 @@ export function ReceiptFlowDialog({
 
   function deleteLine(id: string) {
     cancelReceiptOcr();
+    setDraftEdited(true);
     setDraft((current) => {
       const items = current.items.filter((item) => item.clientId !== id);
       return { ...current, items: items.length ? items : [blankLine()] };
@@ -2176,7 +2314,24 @@ export function ReceiptFlowDialog({
       await responseJson(response, "The purchase draft could not be discarded.");
       setSavedMessage("Costco purchase draft discarded. It did not change household spending.");
       setReceiptFile(null);
+      setPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
       setReceiptId(null);
+      setReceiptIngestionId(null);
+      setReceiptUploadRequestId(clientId());
+      setPollReceiptIngestion(false);
+      setPendingParsedDraft(null);
+      appliedIngestionDraftId.current = null;
+      setOcrStatus(null);
+      setOcrProgress(0);
+      setOcrError(null);
+      setOcrAttemptCount(0);
+      setRetryingReceipt(false);
+      setDraft(blankDraft());
+      setDraftEdited(false);
+      setDraftRequestId(clientId());
       onStandaloneReceiptIdChange?.(null);
       setStep("capture");
       void onRefresh().catch(() => undefined);
@@ -2497,6 +2652,7 @@ export function ReceiptFlowDialog({
                       tripScheduledFor,
                       standalone ? draft.transactionType : undefined,
                     ));
+                    setDraftEdited(false);
                     appliedIngestionDraftId.current = receiptIngestionId;
                     setPendingParsedDraft(null);
                     setOcrStatus("Draft ready to check");
@@ -2556,6 +2712,7 @@ export function ReceiptFlowDialog({
                     className="secondary-button"
                     onClick={() => {
                       setDraft(draftFromParser(pendingParsedDraft, tripScheduledFor));
+                      setDraftEdited(false);
                       appliedIngestionDraftId.current = receiptIngestionId;
                       setPendingParsedDraft(null);
                       setOcrStatus("Replacement ready to check");
@@ -2575,6 +2732,7 @@ export function ReceiptFlowDialog({
                   value={draft.purchasedOn}
                   onChange={(event) => {
                     cancelReceiptOcr();
+                    setDraftEdited(true);
                     setDraft((current) => ({ ...current, purchasedOn: event.target.value }));
                   }}
                 />
@@ -2597,6 +2755,7 @@ export function ReceiptFlowDialog({
                       value={draft[field]}
                       onChange={(event) => {
                         cancelReceiptOcr();
+                        setDraftEdited(true);
                         setDraft((current) => ({ ...current, [field]: event.target.value }));
                       }}
                       placeholder="0.00"
@@ -2637,6 +2796,7 @@ export function ReceiptFlowDialog({
                   className="add-button"
                   onClick={() => {
                     cancelReceiptOcr();
+                    setDraftEdited(true);
                     setDraft((current) => ({ ...current, items: [...current.items, blankLine()] }));
                   }}
                 >
@@ -2724,12 +2884,16 @@ export function ReceiptFlowDialog({
                     ? "Receipt arithmetic checks out"
                     : !hasRequiredReceiptValues
                       ? "Add the subtotal and total"
+                      : !hasReceiptEvidence
+                        ? "Add the printed receipt total"
                       : values.captureMode === "totals_only"
                         ? "Receipt totals check out"
                       : `${money.format(arithmetic.differenceCents / 100)} still needs a look`}
                 </strong>
                 <p>
-                  {values.captureMode === "totals_only"
+                  {!hasReceiptEvidence
+                    ? "The $0.00 placeholders are not a Costco purchase or return."
+                    : values.captureMode === "totals_only"
                     ? arithmetic.totalUsesReceiptDiscount
                       ? `${money.format(values.subtotalCents / 100)} − ${money.format(values.discountCents / 100)} discounts + ${money.format(values.taxCents / 100)} tax = ${money.format(values.totalCents / 100)}`
                       : `Subtotal ${money.format(values.subtotalCents / 100)} · tax ${money.format(values.taxCents / 100)} · total ${money.format(values.totalCents / 100)}`
@@ -2818,7 +2982,9 @@ export function ReceiptFlowDialog({
                       ? "Wait for the receipt reader to finish. "
                       : ""}
                 {!canFinalize
-                  ? "Save unlocks when the printed subtotal, tax, and total agree within $0.05."
+                  ? hasReceiptEvidence
+                    ? "Save unlocks when the printed subtotal, tax, and total agree within $0.05."
+                    : "Enter the printed totals or apply the restored receipt draft to continue."
                   : "Apply unlocks after the replacement is ready to review."}
               </p>
             ) : null}
@@ -2839,6 +3005,7 @@ export function ReceiptFlowDialog({
               <ExpectedActualBridge
                 comparison={workingClosedLoop.comparison}
                 receiptItems={workingClosedLoop.items ?? []}
+                intentItems={workingClosedLoop.intentItems ?? []}
                 onReviewReceipt={() => setStep("check")}
               />
             ) : (
@@ -2891,13 +3058,15 @@ export function ReceiptFlowDialog({
 export function ExpectedActualBridge({
   comparison,
   receiptItems = [],
+  intentItems = [],
   onReviewReceipt,
 }: {
   comparison: ClosedLoopComparison;
   receiptItems?: ClosedLoopReceiptItem[];
+  intentItems?: ClosedLoopIntentItem[];
   onReviewReceipt?: () => void;
 }) {
-  const buckets = normalizeBuckets(comparison, receiptItems);
+  const buckets = normalizeBuckets(comparison, receiptItems, intentItems);
   const totalsOnly = comparison.isTotalsOnly === true;
   const unresolvedCents = Math.abs(comparison.unresolvedCents ?? 0);
   const provisional = comparison.isProvisional || unresolvedCents > 5;
@@ -2920,6 +3089,7 @@ export function ExpectedActualBridge({
   const spotlightRef = useRef<HTMLDialogElement>(null);
   const spotlightItem = spotlightBucket?.items[spotlightIndex] ?? null;
   const spotlightItemCount = spotlightBucket?.items.length ?? 0;
+  const spotlightIsSavedOnly = spotlightBucket?.key.toLowerCase() === "skippedplanned";
 
   function signedMoney(value: number) {
     return `${value > 0 ? "+" : value < 0 ? "−" : ""}${money.format(Math.abs(value) / 100)}`;
@@ -3078,13 +3248,21 @@ export function ExpectedActualBridge({
             {spotlightItem ? (
               <section className="receipt-flash-card" aria-live="polite">
                 <p>
-                  {spotlightBucket.key === "discounts" ? "Discount" : "Receipt item"} {spotlightIndex + 1} of {spotlightItemCount}
+                  {spotlightIsSavedOnly
+                    ? "Saved-list item"
+                    : spotlightBucket.key === "discounts"
+                      ? "Discount"
+                      : "Receipt item"} {spotlightIndex + 1} of {spotlightItemCount}
                 </p>
                 <strong>{spotlightItem.label ?? "Receipt item"}</strong>
                 <span>
                   {spotlightItem.amountCents === null || spotlightItem.amountCents === undefined
-                    ? "Amount still needs review"
-                    : spotlightBucket.key === "discounts"
+                    ? spotlightIsSavedOnly
+                      ? "No saved estimate"
+                      : "Amount still needs review"
+                    : spotlightIsSavedOnly
+                      ? `Estimated ${money.format(spotlightItem.amountCents / 100)}`
+                      : spotlightBucket.key === "discounts"
                       ? `Saved ${money.format(Math.abs(spotlightItem.amountCents) / 100)}`
                       : `Paid ${money.format(spotlightItem.amountCents / 100)}`}
                 </span>
@@ -3093,8 +3271,16 @@ export function ExpectedActualBridge({
             ) : (
               <section className="receipt-flash-card quiet" aria-live="polite">
                 <p>Summary only</p>
-                <strong>No individual receipt lines are available in this chapter yet.</strong>
-                <span>The total remains visible in the recap while the evidence is reviewed.</span>
+                <strong>
+                  {spotlightIsSavedOnly
+                    ? "Saved-list details are unavailable for this older trip."
+                    : "Individual receipt lines are unavailable for this section."}
+                </strong>
+                <span>
+                  {spotlightIsSavedOnly
+                    ? "The item count remains visible in the recap."
+                    : "The section total remains visible while the evidence is reviewed."}
+                </span>
               </section>
             )}
 
@@ -3348,6 +3534,7 @@ export function ClosedLoopReview({
             <ExpectedActualBridge
               comparison={closedLoop.comparison}
               receiptItems={closedLoop.items ?? []}
+              intentItems={closedLoop.intentItems ?? []}
               onReviewReceipt={canEditReceipt ? () => onOpenReceipt("check") : undefined}
             />
           </article>

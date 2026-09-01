@@ -5,6 +5,7 @@ import {
   buildProductUnderstandingRequest,
   parseProductUnderstandings,
   productUnderstandingLookupKey,
+  understandReceiptProducts,
 } from "../workers/receipt-ingestion/src/product-understanding.ts";
 import { trustedDraftInterpretations } from "../app/api/household/route.ts";
 
@@ -17,6 +18,8 @@ test("product understanding uses stable item-number keys and excludes receipt ac
   assert.match(text, /ZIPLC SLIDER/);
   assert.doesNotMatch(text, /lineSubtotalCents|netAmountCents|totalCents|taxCents/);
   assert.match(text, /do not decide whether an item was planned/i);
+  assert.match(text, /searchAliases: alternative names for this exact product/i);
+  assert.match(text, /intentAliases: broader shopping-list phrases/i);
 });
 
 test("product understanding accepts only requested lookup keys", () => {
@@ -32,6 +35,7 @@ test("product understanding accepts only requested lookup keys", () => {
         confidenceBps: 9300,
         exactSkuKnown: true,
         searchAliases: ["Ziploc bags", "slider bags"],
+        intentAliases: ["food storage bags"],
       },
       {
         lookupKey: "item:not-requested",
@@ -43,12 +47,14 @@ test("product understanding accepts only requested lookup keys", () => {
         confidenceBps: 10000,
         exactSkuKnown: true,
         searchAliases: [],
+        intentAliases: [],
       },
     ],
   }, new Set(["item:1234567"]), "test-model");
 
   assert.equal(parsed.size, 1);
   assert.equal(parsed.get("item:1234567")?.canonicalName, "Ziploc Slider Storage Bags");
+  assert.deepEqual(parsed.get("item:1234567")?.intentAliases, ["food storage bags"]);
   assert.equal(parsed.get("item:1234567")?.source, "gemini");
 });
 
@@ -103,4 +109,113 @@ test("receipt persistence accepts only interpretation metadata already cached by
   }]);
   assert.equal(rejected[0].interpretedName, null);
   assert.equal(rejected[0].interpretationSource, null);
+});
+
+test("a catalog-known SKU still receives fresh v2 semantic understanding", async () => {
+  let geminiCalls = 0;
+  let persisted = 0;
+  const db = {
+    prepare(sql) {
+      const statement = {
+        sql,
+        values: [],
+        bind(...values) {
+          this.values = values;
+          return this;
+        },
+        async all() {
+          if (/PRAGMA table_info/i.test(sql)) {
+            return { results: [{ name: "intent_aliases_json" }] };
+          }
+          if (/FROM product_understandings/i.test(sql)) {
+            assert.deepEqual(this.values.slice(1), [
+              "costco-line-understanding-v2",
+              "basketsense-product-understanding-v2",
+            ]);
+            return { results: [] };
+          }
+          if (/FROM products/i.test(sql)) {
+            return {
+              results: [{
+                costco_item_number: "5161251",
+                canonical_name: "UNSTPBL FRSH",
+                brand: null,
+                category: "household_supplies",
+              }],
+            };
+          }
+          return { results: [] };
+        },
+        async run() {
+          return { success: true, meta: { changes: 1 } };
+        },
+      };
+      return statement;
+    },
+    async batch(statements) {
+      if (statements.some((statement) => /INSERT INTO product_understandings/i.test(statement.sql))) {
+        persisted += 1;
+      }
+      return statements.map(() => ({ success: true, meta: { changes: 1 } }));
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    geminiCalls += 1;
+    return Response.json({
+      candidates: [{
+        content: {
+          parts: [{
+            text: JSON.stringify({
+              products: [{
+                lookupKey: "item:5161251",
+                canonicalName: "Downy Unstopables Fresh In-Wash Scent Booster Beads",
+                brand: "Downy",
+                productFamily: "Laundry scent booster beads",
+                variant: "Fresh",
+                categoryHint: "household_supplies",
+                confidenceBps: 9700,
+                exactSkuKnown: true,
+                searchAliases: ["Downy Fresh"],
+                intentAliases: ["laundry scent booster"],
+              }],
+            }),
+          }],
+        },
+      }],
+    });
+  };
+  try {
+    const result = await understandReceiptProducts({
+      db,
+      householdId: "household",
+      apiKey: "test-key",
+      model: "test-model",
+      draft: {
+        purchasedAt: "2026-08-29T12:00:00.000Z",
+        subtotalCents: 1599,
+        taxCents: 0,
+        totalCents: 1599,
+        discountCents: 0,
+        lines: [{
+          sourceLineNumber: 1,
+          itemNumber: "5161251",
+          rawDescription: "UNSTPBL FRSH",
+          quantityMilli: 1000,
+          unitPriceCents: 1599,
+          lineSubtotalCents: 1599,
+          discountCents: 0,
+          netAmountCents: 1599,
+          taxStatus: "unknown",
+        }],
+        warnings: [],
+      },
+    });
+    assert.equal(geminiCalls, 1);
+    assert.equal(persisted, 1);
+    assert.deepEqual(result.lines[0].understanding?.searchAliases, ["Downy Fresh"]);
+    assert.deepEqual(result.lines[0].understanding?.intentAliases, ["laundry scent booster"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

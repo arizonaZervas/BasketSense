@@ -1,6 +1,6 @@
 # BS-002 — Live data visibility and ownership
 
-**Status:** In progress  
+**Status:** Ready — re-scoped after removal of the customer-facing Data Health tab
 **Priority:** 2  
 **Decision gate:** Supports Gates A and B
 
@@ -13,8 +13,9 @@ access inside the product.
 ## Rationale
 
 The local SQLite lab is useful for learning but it is not the hosted D1
-database. A controlled production view improves trust now and later becomes the
-minimum support and operations surface for multiple households.
+database. Controlled owner-only inspection and export improve trust now and
+later become the minimum support and operations surface for multiple
+households. These capabilities do not belong in normal household navigation.
 
 ## Dependencies
 
@@ -26,17 +27,17 @@ minimum support and operations surface for multiple households.
 
 ## Smallest test
 
-Expose one owner-only data-health view with household-scoped counts for
-receipts, receipt lines, products needing review, unreconciled receipts, and
-open review questions. Compare those results with the existing dashboard and a
-read-only local query fixture.
+Run one explicit owner-only data-health summary and household export with
+counts for receipts, receipt lines, products needing review, unreconciled
+receipts, and open review questions. Compare those results with the existing
+dashboard and a read-only local query fixture without restoring a customer UI
+tab.
 
 ## Intended scope
 
-- Hosted row counts and recent records by safe, predefined view.
+- Hosted row counts and recent records through safe, predefined owner actions.
 - Receipt reconciliation and unresolved-line queues.
 - Product/category review queue.
-- Links into existing receipt and product drill-downs.
 - Paginated household JSON and CSV export with schema/version metadata.
 - A one-command local read-only SQLite launcher for the learning lab.
 - Explicit timestamps and scope labels so local, fixture, and hosted data are
@@ -44,9 +45,9 @@ read-only local query fixture.
 
 ## Acceptance criteria
 
-- Only an authenticated owner can access the explorer or export.
+- Only an authenticated owner can access the inspection or export actions.
 - Every query is server-scoped to the resolved household.
-- Explorer totals reconcile with the same source rows as the dashboard.
+- Inspection totals reconcile with the same source rows as the dashboard.
 - Large views are paginated and do not silently truncate.
 - Export contains one household and is reproducible from documented fields.
 - No endpoint accepts arbitrary SQL or mutation statements.
@@ -54,9 +55,10 @@ read-only local query fixture.
 
 ## Privacy risks
 
-An explorer concentrates sensitive data. It must use private/no-store responses,
-avoid raw receipt text in logs, prevent spreadsheet-formula injection in CSV,
-and never expose member emails or storage keys unnecessarily.
+Inspection and export concentrate sensitive data. They must use
+private/no-store responses, avoid raw receipt text in logs, prevent
+spreadsheet-formula injection in CSV, and never expose member emails or storage
+keys unnecessarily.
 
 ## Explicit non-goals
 
@@ -69,12 +71,11 @@ and never expose member emails or storage keys unnecessarily.
 Pending. Retain authorization-test results, dashboard/export reconciliation,
 and one successful owner learning session.
 
-## Current implementation slice
+## Current implementation state
 
-The owner-only hosted D1 Data Health & Explorer is being released first. It
-shows predefined, household-scoped counts and queues; filters receipt, trip,
-product, and recommendation-list records; exposes JSON and receipt-ledger CSV
-exports; and rejects member access server-side. The view intentionally excludes
-receipt images, R2 storage keys, arbitrary SQL, and write controls. Batch import
-job telemetry, pagination beyond the initial safe record cap, drill-through
-links, and the local read-only database launcher remain open work for BS-002.
+The customer-facing Data Health tab and `DataHealthExplorer` no longer exist in
+the UI. Owner-authorized backend inspection and export paths remain available
+as a dormant operational foundation. Before BS-002 is marked complete, recheck
+their authorization and dashboard parity, finish paginated/versioned export,
+and document one successful owner recovery or learning session. Do not restore
+the removed tab merely to complete this ticket.

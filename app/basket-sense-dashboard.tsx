@@ -5323,6 +5323,10 @@ function ReviewTab({
   onRefresh: (nextClosedLoop?: ClosedLoopSnapshot) => Promise<void>;
 }) {
   const selected = history.find((entry) => entry.receiptId === selectedReceiptId) ?? history[0];
+  const selectedOpenQuestionCount =
+    selected && closedLoop?.receipt.id === selected.receiptId
+      ? closedLoop.questions.filter((question) => question.status === "open").length
+      : selected?.openQuestionCount ?? 0;
   return (
     <div className="page review-page">
       <section className="page-heading">
@@ -5381,7 +5385,7 @@ function ReviewTab({
           {selected ? (
             <div className="review-history-summary">
               <span>{selected.itemCount} receipt {selected.itemCount === 1 ? "line" : "lines"}</span>
-              <span>{selected.openQuestionCount ? `${selected.openQuestionCount} open review ${selected.openQuestionCount === 1 ? "question" : "questions"}` : "Review complete"}</span>
+              <span>{selectedOpenQuestionCount ? `${selectedOpenQuestionCount} open review ${selectedOpenQuestionCount === 1 ? "question" : "questions"}` : "Review complete"}</span>
               {selected.correctionCount ? <span>Revision {selected.correctionCount + 1}</span> : <span>Original revision</span>}
             </div>
           ) : null}

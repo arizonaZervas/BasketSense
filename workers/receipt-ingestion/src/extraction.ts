@@ -114,8 +114,10 @@ const receiptDraftSchema = {
   },
 } as const;
 
-const instructions = `You extract Costco warehouse receipts for a private household app.
-Return only information visibly supported by the supplied receipt. Use integer cents, never dollar strings or floating point. Preserve the abbreviated printed label exactly in rawDescription; do not invent a catalog name. Use null for unreadable totals or dates. A line with ambiguous text, amount, quantity, tax treatment, discount, or item number must have needsReview true and a conservative confidenceBps. Identify every visible coupon, instant saving, and discount: set its discountCents to the positive saved amount and netAmountCents to its negative effect. When an item has an attached discount, preserve its pre-discount lineSubtotalCents, record its positive discountCents, and make netAmountCents equal the paid amount. Attach savings only when the receipt visibly pairs them with a product; keep receipt-level rewards separate. Do not silently turn discounts into purchases or omit them from the receipt-level discountCents total. This is an advisory draft only: do not decide household value, planned status, categories, or accounting outcomes.`;
+const instructions = `You extract Costco transaction documents for a private household app. The document may be a warehouse receipt, a Costco.com order confirmation, or a Costco purchase/return confirmation.
+Return only information visibly supported by the supplied document. Use integer cents, never dollar strings or floating point. Preserve the abbreviated or displayed product label exactly in rawDescription; do not invent a catalog name. Use null for unreadable totals or dates. A line with ambiguous text, amount, quantity, tax treatment, discount, or item number must have needsReview true and a conservative confidenceBps.
+For Costco.com orders, treat each product section as one product line and ignore shipping status, delivery windows, addresses, payment methods, membership promotions, and navigation text. Use the displayed item number when present. If a product shows an original price and a discount, lineSubtotalCents is the original product amount, discountCents is the positive saved amount, and netAmountCents is the paid product amount. The document subtotal is gross merchandise before order discounts when that is what the printed arithmetic shows. Combine visible order and product discounts exactly once in receipt-level discountCents so subtotal + tax - discount equals total.
+For warehouse receipts, identify every visible coupon, instant saving, and discount: set its discountCents to the positive saved amount and netAmountCents to its negative effect. When an item has an attached discount, preserve its pre-discount lineSubtotalCents, record its positive discountCents, and make netAmountCents equal the paid amount. Attach savings only when the document visibly pairs them with a product; keep receipt-level rewards separate. Do not silently turn discounts into purchases or omit them from the receipt-level discountCents total. This is an advisory draft only: do not decide household value, planned status, categories, or accounting outcomes.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -242,6 +244,42 @@ export function parseExtractedReceiptDraft(value: unknown): ExtractedReceiptDraf
   };
 }
 
+export function extractedReceiptNeedsRecovery(draft: ExtractedReceiptDraft) {
+  if (draft.lines.length === 0) return true;
+  if (
+    draft.subtotalCents === null ||
+    draft.taxCents === null ||
+    draft.totalCents === null
+  ) {
+    return true;
+  }
+  const itemLines = draft.lines.filter(
+    (line) => !(line.discountCents > 0 && line.lineSubtotalCents <= 0),
+  );
+  const grossLinesCents = itemLines.reduce(
+    (sum, line) => sum + line.lineSubtotalCents,
+    0,
+  );
+  const netLinesCents = itemLines.reduce(
+    (sum, line) => sum + line.netAmountCents,
+    0,
+  );
+  const subtotalDelta = Math.min(
+    Math.abs(grossLinesCents - draft.subtotalCents),
+    Math.abs(netLinesCents - draft.subtotalCents),
+  );
+  const totalDelta = Math.min(
+    Math.abs(draft.subtotalCents + draft.taxCents - draft.totalCents),
+    Math.abs(
+      draft.subtotalCents +
+        draft.taxCents -
+        draft.discountCents -
+        draft.totalCents,
+    ),
+  );
+  return subtotalDelta > 5 || totalDelta > 5;
+}
+
 function arrayBufferToBase64(bytes: ArrayBuffer) {
   const values = new Uint8Array(bytes);
   let result = "";
@@ -295,7 +333,7 @@ export function buildGeminiGenerateContentRequest({
             },
           })),
           {
-            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same receipt. Merge duplicated lines from overlaps and use the full receipt for totals." : ""}\n\nReturn one compact JSON object with exactly this contract and no prose or markdown:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco receipt into that contract. Return empty lines and warnings when the file is not a readable Costco receipt.`,
+            text: `${instructions}${recovery ? "\nThe first read was incomplete. The attachments may include an enhanced full image and overlapping top-to-bottom sections of the same transaction document. Merge duplicated lines from overlaps and use the full document for totals." : ""}\n\nReturn one compact JSON object with exactly this contract and no prose or markdown:\n${JSON.stringify(receiptDraftSchema)}\n\nExtract this Costco transaction document into that contract. Return empty lines and warnings only when the file is not a readable Costco receipt, Costco.com order, or Costco return confirmation.`,
           },
         ],
       },

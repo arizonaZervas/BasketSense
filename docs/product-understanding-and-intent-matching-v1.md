@@ -26,8 +26,8 @@ recommendation. Explicit household confirmations remain authoritative.
 - The response is bounded to canonical name, brand, product family, variant,
   category hint, aliases, SKU certainty, and confidence.
 - Item-number results are cached per household in D1. Raw-label results use a
-  normalized description key. Existing catalog item numbers take precedence
-  over the Gemini cache.
+  normalized description key. Current-version semantic understanding enriches
+  an existing catalog SKU; the catalog remains the non-blocking fallback.
 - Cache misses are batched into at most one optional request per receipt. There
   are no scheduled or weekly model calls.
 - Provider failure is non-blocking. BasketSense saves the strict receipt draft
@@ -103,9 +103,10 @@ ticket. Product family and explicit fulfillment evidence may become bounded
 features in that evaluation, but no LLM output may directly rank, auto-add, or
 suppress a Saturday recommendation.
 
-## Local Household Intent Matching revision — 2026-08-23
+## Household Intent Matching revision — 2026-08-23
 
-The next revision is implemented and validated locally but is not deployed.
+The revision was released in private Sites version 85 from commit
+`090e562e2885c3562d90142ed9c83c8766c324fc`.
 Review questions now preserve one of four household decisions:
 
 - `same_product` teaches catalog identity and the receipt/list wording pair;
@@ -121,3 +122,43 @@ collapsing two catalog products.
 Local receipt-style simulations cover compact labels such as organic milk,
 coconut water, storage bags, and cupcakes without retaining the private source
 image or its metadata in the repository.
+
+## Product Intent Resolution v2 — release candidate, 2026-08-30
+
+This revision is implemented and validated for the next private BasketSense
+release. Migration 0017 is additive; the application can be rolled back while
+leaving its columns and seed rows in place.
+
+The v2 contract separates exact-product `searchAliases` from broader
+`intentAliases`. A typed exact-product phrase can attach durable catalog
+identity and price history; a family request such as `bread` remains an intent
+and can be fulfilled by a trusted receipt interpretation without permanently
+binding the List item to one bread SKU.
+
+The receipt reader now refreshes stale v1 understanding even when the Costco
+SKU already exists in the catalog. Previously the catalog fallback incorrectly
+made those lines look resolved and skipped semantic enrichment. Only current
+prompt/schema versions participate in automatic matching or list resolution.
+
+Migration 0017 adds `intent_aliases_json` and seeds two verified household
+corrections as durable data:
+
+- `5161251`: Downy Unstopables Fresh / Downy Fresh / laundry scent-booster
+  beads;
+- `1860779`: Naked White bread / white bread / bread.
+
+Those examples are regression fixtures, not the matching strategy. The general
+path is versioned Gemini understanding, unique exact-product resolution,
+explicit intent fulfillment, and permanent household feedback. Low-confidence,
+variant-conflicting, or competing matches remain review candidates.
+
+Completed Recaps also re-evaluate automatic matches against the current
+versioned understanding. A newly confident match is projected into the read
+model and removes an obsolete open intent question, but opening Recap never
+writes `trip_item_matches`; persisted system matches and spouse decisions stay
+authoritative.
+
+Validation covers the two live examples, unseen dishwasher-tabs wording,
+generic-family ambiguity, variant ambiguity, stale-cache refresh, list-add API
+resolution, read-only historical Recap self-healing, D1 migration idempotency,
+the production BasketSense build, and all 198 BasketSense-only tests.

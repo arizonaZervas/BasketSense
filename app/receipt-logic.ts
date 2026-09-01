@@ -563,6 +563,7 @@ export interface MatchableReceiptItem {
   semanticProductFamily?: string | null;
   semanticVariant?: string | null;
   semanticAliases?: string[];
+  semanticIntentAliases?: string[];
   semanticConfidenceBps?: number | null;
   semanticExactSkuKnown?: boolean;
   quantityMilli?: number | null;
@@ -708,6 +709,12 @@ function semanticMatchDescriptions(item: MatchableReceiptItem): string[] {
     .filter(Boolean))];
 }
 
+function semanticIntentDescriptions(item: MatchableReceiptItem): string[] {
+  return [...new Set((item.semanticIntentAliases ?? [])
+    .map((value) => normalizeComparableDescription(value))
+    .filter(Boolean))];
+}
+
 function tokenSimilarity(left: string, right: string): number {
   const leftTokens = new Set(left.split(" ").filter(Boolean));
   const rightTokens = new Set(right.split(" ").filter(Boolean));
@@ -828,6 +835,7 @@ function scorePair(
     canonicalName: null,
   });
   const normalizedSemanticReceipts = semanticMatchDescriptions(receipt);
+  const normalizedSemanticIntents = semanticIntentDescriptions(receipt);
   const confirmedAlias = aliases.find((alias) => {
     if (alias.confirmed === false) return false;
     const aliasLabel =
@@ -870,23 +878,30 @@ function scorePair(
     return { confidenceBps: 9_300, reason: "descriptive_subset" };
   }
 
+  const exactSemanticNameMatch = normalizedSemanticReceipts.includes(normalizedIntent);
   const semanticIntentMatch =
-    normalizedSemanticReceipts.includes(normalizedIntent) ||
+    exactSemanticNameMatch ||
     normalizedSemanticReceipts.some((receiptDescription) =>
       isDescriptiveSubset(normalizedIntent, receiptDescription),
     );
+  const explicitIntentAliasMatch = normalizedSemanticIntents.includes(normalizedIntent);
   if (
     !intent.productId &&
     !intent.costcoItemNumber &&
-    semanticIntentMatch
+    (semanticIntentMatch || explicitIntentAliasMatch)
   ) {
     const semanticIntentTokenCount = normalizedIntent.split(" ").filter(Boolean).length;
-    const trustedSemanticEvidence = Boolean(
-      receipt.costcoItemNumber &&
-      receipt.semanticExactSkuKnown &&
-      (receipt.semanticConfidenceBps ?? 0) >= 9_300 &&
-      semanticIntentTokenCount >= 2,
-    );
+    const confidenceBps = receipt.semanticConfidenceBps ?? 0;
+    const trustedSemanticEvidence = Boolean(receipt.costcoItemNumber && (
+      (
+        receipt.semanticExactSkuKnown &&
+        confidenceBps >= 9_300 &&
+        (explicitIntentAliasMatch || semanticIntentTokenCount >= 2)
+      ) || (
+        confidenceBps >= 9_600 &&
+        (explicitIntentAliasMatch || exactSemanticNameMatch)
+      )
+    ));
     return trustedSemanticEvidence
       ? { confidenceBps: 9_350, reason: "semantic_fulfillment" }
       : { confidenceBps: 9_200, reason: "fuzzy_candidate" };

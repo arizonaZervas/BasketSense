@@ -637,6 +637,88 @@ test("a trusted LLM semantic alias can fulfill intent when the printed label is 
   );
 });
 
+test("trusted product understanding resolves Downy Fresh from an opaque Costco label", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "downy-plan", label: "Downy Fresh" }],
+    receiptItems: [{
+      id: "downy-receipt",
+      costcoItemNumber: "5161251",
+      rawDescription: "UNSTPBL FRSH",
+      semanticCanonicalName: "Downy Unstopables Fresh In-Wash Scent Booster Beads",
+      semanticBrand: "Downy",
+      semanticProductFamily: "Laundry scent booster beads",
+      semanticVariant: "Fresh",
+      semanticAliases: ["Downy Fresh", "Downy Unstopables Fresh"],
+      semanticIntentAliases: ["laundry scent booster", "scent booster beads"],
+      semanticConfidenceBps: 9700,
+      semanticExactSkuKnown: false,
+    }],
+  });
+  assert.deepEqual(
+    result.matches.map((match) => [match.status, match.reason]),
+    [["auto_matched", "semantic_fulfillment"]],
+  );
+});
+
+test("a trusted intent alias lets Naked White fulfill the generic bread plan", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "bread-plan", label: "bread" }],
+    receiptItems: [{
+      id: "bread-receipt",
+      costcoItemNumber: "1860779",
+      rawDescription: "NAKED WHITE",
+      semanticCanonicalName: "Naked White Bread",
+      semanticBrand: "Naked Bread",
+      semanticProductFamily: "Bread",
+      semanticVariant: "White",
+      semanticAliases: ["Naked White", "white sandwich bread"],
+      semanticIntentAliases: ["bread", "white bread"],
+      semanticConfidenceBps: 9600,
+      semanticExactSkuKnown: false,
+    }],
+  });
+  assert.deepEqual(
+    result.matches.map((match) => [match.status, match.reason]),
+    [["auto_matched", "semantic_fulfillment"]],
+  );
+});
+
+test("an unseen trusted family intent resolves opaque dishwasher tabs", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "tabs-plan", label: "dishwasher tabs" }],
+    receiptItems: [{
+      id: "tabs-receipt",
+      costcoItemNumber: "synthetic-1",
+      rawDescription: "DW TABS LEMON",
+      semanticCanonicalName: "Lemon Dishwasher Detergent Tablets",
+      semanticProductFamily: "Dishwasher detergent tablets",
+      semanticIntentAliases: ["dishwasher tabs", "dishwasher detergent"],
+      semanticConfidenceBps: 9500,
+      semanticExactSkuKnown: true,
+    }],
+  });
+  assert.equal(result.matches[0]?.status, "auto_matched");
+  assert.equal(result.matches[0]?.reason, "semantic_fulfillment");
+});
+
+test("a broad intent shared by two receipt products remains reviewable", () => {
+  const result = matchReceiptItemsToIntent({
+    intentItems: [{ id: "bread-plan", label: "bread" }],
+    receiptItems: ["white", "wheat"].map((variant) => ({
+      id: `${variant}-receipt`,
+      costcoItemNumber: `${variant}-sku`,
+      rawDescription: `${variant.toUpperCase()} OPAQUE`,
+      semanticCanonicalName: `${variant} sandwich bread`,
+      semanticProductFamily: "Bread",
+      semanticIntentAliases: ["bread"],
+      semanticConfidenceBps: 9600,
+      semanticExactSkuKnown: true,
+    })),
+  });
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].status, "candidate");
+});
+
 test("ambiguous semantic candidates stay reviewable instead of using ID order", () => {
   const receiptItem = {
     id: "suja-receipt",

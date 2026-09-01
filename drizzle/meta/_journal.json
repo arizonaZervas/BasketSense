@@ -120,6 +120,13 @@
       "when": 1788110761198,
       "tag": "0016_wandering_havok",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1788131857186,
+      "tag": "0017_sour_lockheed",
+      "breakpoints": true
     }
   ]
 }

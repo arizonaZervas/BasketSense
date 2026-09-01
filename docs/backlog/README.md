@@ -15,6 +15,7 @@ validated next stage without making the Costco ritual less enjoyable.
 | Proposed | Agreed direction, but not yet eligible to start. |
 | Ready | Dependencies and acceptance criteria are resolved. |
 | In progress | The single major item currently being implemented. |
+| Released / observing | Deployed; real household evidence is still being collected. |
 | Validated | Acceptance criteria passed and user evidence was recorded. |
 | Blocked | A named dependency or decision gate prevents progress. |
 | Parked | Explicitly deferred; see [`parking-lot.md`](parking-lot.md). |
@@ -27,8 +28,8 @@ the sequence, but feature work may not silently skip a decision gate.
 | Order | ID | Item | Status | Completion outcome |
 | ---: | --- | --- | --- | --- |
 | 1 | [BS-001](BS-001-family-closed-loop.md) | Prove the family closed loop | Ready | Harsh and Navni complete four measured Saturday cycles. |
-| 2 | [BS-002](BS-002-live-data-visibility.md) | Live data visibility and ownership | In progress | Owners can safely explore and export actual hosted household data. |
-| 3 | [BS-003](BS-003-recommendation-engine-v2.md) | Recommendation engine v2 | Proposed | Explainable, household-specific recommendations pass shadow evaluation. |
+| 2 | [BS-002](BS-002-live-data-visibility.md) | Live data visibility and ownership | Ready | Owners can safely inspect and export hosted household data without a customer-facing Data Health tab. |
+| 3 | [BS-003](BS-003-recommendation-engine-v2.md) | Recommendation engine v2 | Released / observing | Explainable, household-specific recommendations learn from explicit List decisions while household evidence is collected. |
 | 4 | [BS-004A](BS-004A-public-safe-boundary.md) | Public-safe boundary and marketing surface | In progress | A parallel Good Cart Day public surface contains only synthetic data and cannot expose the family product. |
 | 5 | [BS-004B](BS-004B-family-migration.md) | Family migration and production cutover | Blocked by Gate A | The family app moves only after shadow parity, export/restore, and rollback evidence. |
 | 6 | [BS-005](BS-005-tenant-isolation.md) | Multi-tenant identity and isolation | Blocked by BS-004B | Every request and object is scoped to an authenticated household membership. |

@@ -36,6 +36,10 @@ test("standalone purchase and return flow uses receiptId ingestion and preserves
   assert.match(source, /form\.append\("clientRequestId", requestId\)/);
   assert.match(source, /Try saving and reading this receipt again/);
   assert.match(source, /setPollReceiptIngestion\(false\)/);
+  assert.match(source, /receiptId=\$\{encodeURIComponent\(standaloneReceiptId\)\}/);
+  assert.match(source, /setDraftEdited\(preserveReopenedDraft\)/);
+  assert.match(source, /setDraft\(blankDraft\(\)\)/);
+  assert.match(source, /setReceiptIngestionId\(null\)/);
 });
 
 test("standalone purchase and return copy stays separate from Saturday-list comparison", async () => {

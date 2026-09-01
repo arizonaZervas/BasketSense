@@ -104,6 +104,13 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
       ) VALUES (
         'ri1', 'r1', 'p1', 1, 'TEST PRODUCT', 1000, 1000, 'unknown', 'matched'
       );
+      INSERT INTO receipt_items (
+        id, receipt_transaction_id, source_line_number, costco_item_number,
+        raw_description, line_subtotal_cents, net_amount_cents,
+        tax_status, normalization_status
+      ) VALUES
+        ('ri2', 'r1', 2, '5161251', 'UNSTPBL FRSH', 1599, 1599, 'unknown', 'receipt_abbreviation'),
+        ('ri3', 'r1', 3, '1860779', 'NAKED WHITE', 559, 559, 'unknown', 'receipt_abbreviation');
       INSERT INTO feedback (
         id, household_id, trip_id, receipt_transaction_id, receipt_item_id, kind, value
       ) VALUES (
@@ -148,7 +155,29 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
         (entry) => entry.name === "interpretation_confidence_bps",
       ),
     );
-    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM product_understandings").get().count, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM product_understandings").get().count, 2);
+    assert.ok(
+      database
+        .prepare("PRAGMA table_info('product_understandings')")
+        .all()
+        .some((column) => column.name === "intent_aliases_json"),
+    );
+    assert.deepEqual(
+      {
+        ...database
+          .prepare(`SELECT canonical_name, search_aliases_json, intent_aliases_json,
+                           prompt_version, schema_version
+            FROM product_understandings WHERE lookup_key = 'item:5161251'`)
+          .get(),
+      },
+      {
+        canonical_name: "Downy Unstopables Fresh In-Wash Scent Booster Beads",
+        search_aliases_json: '["Downy Fresh","Downy Unstopables Fresh"]',
+        intent_aliases_json: '["laundry scent booster","scent booster beads"]',
+        prompt_version: "costco-line-understanding-v2",
+        schema_version: "basketsense-product-understanding-v2",
+      },
+    );
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM intent_fulfillments").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_runs").get().count, 0);
     assert.equal(database.prepare("SELECT COUNT(*) AS count FROM recommendation_shadow_candidates").get().count, 0);
@@ -157,7 +186,7 @@ test("runtime schema gate upgrades the bound pre-release database idempotently",
     assert.equal(tripSkipForeignKeys.length, 3);
     assert.equal(
       database.prepare("SELECT COUNT(*) AS count FROM basketsense_schema_migrations WHERE status = 'completed'").get().count,
-      7,
+      8,
     );
     assert.equal(database.prepare("PRAGMA foreign_key_check").all().length, 0);
 

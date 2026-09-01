@@ -3,12 +3,88 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  canFinalizeReceiptDraft,
   comparisonExpectedCents,
   draftFromClosedLoop,
   draftFromParser,
+  hasMeaningfulDraftData,
+  normalizeBuckets,
   receiptDraftLineValue,
   receiptDraftLineValueForTransaction,
+  receiptUploadTooLargeMessage,
 } from "../app/receipt-review-flow.tsx";
+
+test("zero-valued saved placeholders do not block an automatic receipt draft", () => {
+  const placeholder = draftFromParser({
+    purchasedAt: "2026-08-30",
+    subtotalCents: 0,
+    taxCents: 0,
+    totalCents: 0,
+    discountCents: 0,
+    items: [],
+  });
+  assert.equal(hasMeaningfulDraftData(placeholder), false);
+  assert.equal(canFinalizeReceiptDraft(placeholder, true), false);
+
+  const extracted = draftFromParser({
+    purchasedAt: "2026-08-30",
+    subtotalCents: 659996,
+    taxCents: 43450,
+    totalCents: 593446,
+    discountCents: 110000,
+    items: [{ rawDescription: "SYNTHETIC APPLIANCE", netAmountCents: 593446 }],
+  });
+  assert.equal(hasMeaningfulDraftData(extracted), true);
+  assert.equal(canFinalizeReceiptDraft(extracted, true), true);
+});
+
+test("saved-list-only recap buckets resolve intent labels and estimates", () => {
+  const buckets = normalizeBuckets(
+    {
+      skippedEstimateCents: 2100,
+      buckets: {
+        skippedPlanned: [
+          { intentItemId: "intent-bread" },
+          { intentItemId: "intent-cupcakes" },
+        ],
+      },
+    },
+    [],
+    [
+      {
+        id: "intent-bread",
+        label: "White bread",
+        estimatedPriceCents: 700,
+        quantityMilli: 1000,
+      },
+      {
+        id: "intent-cupcakes",
+        label: "Cupcakes",
+        estimatedPriceCents: 700,
+        quantityMilli: 2000,
+      },
+    ],
+  );
+  assert.deepEqual(
+    buckets[0].items.map((item) => [item.label, item.amountCents]),
+    [["White bread", 700], ["Cupcakes", 1400]],
+  );
+  assert.equal(buckets[0].itemCount, 2);
+  assert.equal(buckets[0].amountCents, 2100);
+});
+
+test("upload rejection copy distinguishes a small PDF from an oversized file", () => {
+  const smallPdf = new File([new Uint8Array(138_090)], "order.pdf", {
+    type: "application/pdf",
+  });
+  assert.match(receiptUploadTooLargeMessage(smallPdf, smallPdf), /PDF/i);
+  assert.match(receiptUploadTooLargeMessage(smallPdf, smallPdf), /below BasketSense’s 8 MB limit/i);
+
+  const largePdf = new File([new Uint8Array(8 * 1024 * 1024 + 1)], "order.pdf", {
+    type: "application/pdf",
+  });
+  assert.match(receiptUploadTooLargeMessage(largePdf, largePdf), /under 8 MB/i);
+});
 
 test("checkout uses the final shopping-list estimate while preserving initial intent", () => {
   const comparison = {

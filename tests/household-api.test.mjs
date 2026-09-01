@@ -201,6 +201,41 @@ test("D1 dashboard matches the audited historical view before client cutover", a
   }
 });
 
+test("zero-dollar standalone placeholders cannot become official spending", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "zero-placeholder-owner@example.test";
+    const createdResponse = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "create_ad_hoc_receipt",
+        clientReceiptId: "zero-placeholder",
+        purchasedAt: "2026-08-30T12:00:00-07:00",
+        subtotalCents: 0,
+        taxCents: 0,
+        totalCents: 0,
+        discountCents: 0,
+        captureMode: "totals_only",
+        items: [],
+      }),
+      db,
+    );
+    assert.equal(createdResponse.status, 200, "A private upload needs a resumable placeholder");
+    const created = await responseJson(createdResponse);
+
+    const finalizedResponse = await handleHouseholdPatch(
+      householdRequest(email, "PATCH", {
+        action: "finalize_ad_hoc_receipt",
+        receiptId: created.receiptId,
+      }),
+      db,
+    );
+    assert.equal(finalizedResponse.status, 409);
+    assert.match((await responseJson(finalizedResponse)).error, /positive total/i);
+  } finally {
+    db.close();
+  }
+});
+
 test("core household reads defer dashboard calculation until Insights is requested", async (t) => {
   const db = new D1DatabaseAdapter();
   try {
@@ -2233,6 +2268,71 @@ test("add, remove, and check mutations return authoritative revisions", async ()
   }
 });
 
+test("a versioned exact-product alias attaches a typed list item without hard-coded receipt text", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "semantic-list-resolution@example.test";
+    const initial = await responseJson(
+      await handleHouseholdGet(householdRequest(email), db),
+    );
+    const now = "2026-08-23T12:00:00.000Z";
+    const product = db.database
+      .prepare(`SELECT id FROM products
+        WHERE household_id = ? AND costco_item_number = '5161251' LIMIT 1`)
+      .get(initial.household.id);
+    assert.ok(product?.id);
+    db.database
+      .prepare(`INSERT INTO product_understandings (
+        id, household_id, lookup_key, costco_item_number, raw_description,
+        canonical_name, brand, product_family, variant, category_hint,
+        confidence_bps, exact_sku_known, search_aliases_json, intent_aliases_json,
+        provider, model, prompt_version, schema_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)`)
+      .run(
+        "semantic-downy-understanding",
+        initial.household.id,
+        "item:5161251",
+        "5161251",
+        "UNSTPBL FRSH",
+        "Downy Unstopables Fresh In-Wash Scent Booster Beads",
+        "Downy",
+        "Laundry scent booster beads",
+        "Fresh",
+        "household_supplies",
+        9700,
+        1,
+        JSON.stringify(["Downy Fresh", "Downy Unstopables Fresh"]),
+        JSON.stringify(["laundry scent booster", "scent booster beads"]),
+        "gemini-test",
+        "costco-line-understanding-v2",
+        "basketsense-product-understanding-v2",
+        now,
+        now,
+      );
+
+    const response = await handleHouseholdPost(
+      householdRequest(email, "POST", {
+        action: "add_list_item",
+        tripId: initial.currentTrip.id,
+        label: "Downy Fresh",
+        source: "manual",
+        section: "essentials",
+        included: true,
+      }),
+      db,
+    );
+    assert.equal(response.status, 201);
+    const row = db.database
+      .prepare(`SELECT product_id, label FROM trip_list_items
+        WHERE trip_id = ? AND product_id = ? LIMIT 1`)
+      .get(initial.currentTrip.id, product.id);
+    assert.equal(row.product_id, product.id);
+    assert.equal(row.label, "Downy Fresh");
+  } finally {
+    db.close();
+  }
+});
+
 test("trigger-inclusive D1 change counts still acknowledge successful writes", async () => {
   const db = new D1DatabaseAdapter(null, (sql, changes) => {
     if (
@@ -3628,9 +3728,9 @@ test("cached Gemini product semantics fulfill a broader household intent end to 
       .prepare(`INSERT INTO product_understandings (
         id, household_id, lookup_key, costco_item_number, raw_description,
         canonical_name, brand, product_family, variant, category_hint,
-        confidence_bps, exact_sku_known, search_aliases_json, provider, model,
+        confidence_bps, exact_sku_known, search_aliases_json, intent_aliases_json, provider, model,
         prompt_version, schema_version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)`)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)`)
       .run(
         "semantic-suja-understanding",
         initial.household.id,
@@ -3645,9 +3745,10 @@ test("cached Gemini product semantics fulfill a broader household intent end to 
         9500,
         1,
         JSON.stringify(["Suja Digestion", "wellness shot"]),
+        JSON.stringify(["digestion shots"]),
         "gemini-test",
-        "costco-line-understanding-v1",
-        "basketsense-product-understanding-v1",
+        "costco-line-understanding-v2",
+        "basketsense-product-understanding-v2",
         now,
         now,
       );
@@ -3665,6 +3766,14 @@ test("cached Gemini product semantics fulfill a broader household intent end to 
       db,
     );
     assert.equal(addResponse.status, 201);
+    assert.equal(
+      db.database
+        .prepare(`SELECT product_id FROM trip_list_items
+          WHERE trip_id = ? AND label = 'Suja shots' LIMIT 1`)
+        .get(initial.currentTrip.id).product_id,
+      null,
+      "a variant-ambiguous household phrase must remain an intent instead of binding to one SKU",
+    );
     assert.equal(
       (
         await handleHouseholdPatch(
@@ -3719,6 +3828,71 @@ test("cached Gemini product semantics fulfill a broader household intent end to 
           WHERE receipt_transaction_id = ? LIMIT 1`)
         .get(ingested.receiptId).match_type,
       "semantic_intent",
+    );
+
+    const persistedMatch = db.database
+      .prepare(`SELECT intent_item_id, receipt_item_id
+        FROM trip_item_matches WHERE receipt_transaction_id = ? LIMIT 1`)
+      .get(ingested.receiptId);
+    assert.ok(persistedMatch);
+    db.database
+      .prepare(`DELETE FROM trip_item_matches WHERE receipt_transaction_id = ?`)
+      .run(ingested.receiptId);
+    db.database
+      .prepare(`INSERT INTO review_questions (
+        id, household_id, trip_id, receipt_transaction_id,
+        question_key, purpose, prompt, options_json, declared_effect,
+        effect_target, intent_item_id, receipt_item_id,
+        priority, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'intent', ?, ?, ?, 'trip_match', ?, ?, 20, 'open', ?, ?)`)
+      .run(
+        "stale-semantic-intent-question",
+        initial.household.id,
+        initial.currentTrip.id,
+        ingested.receiptId,
+        "stale-semantic-intent-question",
+        "Did this receipt line fulfill Suja shots?",
+        JSON.stringify([
+          { value: "yes", label: "Yes", effect: "Records the match" },
+          { value: "no", label: "No", effect: "Keeps them separate" },
+        ]),
+        "Records one intent match",
+        persistedMatch.intent_item_id,
+        persistedMatch.receipt_item_id,
+        now,
+        now,
+      );
+
+    const recapResponse = await handleHouseholdGet(
+      householdRequest(
+        email,
+        "GET",
+        undefined,
+        `?view=trip-review&receiptId=${encodeURIComponent(ingested.receiptId)}`,
+      ),
+      db,
+    );
+    assert.equal(recapResponse.status, 200);
+    const recap = (await responseJson(recapResponse)).closedLoop;
+    assert.equal(recap.comparison.buckets.matched.length, 1);
+    assert.equal(recap.comparison.buckets.receiptOnly.length, 0);
+    assert.equal(recap.matches.length, 1);
+    assert.match(recap.matches[0].id, /^projected-match:/);
+    assert.equal(recap.matches[0].matchType, "semantic_intent");
+    assert.equal(
+      recap.questions.some(
+        (question) => question.id === "stale-semantic-intent-question",
+      ),
+      false,
+      "a newly confident match removes only the obsolete open intent question",
+    );
+    assert.equal(
+      db.database
+        .prepare(`SELECT COUNT(*) AS count FROM trip_item_matches
+          WHERE receipt_transaction_id = ?`)
+        .get(ingested.receiptId).count,
+      0,
+      "opening Recap must not rewrite official match history",
     );
   } finally {
     db.close();

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildGeminiGenerateContentRequest,
+  extractedReceiptNeedsRecovery,
   MAX_RECEIPT_OUTPUT_TOKENS,
   parseExtractedReceiptDraft,
 } from "../workers/receipt-ingestion/src/extraction.ts";
@@ -138,12 +139,82 @@ test("Gemini request uses inline document data and a strict JSON field contract"
   assert.equal(parts[0].inlineData.mimeType, "application/pdf");
   assert.equal(parts[0].inlineData.data, "c3ludGhldGljIHJlY2VpcHQ=");
   assert.match(parts[1].text, /Costco receipt/i);
+  assert.match(parts[1].text, /Costco\.com order confirmation/i);
+  assert.match(parts[1].text, /treat each product section as one product line/i);
+  assert.match(parts[1].text, /ignore shipping status/i);
+  assert.match(parts[1].text, /Combine visible order and product discounts exactly once/i);
   assert.match(parts[1].text, /Identify every visible coupon, instant saving, and discount/i);
   assert.match(parts[1].text, /"purchasedAt"/);
   assert.match(parts[1].text, /"rawDescription"/);
   assert.equal(request.generationConfig.responseMimeType, "application/json");
   assert.equal("responseJsonSchema" in request.generationConfig, false);
   assert.equal(request.generationConfig.maxOutputTokens, MAX_RECEIPT_OUTPUT_TOKENS);
+});
+
+test("Costco.com order arithmetic is accepted while incomplete order reads request recovery", () => {
+  const orderDraft = parseExtractedReceiptDraft({
+    purchasedAt: "2026-08-30",
+    subtotalCents: 659996,
+    taxCents: 43450,
+    totalCents: 593446,
+    discountCents: 110000,
+    warnings: [],
+    lines: [
+      {
+        itemNumber: "1000001",
+        rawDescription: "SYNTHETIC APPLIANCE A",
+        quantityMilli: 1000,
+        lineSubtotalCents: 179999,
+        discountCents: 8853,
+        netAmountCents: 171146,
+        taxStatus: "taxable",
+        confidenceBps: 9900,
+        needsReview: false,
+      },
+      {
+        itemNumber: "1000002",
+        rawDescription: "SYNTHETIC APPLIANCE B",
+        quantityMilli: 1000,
+        lineSubtotalCents: 289999,
+        discountCents: 61111,
+        netAmountCents: 228888,
+        taxStatus: "taxable",
+        confidenceBps: 9900,
+        needsReview: false,
+      },
+      {
+        itemNumber: "1000003",
+        rawDescription: "SYNTHETIC INSTALLATION A",
+        quantityMilli: 1000,
+        lineSubtotalCents: 94999,
+        discountCents: 20018,
+        netAmountCents: 74981,
+        taxStatus: "taxable",
+        confidenceBps: 9900,
+        needsReview: false,
+      },
+      {
+        itemNumber: "1000004",
+        rawDescription: "SYNTHETIC INSTALLATION B",
+        quantityMilli: 1000,
+        lineSubtotalCents: 94999,
+        discountCents: 20018,
+        netAmountCents: 74981,
+        taxStatus: "taxable",
+        confidenceBps: 9900,
+        needsReview: false,
+      },
+    ],
+  });
+  assert.equal(extractedReceiptNeedsRecovery(orderDraft), false);
+  assert.equal(
+    extractedReceiptNeedsRecovery({ ...orderDraft, totalCents: null }),
+    true,
+  );
+  assert.equal(
+    extractedReceiptNeedsRecovery({ ...orderDraft, totalCents: 0 }),
+    true,
+  );
 });
 
 test("Gemini receives PDF and image receipt bytes with their original MIME type", () => {

@@ -24,6 +24,14 @@ import {
   type ProductMemoryPreference,
 } from "../../product-memory";
 import {
+  resolveSpecificCatalogProduct,
+  type CatalogIntentCandidate,
+} from "../../product-intent-resolution";
+import {
+  PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+  PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+} from "../../../product-understanding-contract";
+import {
   classifyReceiptItem,
   type ClassificationStatus,
   type ProductCategoryKey,
@@ -671,6 +679,7 @@ const RUNTIME_SCHEMA_STATEMENTS = [
     confidence_bps INTEGER NOT NULL,
     exact_sku_known INTEGER NOT NULL DEFAULT 0,
     search_aliases_json TEXT NOT NULL DEFAULT '[]',
+    intent_aliases_json TEXT NOT NULL DEFAULT '[]',
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
     prompt_version TEXT NOT NULL,
@@ -991,6 +1000,7 @@ interface ReceiptItemRow {
   semantic_confidence_bps?: number | null;
   semantic_exact_sku_known?: number | null;
   semantic_search_aliases_json?: string | null;
+  semantic_intent_aliases_json?: string | null;
 }
 
 interface IntentSnapshotRow {
@@ -1054,6 +1064,7 @@ interface ProductUnderstandingRow {
   confidence_bps: number;
   exact_sku_known: number;
   search_aliases_json: string;
+  intent_aliases_json: string;
   model: string;
 }
 
@@ -3001,6 +3012,29 @@ type CatalogListMatch = {
   latest_regular_unit_price_cents: number | null;
 };
 
+type CatalogIntentRow = {
+  id: string;
+  canonical_name: string;
+  semantic_canonical_name: string;
+  brand: string | null;
+  product_family: string | null;
+  variant: string | null;
+  confidence_bps: number | null;
+  search_aliases_json: string | null;
+};
+
+function safeStringArray(value: string | null | undefined) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string").slice(0, 8)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 async function catalogMatchForListItem(
   db: D1Database,
   householdId: string,
@@ -3045,6 +3079,54 @@ async function catalogMatchForListItem(
       .all<{ id: string; canonical_name: string }>();
     if (candidates.results.length === 1) {
       product = candidates.results[0];
+    }
+
+    if (!product) {
+      const semanticCandidates = await db
+        .prepare(
+          `SELECT products.id, products.canonical_name,
+                  product_understandings.canonical_name AS semantic_canonical_name,
+                  product_understandings.brand,
+                  product_understandings.product_family,
+                  product_understandings.variant,
+                  product_understandings.confidence_bps,
+                  product_understandings.search_aliases_json
+           FROM products
+           INNER JOIN product_understandings
+             ON product_understandings.household_id = products.household_id
+            AND product_understandings.costco_item_number = products.costco_item_number
+           WHERE products.household_id = ?
+             AND products.active = 1
+             AND product_understandings.prompt_version = ?
+             AND product_understandings.schema_version = ?
+           ORDER BY products.updated_at DESC, products.id ASC`
+        )
+        .bind(
+          householdId,
+          PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+          PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+        )
+        .all<CatalogIntentRow>();
+      const resolution = resolveSpecificCatalogProduct(
+        label,
+        semanticCandidates.results.map((candidate): CatalogIntentCandidate => ({
+          id: candidate.id,
+          canonicalName: candidate.semantic_canonical_name,
+          brand: candidate.brand,
+          productFamily: candidate.product_family,
+          variant: candidate.variant,
+          confidenceBps: candidate.confidence_bps,
+          searchAliases: safeStringArray(candidate.search_aliases_json),
+        })),
+      );
+      if (resolution) {
+        product = {
+          id: resolution.candidate.id,
+          // Semantic names are advisory. Keep the spouse's wording while
+          // attaching the durable catalog identity.
+          canonical_name: label,
+        };
+      }
     }
   }
 
@@ -4748,8 +4830,13 @@ export async function trustedDraftInterpretations(
   const result = await db
     .prepare(`SELECT lookup_key, canonical_name, brand, product_family, variant,
                     category_hint, confidence_bps, model
-      FROM product_understandings WHERE household_id = ?`)
-    .bind(householdId)
+      FROM product_understandings
+      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+    .bind(
+      householdId,
+      PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+      PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+    )
     .all<ProductUnderstandingRow>();
   const byKey = new Map(result.results.map((row) => [row.lookup_key, row]));
   return items.map((item) => {
@@ -5269,6 +5356,10 @@ function semanticAliases(row: ReceiptItemRow): string[] {
   }
 }
 
+function semanticIntentAliases(row: ReceiptItemRow): string[] {
+  return safeStringArray(row.semantic_intent_aliases_json);
+}
+
 function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
   return {
     id: row.id,
@@ -5283,6 +5374,7 @@ function toLogicReceipt(row: ReceiptItemRow): MatchableReceiptItem {
       row.semantic_product_family ?? row.interpreted_product_family ?? null,
     semanticVariant: row.semantic_variant ?? row.interpreted_variant ?? null,
     semanticAliases: semanticAliases(row),
+    semanticIntentAliases: semanticIntentAliases(row),
     semanticConfidenceBps:
       row.semantic_confidence_bps ?? row.interpretation_confidence_bps ?? null,
     semanticExactSkuKnown: Boolean(row.semantic_exact_sku_known),
@@ -5547,9 +5639,14 @@ async function matchingInputs(
     db
       .prepare(`SELECT lookup_key, canonical_name, brand, product_family, variant,
                        category_hint, confidence_bps, exact_sku_known,
-                       search_aliases_json, model
-        FROM product_understandings WHERE household_id = ?`)
-      .bind(householdId)
+                       search_aliases_json, intent_aliases_json, model
+        FROM product_understandings
+        WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+      .bind(
+        householdId,
+        PRODUCT_UNDERSTANDING_PROMPT_VERSION,
+        PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+      )
       .all<ProductUnderstandingRow>(),
   ]);
   const aliases: ConfirmedProductAlias[] = aliasResult.results.map((alias) => ({
@@ -5595,6 +5692,7 @@ async function matchingInputs(
           semantic_confidence_bps: understanding.confidence_bps,
           semantic_exact_sku_known: understanding.exact_sku_known,
           semantic_search_aliases_json: understanding.search_aliases_json,
+          semantic_intent_aliases_json: understanding.intent_aliases_json,
         }
       : item;
   });
@@ -5622,7 +5720,7 @@ function persistedMatchType(
     : reason;
 }
 
-function projectShoppingAdditionMatches({
+function projectAutomaticReadMatches({
   householdId,
   tripId,
   receiptId,
@@ -5637,11 +5735,7 @@ function projectShoppingAdditionMatches({
   automaticMatches: ReceiptIntentMatch[];
   persistedMatches: TripItemMatchRow[];
 }): TripItemMatchRow[] {
-  const shoppingIntentIds = new Set(
-    intentRows
-      .filter((item) => Boolean(item.added_after_freeze))
-      .map((item) => item.id)
-  );
+  const availableIntentIds = new Set(intentRows.map((item) => item.id));
   const persistedIntentIds = new Set(
     persistedMatches.map((match) => match.intent_item_id)
   );
@@ -5653,12 +5747,12 @@ function projectShoppingAdditionMatches({
     .filter(
       (match) =>
         match.status === "auto_matched" &&
-        shoppingIntentIds.has(match.intentItemId) &&
+        availableIntentIds.has(match.intentItemId) &&
         !persistedIntentIds.has(match.intentItemId) &&
         !persistedReceiptIds.has(match.receiptItemId)
     )
     .map((match) => ({
-      id: `shopping-match:${receiptId}:${match.receiptItemId}`,
+      id: `projected-match:${receiptId}:${match.intentItemId}:${match.receiptItemId}`,
       household_id: householdId,
       trip_id: tripId,
       receipt_transaction_id: receiptId,
@@ -5759,7 +5853,7 @@ async function rebuildTripItemMatches(
     )
     .bind(receiptId)
     .all<TripItemMatchRow>();
-  const projectedShoppingMatches = projectShoppingAdditionMatches({
+  const projectedAutomaticMatches = projectAutomaticReadMatches({
     householdId,
     tripId,
     receiptId,
@@ -5769,7 +5863,7 @@ async function rebuildTripItemMatches(
   });
   return {
     ...inputs,
-    matches: [...persisted.results, ...projectedShoppingMatches],
+    matches: [...persisted.results, ...projectedAutomaticMatches],
     candidates,
   };
 }
@@ -6242,7 +6336,10 @@ async function readClosedLoopReview(
     aliases: inputs.aliases,
     fulfillments: inputs.fulfillments,
   });
-  const projectedShoppingMatches = projectShoppingAdditionMatches({
+  // Re-evaluate automatic matches on every read so completed Recaps can
+  // benefit from newer, versioned product knowledge. These projections never
+  // write on GET, and persisted system/member decisions remain authoritative.
+  const projectedAutomaticMatches = projectAutomaticReadMatches({
     householdId,
     tripId: receipt.trip_id,
     receiptId: receipt.id,
@@ -6252,7 +6349,7 @@ async function readClosedLoopReview(
   });
   const combinedMatches = [
     ...matchesResult.results,
-    ...projectedShoppingMatches,
+    ...projectedAutomaticMatches,
   ];
   const frozenIntentIds = new Set(
     inputs.intentRows
@@ -6302,7 +6399,20 @@ async function readClosedLoopReview(
     intentItems: inputs.intentRows.map(intentItemSummary),
     matches: combinedMatches.map(matchSummary),
     comparison,
-    questions: questionsResult.results.map(questionSummary),
+    questions: questionsResult.results
+      .filter((question) => {
+        if (question.status !== "open" || question.purpose !== "intent") {
+          return true;
+        }
+        return !projectedAutomaticMatches.some(
+          (match) =>
+            (question.intent_item_id !== null &&
+              question.intent_item_id === match.intent_item_id) ||
+            (question.receipt_item_id !== null &&
+              question.receipt_item_id === match.receipt_item_id),
+        );
+      })
+      .map(questionSummary),
     upload: upload
       ? {
           id: upload.id,
@@ -7290,6 +7400,9 @@ async function applyHistoricalReceiptCorrection(
     -100_000_000,
     100_000_000,
   );
+  if (totalCents <= 0) {
+    throw new ApiError(400, "A corrected purchase must have a positive total");
+  }
   const totalsOnly = body.captureMode === "totals_only";
   const items = validateDraftItems(body.items, totalsOnly);
   if (items.some((item) => item.isReturn)) {
@@ -7457,6 +7570,9 @@ async function finalizeReceipt(
     )
     .bind(receipt.id)
     .all<ReceiptItemRow>();
+  if (receipt.total_cents <= 0) {
+    throw new ApiError(409, "A finalized purchase must have a positive total");
+  }
   const arithmetic = reconcileReceipt({
     items: items.results.map((item) => ({
       lineSubtotalCents: item.line_subtotal_cents,

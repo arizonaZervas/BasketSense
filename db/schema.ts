@@ -827,6 +827,7 @@ export const productUnderstandings = sqliteTable(
       .notNull()
       .default(false),
     searchAliasesJson: text("search_aliases_json").notNull().default("[]"),
+    intentAliasesJson: text("intent_aliases_json").notNull().default("[]"),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
     promptVersion: text("prompt_version").notNull(),

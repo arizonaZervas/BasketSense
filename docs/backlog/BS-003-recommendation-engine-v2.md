@@ -1,6 +1,6 @@
 # BS-003 — Recommendation engine v2
 
-**Status:** Visible V2 cutover implemented and validated; deployment pending
+**Status:** Recommendation V2.1 learning released in private Sites version 89; household observation ongoing
 **Priority:** 3
 **Decision gate:** Gate A
 
@@ -105,7 +105,16 @@ backtests and evidence capture. The visible-list cutover now:
 Focused validation proves repeated reads are idempotent, a deleted V2 candidate
 is restored, and the cutover removes a legacy draft while preserving a legacy
 active choice. Recommendation V1 remains in the same server module behind one
-explicit switch, and the previous Sites version is the production rollback.
+explicit switch. Flip the switch to V1 and deploy for a clean functional
+rollback; the previous Sites version remains an emergency binary rollback.
+
+Private Sites version 89 completes the durable household-learning loop. An
+explicit Add or Remove records one household-scoped recommendation response
+atomically with the List mutation. Freezing records `kept` only for untouched
+automatic V2 recommendations, and unfreezing removes only that provisional
+retention evidence. Feedback from the current cycle cannot affect its own
+ranking; only completed earlier cycles contribute to future scores. The release
+required no schema migration, and version 88 is its emergency binary rollback.
 
 The audited local 2026 fixture currently contains 35 recurring catalog
 products across 29 warehouse dates. At K=6, the leakage-safe backtest reports

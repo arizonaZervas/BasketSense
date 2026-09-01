@@ -86,6 +86,9 @@ test("standalone return receipts can be uploaded, retried, and linked", async ()
   assert.match(source, /body\.action !== "retry_extraction"/);
   assert.match(source, /nativeExtractReceipt\(\{/);
   assert.match(source, /\["warehouse", "return"\]\.includes\(receipt\.transaction_type\)/);
+  assert.match(source, /latestAuthorizedIngestionForReceipt/);
+  assert.match(source, /receipt_ingestions\.receipt_transaction_id = \?/);
+  assert.match(source, /Choose either id or receiptId/);
 });
 
 test("receipt upload contract accepts PDFs and the supported image formats", () => {
