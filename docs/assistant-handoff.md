@@ -7,6 +7,13 @@ changing it.
 
 ## Current product state
 
+- 2026-09-12 initial Product Intelligence release: Saturday Prep / Review picks
+  removed; inline Ideas and Product Memory retained. List and Products share
+  bounded search terms from current semantic profiles and household aliases.
+  Search is retrieval only, not a change to receipt matching or recommendation
+  scoring. See `docs/backlog/product-intelligence-roadmap.md` for coverage gaps
+  and the next checkpoints. No migration or new provider calls in this release.
+
 - BasketSense is a private, two-person Costco companion: shared list, frozen
   intent, private receipt review, explainable comparison, lightweight feedback,
   product history, and in-app recap.

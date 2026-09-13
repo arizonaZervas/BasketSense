@@ -263,6 +263,7 @@ export interface TripListItemSummary {
 }
 
 export interface ProductSummary {
+  searchTerms?: string[];
   id: string;
   costcoItemNumber: string | null;
   canonicalName: string;

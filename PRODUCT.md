@@ -33,6 +33,10 @@ Do not resemble a restrictive budget enforcer, a guilt-based savings app, a spou
 - Preserve the enjoyable Costco ritual while making planning easier.
 - Keep one shared household view that either spouse can understand and edit.
 - Make every recommendation explainable, optional, and easy to reject.
+- Keep suggestions inline. The retired Review picks wizard must not return
+  without evidence that it reduces household effort.
+- Search by familiar names using household product knowledge, but keep broad
+  retrieval separate from SKU identity and receipt-match confirmation.
 - Separate recorded intent from post-trip outcomes before describing a purchase as unplanned.
 - Show uncertain receipt and category mappings as reviewable uncertainty, not hidden precision.
 - Keep purchases and returns as signed, auditable receipt facts: drafts affect nothing, finalized purchases add to net spend, and finalized returns subtract from it.

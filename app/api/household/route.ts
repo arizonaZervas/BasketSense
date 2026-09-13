@@ -31,6 +31,7 @@ import {
   PRODUCT_UNDERSTANDING_PROMPT_VERSION,
   PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
 } from "../../../product-understanding-contract";
+import { boundedSearchTerms, searchTermsFromJson } from "../../catalog-search";
 import {
   classifyReceiptItem,
   type ClassificationStatus,
@@ -2298,6 +2299,28 @@ async function readHouseholdCoreState(
   context: HouseholdContext,
   includeClosedLoop = false,
 ): Promise<HouseholdCoreResponse> {
+  // Search knowledge shares the core batch; no per-product calls or extra waterfall.
+  const searchStatements = [
+    db.prepare(`SELECT product_id, raw_description FROM (
+      SELECT aliases.product_id, aliases.raw_description,
+             ROW_NUMBER() OVER (PARTITION BY aliases.product_id ORDER BY aliases.updated_at DESC, aliases.id) AS rank
+      FROM product_aliases AS aliases
+      INNER JOIN products ON products.id = aliases.product_id AND products.household_id = aliases.household_id
+      WHERE aliases.household_id = ? AND products.active = 1
+    ) WHERE rank <= 16`).bind(context.household.id),
+    db.prepare(`SELECT * FROM (
+      SELECT products.id AS product_id, knowledge.canonical_name, knowledge.brand,
+             knowledge.product_family, knowledge.variant, knowledge.search_aliases_json,
+             knowledge.intent_aliases_json,
+             ROW_NUMBER() OVER (PARTITION BY products.id ORDER BY knowledge.updated_at DESC, knowledge.id) AS rank
+      FROM product_understandings AS knowledge
+      INNER JOIN products ON products.household_id = knowledge.household_id
+        AND products.costco_item_number = knowledge.costco_item_number
+      WHERE knowledge.household_id = ? AND products.active = 1
+        AND knowledge.prompt_version = ? AND knowledge.schema_version = ?
+        AND knowledge.confidence_bps >= 8000
+    ) WHERE rank = 1`).bind(context.household.id, PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION),
+  ];
   const results = await db.batch([
     db
       .prepare(
@@ -2450,6 +2473,7 @@ async function readHouseholdCoreState(
          ORDER BY scheduled_for ASC`,
       )
       .bind(context.currentTrip.id, context.household.id),
+    ...searchStatements,
   ]);
 
   const members = results[0].results as unknown as MemberRow[];
@@ -2463,6 +2487,23 @@ async function readHouseholdCoreState(
     | undefined;
   const currentTripSkips = results[5].results as unknown as TripSkipRow[];
 
+  const searchResults = results.slice(6);
+  const searchByProduct = new Map<string, string[]>();
+  for (const row of searchResults[0].results as unknown as { product_id: string; raw_description: string }[]) {
+    searchByProduct.set(row.product_id, [...(searchByProduct.get(row.product_id) ?? []), row.raw_description]);
+  }
+  for (const row of searchResults[1].results as unknown as {
+    product_id: string; canonical_name: string; brand: string | null;
+    product_family: string | null; variant: string | null;
+    search_aliases_json: string; intent_aliases_json: string;
+  }[]) {
+    searchByProduct.set(row.product_id, boundedSearchTerms([
+      ...(searchByProduct.get(row.product_id) ?? []), row.canonical_name, row.brand,
+      row.product_family, row.variant, ...searchTermsFromJson(row.search_aliases_json),
+      ...searchTermsFromJson(row.intent_aliases_json),
+    ]));
+  }
+
   return {
     historyRevision,
     household: {
@@ -2475,7 +2516,10 @@ async function readHouseholdCoreState(
     currentTrip: tripSummary(context.currentTrip),
     currentTripSkip: tripSkipSummary(context.currentTrip, currentTripSkips),
     listItems: listItems.map(listItemSummary),
-    products: products.map(productSummary),
+    products: products.map((product) => ({
+      ...productSummary(product),
+      searchTerms: boundedSearchTerms([product.brand, ...(searchByProduct.get(product.id) ?? [])]),
+    })),
     currentTripReceipt: currentTripReceipt
       ? {
           id: currentTripReceipt.id,

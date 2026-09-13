@@ -64,10 +64,7 @@ import {
   productMemorySuppressesSuggestion,
   type ProductMemoryPreference,
 } from "./product-memory";
-import {
-  SaturdayPrepExperience,
-  type SaturdayPrepItem,
-} from "./saturday-prep";
+import { catalogSearchScore, searchCatalog } from "./catalog-search";
 
 type Tab = "overview" | "products" | "week" | "review";
 type TripStatus = "planning" | "frozen" | "completed";
@@ -2238,44 +2235,10 @@ function ThisWeekTab({
         }),
     [household?.products],
   );
-  const catalogResults = useMemo(() => {
-    const normalizedQuery = normalizedCatalogLabel(newItem);
-    const queryTokens = normalizedQuery.split(/\s+/).filter(Boolean);
-    const matches = catalogOptions.filter((product) => {
-      if (!queryTokens.length) return true;
-      const searchableValues = [
-        product.canonicalName,
-        product.latestRawDescription ?? "",
-        product.costcoItemNumber ?? "",
-        catalogSelectionValue(product, catalogOptions),
-      ].map(normalizedCatalogLabel);
-      return queryTokens.every((token) =>
-        searchableValues.some((value) => value.includes(token)),
-      );
-    });
-
-    return matches
-      .sort((left, right) => {
-        if (!normalizedQuery) return 0;
-        const score = (product: SharedProduct) => {
-          const canonicalName = normalizedCatalogLabel(product.canonicalName);
-          const selection = normalizedCatalogLabel(
-            catalogSelectionValue(product, catalogOptions),
-          );
-          const rawDescription = normalizedCatalogLabel(
-            product.latestRawDescription ?? "",
-          );
-          if (canonicalName === normalizedQuery || selection === normalizedQuery) {
-            return 0;
-          }
-          if (canonicalName.startsWith(normalizedQuery)) return 1;
-          if (rawDescription.startsWith(normalizedQuery)) return 2;
-          return 3;
-        };
-        return score(left) - score(right);
-      })
-      .slice(0, 7);
-  }, [catalogOptions, newItem]);
+  const catalogResults = useMemo(
+    () => searchCatalog(catalogOptions, newItem).slice(0, 7),
+    [catalogOptions, newItem],
+  );
   const matchedCatalogProduct = exactCatalogMatch(catalogOptions, newItem);
   const removedAfterStart = shoppingStarted
     ? excluded.filter(
@@ -2297,11 +2260,6 @@ function ThisWeekTab({
   );
   const visibleIdeaItems = ideaItems.filter(
     (item) => !suppressedIdeaItemIds.has(item.id),
-  );
-  const prepPendingItemIds = new Set(
-    visibleIdeaItems
-      .filter((item) => pendingWrites.has(`item-${item.id}`))
-      .map((item) => item.id),
   );
   const syncTitle =
     syncStatus === "connecting"
@@ -2638,21 +2596,6 @@ function ThisWeekTab({
         failure={failedWrites["unfreeze-trip"]}
         onRetry={() => onRetry("unfreeze-trip")}
       />
-
-      {!shoppingStarted && household && visibleIdeaItems.length ? (
-        <SaturdayPrepExperience
-          key={household.currentTrip.id}
-          tripId={household.currentTrip.id}
-          scheduledFor={household.currentTrip.scheduledFor}
-          items={visibleIdeaItems}
-          suppressedCount={suppressedIdeaItems.length}
-          pendingItemIds={prepPendingItemIds}
-          onAdd={(prepItem: SaturdayPrepItem, trigger) => {
-            const item = items.find((candidate) => candidate.id === prepItem.id);
-            if (item && !item.included) onToggleIncluded(item, trigger);
-          }}
-        />
-      ) : null}
 
       <form
         className="quick-add"
@@ -4546,13 +4489,15 @@ function ProductsTab({
   } | null>(null);
   const [memorySaving, setMemorySaving] = useState(false);
   const filteredProducts = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase();
+    const catalogBySku = new Map(catalogProducts.filter((product) => product.costcoItemNumber).map((product) => [product.costcoItemNumber, product]));
     const matching = products.filter((product) => {
       if (category !== "all" && product.categoryKey !== category) return false;
-      if (!query) return true;
-      return [product.name, product.rawDescription, product.itemNumber].some((value) =>
-        value.toLocaleLowerCase().includes(query),
-      );
+      return catalogSearchScore({
+        canonicalName: product.name,
+        latestRawDescription: product.rawDescription,
+        costcoItemNumber: product.itemNumber,
+        searchTerms: catalogBySku.get(product.itemNumber)?.searchTerms,
+      }, search) !== null;
     });
     return matching.sort((left, right) => {
       if (sort === "alphabetical") {
@@ -4574,7 +4519,7 @@ function ProductsTab({
         left.itemNumber.localeCompare(right.itemNumber)
       );
     });
-  }, [category, products, search, sort]);
+  }, [catalogProducts, category, products, search, sort]);
   const selected =
     products.find((product) => product.id === selectedProductId) ?? products[0];
   const catalogProduct = catalogProducts.find(

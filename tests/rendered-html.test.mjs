@@ -237,10 +237,6 @@ test("skip week stays accessible, responsive, and separate from trip completion"
     new URL("../app/basket-sense-dashboard.tsx", import.meta.url),
     "utf8",
   );
-  const prepSource = await readFile(
-    new URL("../app/saturday-prep.tsx", import.meta.url),
-    "utf8",
-  );
   const styles = await readFile(
     new URL("../app/globals.css", import.meta.url),
     "utf8",
@@ -254,7 +250,6 @@ test("skip week stays accessible, responsive, and separate from trip completion"
   assert.match(dashboardSource, /Skip Costco weeks/);
   assert.match(dashboardSource, /aria-modal="true"/);
   assert.match(dashboardSource, /skippedWeeks\.map/);
-  assert.match(prepSource, /basketsense-saturday-prep:\$\{tripId\}:\$\{scheduledFor\}/);
   assert.match(styles, /\.skip-week-backdrop/);
   assert.match(styles, /max-height: min\(82dvh, 720px\)/);
   assert.match(styles, /env\(safe-area-inset-bottom\)/);
@@ -426,27 +421,16 @@ test("reflows every primary surface from the available content width", async () 
   );
 });
 
-test("Saturday Prep is compact and inherits readable theme colors", async () => {
-  const source = await readFile(
-    new URL("../app/saturday-prep.tsx", import.meta.url),
-    "utf8",
-  );
+test("retires the Review picks wizard while retaining inline ideas and Product Memory", async () => {
+  const source = await readFile(new URL("../app/basket-sense-dashboard.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  const cardStyles = styles.match(/\.saturday-prep-card \{([\s\S]*?)\n\}/)?.[1] ?? "";
-
-  assert.match(source, /Quick picks before Costco/);
-  assert.match(source, /Review picks/);
-  assert.match(source, />\s*Skip\s*</);
-  assert.doesNotMatch(source, /Review a few likely-due|Nothing joins the shared list/);
-  assert.match(source, /Only Add changes the shared list/);
-  assert.match(source, /about every \$\{interval\} days/);
-  assert.doesNotMatch(source, /if \(item\.recommendationReason\) return item\.recommendationReason/);
-  assert.match(cardStyles, /background: color-mix\([^;]*var\(--forest-soft\)[^;]*var\(--paper-strong\)/);
-  assert.match(cardStyles, /color: var\(--ink\)/);
-  assert.doesNotMatch(cardStyles, /var\(--forest-dark\)|var\(--on-forest\)/);
-  assert.match(source, /transform: `scaleX\(\$\{\(step \+ 1\) \/ 3\}\)`/);
-  assert.match(styles, /\.saturday-prep-progress span \{[\s\S]*transition: transform 180ms/);
-  assert.doesNotMatch(styles, /\.saturday-prep-progress span \{[\s\S]*?transition: width/);
+  assert.doesNotMatch(source, /SaturdayPrepExperience|saturday-prep|Review picks|Quick picks before Costco/);
+  assert.doesNotMatch(styles, /\.saturday-prep-/);
+  assert.match(source, /visibleIdeaItems/);
+  assert.match(source, /productMemorySuppressesSuggestion/);
+  assert.match(source, /searchCatalog\(catalogOptions, newItem\)/);
+  assert.match(source, /catalogSearchScore/);
+  assert.match(styles, /\.product-memory-options/);
 });
 
 test("keeps receipt and Recap focus, alignment, and narrow headers polished", async () => {

@@ -13,6 +13,7 @@ import {
 } from "./product-categories";
 
 export type HouseholdCatalogProductMetadata = {
+  searchTerms?: string[];
   costcoItemNumber: string | null;
   canonicalName: string;
   category: string | null;

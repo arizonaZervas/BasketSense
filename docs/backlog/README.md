@@ -42,6 +42,17 @@ the sequence, but feature work may not silently skip a decision gate.
 
 ## Decision gates
 
+### 2026-09-12 household-quality follow-up
+
+The owner identified catalog discovery, receipt-intent matching and recommendation
+quality as the strongest current gap. The researched, checkpointed proposal is
+in [Product intelligence roadmap](product-intelligence-roadmap.md), with the
+Saturday Prep retirement recorded in the [feature graveyard](feature-graveyard.md).
+This extends BS-003 and informs BS-001 observation; it is not a new release or
+authorization to begin multi-tenancy. Proposed order: retire the redundant wizard,
+unify semantic catalog search, validate profile coverage, improve matching, then
+evaluate need-level recommendations. Implementation and release gates remain explicit.
+
 ### Gate A — continue beyond the household product
 
 Required after BS-001 through BS-003:

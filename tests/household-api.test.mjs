@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION } from "../product-understanding-contract.ts";
 
 import { RECURRING_PRODUCT_HISTORIES_2026 } from "../app/basketsense-data.ts";
 import { buildDashboardViewData } from "../app/basketsense-dashboard-data.ts";
@@ -201,6 +202,48 @@ test("D1 dashboard matches the audited historical view before client cutover", a
   }
 });
 
+test("catalog search exposes scoped current knowledge without changing list or receipt truth", async () => {
+  const db = new D1DatabaseAdapter();
+  try {
+    const email = "catalog-search@example.test";
+    const request = () => householdRequest(email, "GET", undefined, "?view=core");
+    const initial = await responseJson(await handleHouseholdGet(request(), db));
+    const product = initial.products.find((p) => p.costcoItemNumber);
+    const other = initial.products.find((p) => p.costcoItemNumber && p.id !== product.id);
+    const insert = db.database.prepare(`INSERT INTO product_understandings
+      (id, household_id, lookup_key, costco_item_number, raw_description, canonical_name,
+       brand, product_family, confidence_bps, search_aliases_json, intent_aliases_json,
+       provider, model, prompt_version, schema_version)
+      VALUES (?, ?, ?, ?, 'RAW', 'Semantic name', 'Test brand', 'paper towels', ?, ?, ?, 'test', 'test', ?, ?)`);
+    insert.run("current-search", initial.household.id, "search-current", product.costcoItemNumber,
+      9500, '["Bounty",42,null]', '["kitchen towels"]', PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION);
+    insert.run("stale-search", initial.household.id, "search-stale", other.costcoItemNumber,
+      9500, '["stale alias"]', '[]', "old-prompt", PRODUCT_UNDERSTANDING_SCHEMA_VERSION);
+    insert.run("uncertain-search", initial.household.id, "search-low", other.costcoItemNumber,
+      4000, '["uncertain alias"]', '[]', PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION);
+    db.database.prepare(`INSERT INTO households (id, slug, name, time_zone) VALUES ('foreign-search', 'foreign-search', 'Foreign', 'America/Los_Angeles')`).run();
+    insert.run("foreign-search", "foreign-search", "search-foreign", product.costcoItemNumber,
+      9900, '["foreign alias"]', '[]', PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION);
+    db.database.prepare(`INSERT INTO product_aliases
+      (id, household_id, alias_key, raw_description, normalized_description, product_id, confirmation_source)
+      VALUES ('search-alias', ?, 'search-alias', 'Our towels', 'our towels', ?, 'household')`).run(initial.household.id, product.id);
+    const result = await responseJson(await handleHouseholdGet(request(), db));
+    const enriched = result.products.find((p) => p.id === product.id);
+    for (const term of ["Bounty", "Test brand", "paper towels", "kitchen towels", "Our towels"]) assert.ok(enriched.searchTerms.includes(term), term);
+    assert.doesNotMatch(JSON.stringify(result.products), /foreign alias|stale alias|uncertain alias/);
+    assert.deepEqual(result.listItems, initial.listItems);
+    assert.equal(result.historyRevision, initial.historyRevision);
+    assert.equal(enriched.canonicalName, product.canonicalName);
+    db.database.prepare("UPDATE product_understandings SET search_aliases_json = '{', intent_aliases_json = '{}' WHERE id = 'current-search'").run();
+    assert.equal((await handleHouseholdGet(request(), db)).status, 200);
+    db.executedStatements = [];
+    const poll = await handleHouseholdGet(householdRequest(email, "GET", undefined,
+      `?scope=list&tripId=${result.currentTrip.id}&knownRevision=${result.currentTrip.listRevision}`), db);
+    assert.ok([200, 204].includes(poll.status));
+    assert.ok(!db.executedStatements.some((sql) => /AS knowledge|AS aliases/.test(sql)), "unchanged polls do not read search knowledge");
+  } finally { db.close(); }
+});
+
 test("zero-dollar standalone placeholders cannot become official spending", async () => {
   const db = new D1DatabaseAdapter();
   try {
@@ -341,7 +384,7 @@ test("cold core reads use the completed migration marker and skip receipt reconc
     );
     assert.equal(
       cold.executedStatements.some((statement) =>
-        /FROM product_understandings/i.test(statement),
+        /FROM product_understandings/i.test(statement) && !statement.includes("AS knowledge"),
       ),
       false,
       "the List-first response must not reconcile historical receipt matches",
@@ -1518,10 +1561,8 @@ test("visible recommendation v2 backfills candidates without overwriting spouse 
     assert.equal(initial.listItems.length, 7);
     assert.ok(initial.listItems.every((item) => item.id.startsWith("seed-v2-")));
 
-    const lychee = initial.listItems.find((item) => item.label === "Lychee");
-    const sweetCorn = initial.listItems.find(
-      (item) => item.label === "Sweet corn",
-    );
+    // This tests preserving edits, not which seasonal products rank this week.
+    const [lychee, sweetCorn] = initial.listItems;
     assert.ok(lychee);
     assert.ok(sweetCorn);
 
@@ -1974,9 +2015,7 @@ test("list scope returns only the live trip without rerunning household bootstra
     const initial = await responseJson(
       await handleHouseholdGet(householdRequest("poll-owner@example.test"), db),
     );
-    const sweetCorn = initial.listItems.find(
-      (item) => item.label === "Sweet corn",
-    );
+    const sweetCorn = initial.listItems[0];
     assert.ok(sweetCorn);
 
     const lastSeenMarker = "2026-07-19T08:00:00.000Z";
