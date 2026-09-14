@@ -7,7 +7,18 @@ changing it.
 
 ## Current product state
 
-- 2026-09-13 runtime knowledge safety integration implemented locally, NOT released:
+- 2026-09-13 release: runtime knowledge safeguards deployed successfully as Sites
+  94, source `10f2b326617a7ce3a28b77a4f5653bcae99ee239`, pushed to origin and the
+  existing Sites source repository. Current workspace access was preserved.
+  Read-only DB overview confirms `product_understanding_candidates` exists; the
+  post-release errors-only log query returned no events. Authenticated HTTP smoke
+  still returned 401, so live household/sandbox behavior is not yet verified.
+  Rollback target is Sites 93; leave the additive candidate table intact.
+  Subsequent local-only review export work adds field-level source references and
+  recognizes member-reviewed catalog names. It performs no activation, provider
+  calls, or production data changes. Runtime/recommendation scoring is unchanged.
+
+- 2026-09-13 runtime knowledge safety implementation checkpoint (subsequently released above):
   new Gemini interpretations go to a separate pending-candidate table; confirmed
   household products exclude model profiles in search, typed-item resolution,
   receipt metadata validation/matching and Worker reads. Old unconfirmed profiles

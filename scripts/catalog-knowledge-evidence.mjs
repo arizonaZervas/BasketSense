@@ -1,5 +1,5 @@
 // Offline review policy only. Never promotes knowledge or edits household data.
-export const EVIDENCE_POLICY_VERSION = "household-evidence-v1";
+export const EVIDENCE_POLICY_VERSION = "household-evidence-v2";
 const norm = (s) => typeof s === "string" ? s.normalize("NFKD").replace(/\p{M}/gu, "")
   .toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim() : "";
 const unique = (a) => [...new Set(a.filter(Boolean))].sort();
@@ -19,12 +19,47 @@ export function collectProductEvidence(householdId, product, products, aliases, 
     ["same_product", "fulfills_intent", "substitute", "not_same"].includes(r.relation))
     .map(r => ({ source: "intent_fulfillments", sourceId: r.id, updatedAt: r.updated_at,
       relation: r.relation, label: r.raw_intent_label }));
-  const facts = [...confirmations, ...decisions].sort((a,b) =>
+  const metadata = product.category_reviewed_by_member_id && norm(product.canonical_name)
+    ? [{ source: "products", sourceId: product.id, updatedAt: product.category_reviewed_at,
+      relation: "same_product", label: product.canonical_name }] : [];
+  const facts = [...metadata, ...confirmations, ...decisions].sort((a,b) =>
     `${a.source}:${a.sourceId}`.localeCompare(`${b.source}:${b.sourceId}`));
   const collisions = facts.filter(f => f.relation === "same_product").flatMap(f =>
     localProducts.filter(p => p.id !== product.id && p.costco_item_number !== product.costco_item_number &&
       norm(p.canonical_name) === norm(f.label)).map(p => ({ sourceId: f.sourceId, otherProductId: p.id })));
   return { householdId, productId: product.id, facts, collisions };
+}
+
+/** Field-level review, not approval: preserve useful supported terms while
+ * exposing exactly which additions lack evidence. No implicit taxonomy learning. */
+export function buildKnowledgeReviewPacket(evidence, proposal, householdId) {
+  const assessment = assessKnowledgeProposal(evidence, proposal, householdId);
+  const scopeValid = evidence.confirmedEvidence?.householdId === householdId &&
+    evidence.confirmedEvidence?.productId === evidence.productId;
+  const facts = scopeValid ? evidence.confirmedEvidence.facts : [];
+  const fields = proposal ? [
+    ["canonicalName", [proposal.canonicalName]],
+    ["brand", [proposal.brand]], ["productFamily", [proposal.productFamily]],
+    ["variant", [proposal.variant]], ["categoryHint", [proposal.categoryHint]],
+    ["searchAliases", proposal.searchAliases ?? []],
+    ["intentAliases", proposal.intentAliases ?? []],
+  ] : [];
+  const terms = fields.flatMap(([field, values]) => unique(values.filter(v => typeof v === "string" && norm(v))).map(term => {
+    const matching = facts.filter(f => norm(f.label) === norm(term));
+    const negative = matching.filter(f => f.relation === "not_same");
+    const exact = matching.filter(f => f.relation === "same_product");
+    const positive = matching.filter(f => ["same_product", "fulfills_intent", "substitute"].includes(f.relation));
+    const supporting = field === "intentAliases" ? positive : ["canonicalName", "searchAliases"].includes(field) ? exact : [];
+    // A name or alias does not independently verify brand, family, category or variant.
+    const state = negative.length ? "blocked" : supporting.length ? "supported" : "needs_review";
+    return { field, term, state,
+      use: field === "intentAliases" ? "intent_only" : field === "searchAliases" ? "exact_alias" : "attribute",
+      sources: [...supporting, ...negative].map(f => ({ reference: `${f.source}:${f.sourceId}`, updatedAt: f.updatedAt, relation: f.relation })),
+    };
+  }));
+  return { householdId, productId: evidence.productId, assessment, terms,
+    counts: Object.fromEntries(["supported", "needs_review", "blocked"].map(state => [state, terms.filter(t => t.state === state).length])),
+    activationAllowed: false };
 }
 
 /** Conservative exact evidence agreement, not a new fuzzy family/abbreviation dictionary. */

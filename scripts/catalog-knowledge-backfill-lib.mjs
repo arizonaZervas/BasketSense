@@ -1,7 +1,7 @@
 // Operator-only PI-2 tooling. Never imported by the app or receipt Worker.
 import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { collectProductEvidence, assessKnowledgeProposal, EVIDENCE_POLICY_VERSION } from "./catalog-knowledge-evidence.mjs";
+import { collectProductEvidence, assessKnowledgeProposal, buildKnowledgeReviewPacket, EVIDENCE_POLICY_VERSION } from "./catalog-knowledge-evidence.mjs";
 import {
   buildProductUnderstandingRequest,
   parseProductUnderstandings,
@@ -48,7 +48,8 @@ function readSnapshotRows(db, householdId) {
   if (!db.prepare("SELECT id FROM households WHERE id = ?").get(householdId)) {
     throw new CatalogBackfillError("Household not found in source");
   }
-  const products = db.prepare(`SELECT id, household_id, active, costco_item_number, canonical_name, brand, category
+  const products = db.prepare(`SELECT id, household_id, active, costco_item_number, canonical_name, brand, category,
+    category_reviewed_by_member_id, category_reviewed_at
     FROM products WHERE household_id = ? AND active = 1 ORDER BY id`).all(householdId);
   const labels = db.prepare(`SELECT ri.product_id, ri.raw_description FROM receipt_items ri
     JOIN receipt_transactions rt ON rt.id = ri.receipt_transaction_id
@@ -314,6 +315,7 @@ export function reviewCandidates(db, householdId) {
       state: row.state, proposal: row.proposal_json ? JSON.parse(row.proposal_json) : null,
       provenance: "model_proposal_not_household_confirmation", error: row.error_code,
       assessment: assessKnowledgeProposal(JSON.parse(row.evidence_json), row.proposal_json ? JSON.parse(row.proposal_json) : null, householdId),
+      reviewPacket: buildKnowledgeReviewPacket(JSON.parse(row.evidence_json), row.proposal_json ? JSON.parse(row.proposal_json) : null, householdId),
     })) };
 }
 

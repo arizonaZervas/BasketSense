@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collectProductEvidence, assessKnowledgeProposal } from "../scripts/catalog-knowledge-evidence.mjs";
+import { collectProductEvidence, assessKnowledgeProposal, buildKnowledgeReviewPacket } from "../scripts/catalog-knowledge-evidence.mjs";
 import { openLedger, prepareLedger, runBatch, reviewCandidates, planCatalog } from "../scripts/catalog-knowledge-backfill-lib.mjs";
 
 const p = {id:"p", household_id:"h", active:1, costco_item_number:"1860779", canonical_name:"NAKED WHITE"};
@@ -8,6 +8,51 @@ const alias = (label, extra={}) => ({id:"a",household_id:"h",product_id:"p",raw_
 const relation = (label, value, extra={}) => ({id:"r",household_id:"h",costco_item_number:"1860779",receipt_key:"item:1860779",raw_intent_label:label,relation:value,confirmed_by_member_id:"m",updated_at:"2026-09-13",...extra});
 const evidence = (aliases=[], relations=[], products=[p]) => ({productId:"p", confirmedEvidence:collectProductEvidence("h",p,products,aliases,relations)});
 const proposal = (name, family=name, extra={}) => ({lookupKey:"item:1860779",canonicalName:name,productFamily:family,brand:null,variant:null,categoryHint:"groceries_beverages",confidenceBps:10000,exactSkuKnown:true,searchAliases:[name],intentAliases:[family],...extra});
+
+test("reviewed catalog names become authoritative evidence without inventing brand or family", () => {
+  const reviewed = {...p,canonical_name:"Naked White bread",category_reviewed_by_member_id:"member-private",category_reviewed_at:"2026-09-13"};
+  const e={productId:"p",confirmedEvidence:collectProductEvidence("h",reviewed,[reviewed],[],[])};
+  const r=buildKnowledgeReviewPacket(e,proposal("Naked White bread","bread",{brand:"Naked"}),"h");
+  assert.equal(r.terms.find(t=>t.field==="canonicalName").state,"supported");
+  assert.equal(r.terms.find(t=>t.field==="brand").state,"needs_review");
+  assert.equal(r.terms.find(t=>t.field==="productFamily").state,"needs_review");
+  assert.equal(r.terms[0].sources[0].reference,"products:p");
+  assert.doesNotMatch(JSON.stringify(r),/member-private/);
+  assert.equal(r.activationAllowed,false);
+});
+
+test("review packets separate exact aliases from household intent and retain source revisions", () => {
+  const e=evidence([alias("Mandarins")],[relation("oranges","fulfills_intent")]);
+  const r=buildKnowledgeReviewPacket(e,proposal("Mandarins","citrus",{searchAliases:["oranges"],intentAliases:["oranges"]}),"h");
+  assert.equal(r.terms.find(t=>t.field==="searchAliases").state,"needs_review");
+  const intent=r.terms.find(t=>t.field==="intentAliases");
+  assert.equal(intent.state,"supported");
+  assert.equal(intent.use,"intent_only");
+  assert.deepEqual(intent.sources,[{reference:"intent_fulfillments:r",updatedAt:"2026-09-13",relation:"fulfills_intent"}]);
+  assert.equal(r.assessment.status,"quarantined");
+  assert.equal(r.activationAllowed,false);
+});
+
+test("negative feedback wins per term and foreign evidence cannot support a term", () => {
+  const e=evidence([alias("ginger shots")],[relation("ginger shots","not_same")]);
+  const r=buildKnowledgeReviewPacket(e,proposal("ginger shots"),"h");
+  assert.equal(r.terms.find(t=>t.field==="canonicalName").state,"blocked");
+  assert.ok(r.counts.blocked>0);
+  const foreign=buildKnowledgeReviewPacket(e,proposal("ginger shots"),"other");
+  assert.equal(foreign.counts.supported,0);
+  assert.equal(foreign.assessment.status,"quarantined");
+  assert.ok(foreign.terms.every(t=>t.sources.length===0));
+});
+
+test("new synonyms remain individually reviewable without discarding supported names", () => {
+  const e=evidence([alias("Bounty paper towels")]);
+  const r=buildKnowledgeReviewPacket(e,proposal("Bounty paper towels","paper towels",{searchAliases:["Bounty paper towels","kitchen roll"]}),"h");
+  assert.equal(r.terms.find(t=>t.term==="kitchen roll").state,"needs_review");
+  assert.equal(r.terms.find(t=>t.field==="canonicalName").state,"supported");
+  assert.equal(r.counts.supported,2);
+  assert.equal(r.activationAllowed,false);
+  assert.deepEqual(buildKnowledgeReviewPacket(e,null,"h").terms,[]);
+});
 
 test("confirmed bread identity quarantines juice regardless of model confidence", () => {
   const e=evidence([alias("Naked White bread")]);

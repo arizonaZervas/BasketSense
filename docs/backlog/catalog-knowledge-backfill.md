@@ -1,11 +1,44 @@
 # PI-2: catalog knowledge coverage and review-only backfill
 
-Checkpoint: 2026-09-13. Local operator tooling implemented. **No production
-backfill, activation, commit, migration, or deployment in this checkpoint.**
+Checkpoint: 2026-09-13. Runtime safeguards released as Sites 94, source
+`10f2b326617a7ce3a28b77a4f5653bcae99ee239`. No production knowledge backfill or
+activation. The deployment succeeded and the candidate table exists. Existing
+workspace access was preserved; errors-only logs were empty. Authenticated HTTP
+smoke returned 401, so live signed-in behavior remains unverified. Rollback is
+Sites 93, retaining the additive table. Earlier checkpoint statements below are
+historical, not the current release state.
+
+## Follow-on: field-level review exports (local only)
+
+The review export now includes a `reviewPacket` per product: each proposed name,
+alias and attribute is marked supported, needs-review, or blocked, with the exact
+source reference, source revision timestamp and relation. Useful supported terms
+remain visible even when other terms require review. A supported term does not
+authorize promotion; the aggregate conflict gate and `activationAllowed=false`
+still apply. This is operator tooling, not a new customer-facing review screen.
+
+Member-reviewed catalog names are now included as identity evidence, bringing the
+offline evidence reader into line with the runtime safeguard. Member identifiers
+are not included in the exported facts. A name does not independently establish
+brand, product family, category or variant. `fulfills_intent`/`substitute` evidence
+can support intent terms, never exact aliases; `not_same` blocks terms.
+
+Evidence policy is `household-evidence-v2`; fingerprints invalidate when policy
+or evidence changes. Preserve previous ledgers and consumed-call budgets; this
+change is not permission to rerun generation. No new provider call, production
+mutation, UI, or runtime recommendation change was made in this follow-on.
+Validation: 237/237 BasketSense tests pass, including four new field-level review
+cases and the read-only SQLite source integration; scoped ESLint passes. No
+runtime source changed after the released build, so no second deployment is needed
+for this operator-only increment.
+
+Next bounded implementation: authenticated, revision-checked review persistence
+and revocation, then selective promotion with search and matching canaries. Source
+grounding of ambiguous SKUs and recommendation backtests remain separate gates.
 
 ## Evidence gate implemented — 2026-09-13
 
-### Runtime integration implemented locally — release pending
+### Runtime integration implementation checkpoint — later released above
 
 The receipt-understanding Worker now writes **new model output exclusively to
 `product_understanding_candidates`**, never to active `product_understandings`.

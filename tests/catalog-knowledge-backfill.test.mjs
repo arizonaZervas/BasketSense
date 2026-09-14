@@ -210,8 +210,8 @@ test("local source is read-only, household isolated, and household databases can
   const file = path.join(dir, "source.sqlite");
   const writer = new DatabaseSync(file);
   writer.exec(`CREATE TABLE households(id TEXT); INSERT INTO households VALUES ('owner'), ('sandbox');
-    CREATE TABLE products(id TEXT, household_id TEXT, active INTEGER, costco_item_number TEXT, canonical_name TEXT, brand TEXT, category TEXT);
-    INSERT INTO products VALUES ('p1','owner',1,'1001','Bounty',NULL,NULL), ('p2','sandbox',1,'1001','Private other',NULL,NULL);
+    CREATE TABLE products(id TEXT, household_id TEXT, active INTEGER, costco_item_number TEXT, canonical_name TEXT, brand TEXT, category TEXT, category_reviewed_by_member_id TEXT, category_reviewed_at TEXT);
+    INSERT INTO products VALUES ('p1','owner',1,'1001','Bounty',NULL,NULL,'member','2026-09-13'), ('p2','sandbox',1,'1001','Private other',NULL,NULL,NULL,NULL);
     CREATE TABLE receipt_transactions(id TEXT, household_id TEXT, purchased_at TEXT);
     INSERT INTO receipt_transactions VALUES ('r1','owner','2026-09-01'), ('r2','sandbox','2026-09-02');
     CREATE TABLE receipt_items(id TEXT, product_id TEXT, receipt_transaction_id TEXT, raw_description TEXT, source_line_number INTEGER);
@@ -232,7 +232,8 @@ test("local source is read-only, household isolated, and household databases can
   assert.equal(input.products.length, 1);
   assert.deepEqual(input.products[0].labels, ["BNTY"]);
   assert.deepEqual(input.products[0].aliases, ["paper towel"]);
-  assert.deepEqual(input.products[0].confirmedEvidence.facts.map(f => f.relation).sort(), ["same_product", "substitute"]);
+  assert.deepEqual(input.products[0].confirmedEvidence.facts.map(f => f.relation).sort(), ["same_product", "same_product", "substitute"]);
+  assert.equal(input.products[0].confirmedEvidence.facts.find(f => f.source === "products").label, "Bounty");
   assert.equal(JSON.stringify(input.products[0].confirmedEvidence).includes("FOREIGN"), false);
   assert.throws(() => readCatalogSnapshot(source, "missing"), /not found/);
   source.close();

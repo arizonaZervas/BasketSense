@@ -5,7 +5,10 @@ Status: PI-0 and the existing-knowledge search slice of PI-1 released as Sites 9
 PI-2 coverage audit, local review-only backfill, evidence precedence and conflict
 quarantine implemented. First 12-product pilot completed; semantic activation gate
 failed. Runtime pending-candidate isolation and household evidence precedence are
-now implemented locally and validated, not deployed. Audited promotion/source
+released as Sites 94 (`10f2b32`), with existing access preserved. Live authenticated
+smoke remains unverified (HTTP 401); release status succeeded and the candidate
+table is present. Field-level review exports and reviewed-name evidence are the
+next local-only increment. Audited promotion/source
 grounding and contradictory-history repair remain pending. PI-3 through PI-6
 remain proposed; recommendation scoring is unchanged.
 Scope: private BasketSense only. Separate user approval authorized the initial
