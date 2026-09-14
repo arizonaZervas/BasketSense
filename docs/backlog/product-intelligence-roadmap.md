@@ -1,12 +1,27 @@
 # Product intelligence: search, intent matching, and recommendations
 
 Date: 2026-09-12
-Status: PI-0 and the existing-knowledge search slice of PI-1 implemented and
-approved for deployment. PI-2 through PI-6 remain proposed, not implemented.
+Status: PI-0 and the existing-knowledge search slice of PI-1 released as Sites 93.
+PI-2 coverage audit, local review-only backfill, evidence precedence and conflict
+quarantine implemented. First 12-product pilot completed; semantic activation gate
+failed. Runtime pending-candidate isolation and household evidence precedence are
+now implemented locally and validated, not deployed. Audited promotion/source
+grounding and contradictory-history repair remain pending. PI-3 through PI-6
+remain proposed; recommendation scoring is unchanged.
 Scope: private BasketSense only. Separate user approval authorized the initial
 release; this plan does not authorize provider-data expansion or Good Cart Day work.
 
 ## Decision in brief
+
+Latest checkpoint: [PI-2 coverage and backfill](catalog-knowledge-backfill.md).
+Read-only live inspection on 2026-09-13 found 312 active primary-household products:
+20 ready current profiles, 1 uncertain, and 291 missing/current version absent
+(including 4 stale). Local tooling is resumable and review-only. One approved
+12-product Gemini call had a $0.0047646 paid-rate equivalent, not an observed charge
+(owner showed no billing account). Bounty/Ziploc retrieval improved,
+but wrong bread/juice and chocolate/chicken identities and Suja variant leakage
+block activation. No active profiles or production data changed. See the checkpoint
+for predeclared canary results and source-projection limitations.
 
 Make product understanding the next major household-quality investment. Improve
 catalog discovery first, receipt matching second, and recommendation timing third.
@@ -233,10 +248,9 @@ one major implementation ticket runs at once. Release approval remains separate.
 | PI-5 | Need-level recommendation candidate features and re-ranking; V2 module, input builder, cutoff-safe replay | Beats current V2.1 or reduces suggestion burden at comparable recall; no leakage, forbidden auto-adds or suppression violations. |
 | PI-6 | One invisible full-cycle comparison then limited visible rollout | Household reviews differences; switches for search/matching/recommendations independent. Observe two actual shopping cycles before calling the redesign successful. |
 
-Recommended first engineering ticket: **PI-1, make product knowledge available
-to both catalog search surfaces**, after a small PI-0 retirement. This addresses
-the confirmed user-facing gap and creates the retrieval contract needed later;
-do not start by increasing fuzzy thresholds or rewriting the recommender.
+PI-0 and the existing-knowledge slice of PI-1 have shipped. The next gate is the
+PI-2 bounded provider pilot and review, not an increase in fuzzy thresholds or a
+recommender rewrite. The complete catalog still needs enriched knowledge.
 
 ## Evaluation and explicit budgets
 
@@ -318,11 +332,9 @@ recommendation forecast. Account for skipped weeks and unobserved shopping perio
 
 Read README.md, PRODUCT.md, docs/assistant-handoff.md and
 docs/backlog/product-intelligence-roadmap.md. Work on BasketSense only and use
-the current codebase graph first. Implement PI-0 and PI-1 in separate checkpoints:
-retire only Saturday Prep / Review picks, then expose existing product knowledge
-through one tested search policy used by List and Products. Preserve post-trip
-questions, household feedback, financial evidence and the existing deployment.
-Validate mobile/desktop/all themes and show measured search regressions before
-and after. Do not start embeddings, backfill live data, commit or deploy without
-the relevant approval. Read-only diagnosis must distinguish missing product data
-from missing semantic coverage and ranking failures.
+the current codebase graph first. PI-0/PI-1 shipped as Sites 93. Read
+docs/backlog/catalog-knowledge-backfill.md and continue PI-2 from the tested local
+operator tooling. Obtain a fresh authorized source snapshot and explicitly
+approved provider budget before the bounded pilot. Review candidates before any
+activation; do not rewrite active identities or receipt facts. Do not start
+embeddings, backfill live data, commit or deploy without relevant approval.

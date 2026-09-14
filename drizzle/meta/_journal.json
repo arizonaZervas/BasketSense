@@ -127,6 +127,13 @@
       "when": 1788131857186,
       "tag": "0017_sour_lockheed",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1789344710007,
+      "tag": "0018_knowledge_candidates",
+      "breakpoints": true
     }
   ]
 }

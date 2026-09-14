@@ -6,11 +6,13 @@ import { PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERS
 
 import { RECURRING_PRODUCT_HISTORIES_2026 } from "../app/basketsense-data.ts";
 import { buildDashboardViewData } from "../app/basketsense-dashboard-data.ts";
+import { understandReceiptProducts } from "../workers/receipt-ingestion/src/product-understanding.ts";
 import {
   handleHouseholdGet,
   handleHouseholdPatch,
   handleHouseholdPost,
   readFinalTripListEstimate,
+  trustedDraftInterpretations,
 } from "../app/api/household/route.ts";
 import {
   buildSaturdayRecommendations,
@@ -242,6 +244,97 @@ test("catalog search exposes scoped current knowledge without changing list or r
     assert.ok([200, 204].includes(poll.status));
     assert.ok(!db.executedStatements.some((sql) => /AS knowledge|AS aliases/.test(sql)), "unchanged polls do not read search knowledge");
   } finally { db.close(); }
+});
+
+test("runtime understanding keeps hallucinated identities pending across repeats and household boundaries", async () => {
+  const db = new D1DatabaseAdapter();
+  const originalFetch = globalThis.fetch;
+  try {
+    const email = "pending-knowledge@example.test";
+    const initial = await responseJson(await handleHouseholdGet(householdRequest(email, "GET", undefined, "?view=core"), db));
+    const p = initial.products.find(p => p.costcoItemNumber);
+    const before = db.database.prepare("SELECT * FROM products WHERE id = ?").get(p.id);
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls++;
+      return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify({products:[{
+        lookupKey:`item:${p.costcoItemNumber}`, canonicalName:"Wrong Chicken Nuggets",
+        brand:null,productFamily:"chicken",variant:null,categoryHint:"groceries_beverages",
+        confidenceBps:10000,exactSkuKnown:true,searchAliases:["wrong chicken"],intentAliases:["chicken nuggets"],
+      }]})}]}}]});
+    };
+    const draft = {purchasedAt:"2026-09-13",subtotalCents:100,taxCents:0,totalCents:100,discountCents:0,warnings:[],lines:[{
+      sourceLineNumber:1,itemNumber:p.costcoItemNumber,rawDescription:"OPAQUE LABEL",quantityMilli:1000,
+      unitPriceCents:100,lineSubtotalCents:100,discountCents:0,netAmountCents:100,taxStatus:"unknown",
+    }]};
+    const run = householdId => understandReceiptProducts({db,householdId,apiKey:"test",model:"test",draft});
+    const first = await run(initial.household.id);
+    const again = await run(initial.household.id);
+    assert.equal(calls,1,"pending candidate prevents automatic retry on next receipt");
+    assert.notEqual(first.lines[0].understanding?.canonicalName,"Wrong Chicken Nuggets");
+    assert.deepEqual(first,again);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS n FROM product_understandings WHERE household_id=?").get(initial.household.id).n,0);
+    const pending = db.database.prepare("SELECT * FROM product_understanding_candidates WHERE household_id=?").get(initial.household.id);
+    assert.match(pending.proposal_json,/Wrong Chicken Nuggets/);
+    assert.doesNotMatch(pending.proposal_json,/netAmountCents|totalCents/);
+    const refreshed = await responseJson(await handleHouseholdGet(householdRequest(email,"GET",undefined,"?view=core"),db));
+    assert.doesNotMatch(JSON.stringify(refreshed.products),/Wrong Chicken Nuggets|wrong chicken/);
+    assert.deepEqual(refreshed.listItems,initial.listItems);
+    assert.deepEqual(db.database.prepare("SELECT * FROM products WHERE id=?").get(p.id),before);
+    const sandbox=await responseJson(await handleHouseholdGet(householdRequest(email,"GET",undefined,"?sandbox=1&view=core"),db));
+    assert.notEqual(sandbox.household.id,initial.household.id);
+    await run(sandbox.household.id);
+    assert.equal(calls,2,"another household cannot use the primary candidate");
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS n FROM product_understanding_candidates").get().n,2);
+  } finally {globalThis.fetch=originalFetch;db.close();}
+});
+
+test("confirmed product corrections suppress stale model search and prevent regeneration",async()=>{
+  const db=new D1DatabaseAdapter(); const originalFetch=globalThis.fetch;
+  try {
+    const email="confirmed-knowledge@example.test";
+    const read=()=>handleHouseholdGet(householdRequest(email,"GET",undefined,"?view=core"),db);
+    const initial=await responseJson(await read());const p=initial.products.find(p=>p.costcoItemNumber);
+    db.database.prepare(`INSERT INTO product_understandings (id,household_id,lookup_key,costco_item_number,
+      raw_description,canonical_name,confidence_bps,search_aliases_json,intent_aliases_json,provider,model,prompt_version,schema_version)
+      VALUES ('bad',?,?,?,'RAW','Wrong Juice',9999,'["wrong juice"]','["smoothie"]','gemini','test',?,?)`)
+      .run(initial.household.id,`item:${p.costcoItemNumber}`,p.costcoItemNumber,PRODUCT_UNDERSTANDING_PROMPT_VERSION,PRODUCT_UNDERSTANDING_SCHEMA_VERSION);
+    const saved=db.database.prepare("SELECT * FROM products WHERE id=?").get(p.id);
+    const correction=await handleHouseholdPatch(householdRequest(email,"PATCH",{
+      action:"confirm_product_metadata",productId:p.id,canonicalName:"Confirmed Bread",
+      category:"groceries_beverages",expectedUpdatedAt:saved.updated_at,
+    }),db);
+    assert.equal(correction.status,200);
+    const result=await responseJson(await read());
+    assert.equal(result.products.find(q=>q.id===p.id).canonicalName,"Confirmed Bread");
+    assert.doesNotMatch(JSON.stringify(result.products.find(q=>q.id===p.id)),/Wrong Juice|wrong juice|smoothie/);
+    const staleDraft=await trustedDraftInterpretations(db,initial.household.id,[{
+      costcoItemNumber:p.costcoItemNumber,rawDescription:"RAW",interpretedName:"Wrong Juice",
+      interpretationConfidenceBps:9999,interpretationSource:"gemini",interpretationModel:"test",
+    }]);
+    assert.equal(staleDraft[0].interpretedName,null,"an already-open stale draft cannot reinstate the model name");
+    globalThis.fetch=()=>assert.fail("confirmed identity must not be sent for regeneration");
+    const resultDraft=await understandReceiptProducts({db,householdId:initial.household.id,apiKey:"test",model:"test",
+      draft:{lines:[{itemNumber:p.costcoItemNumber,rawDescription:"RAW",netAmountCents:100}]}});
+    assert.equal(resultDraft.lines[0].understanding.canonicalName,"Confirmed Bread");
+    assert.equal(resultDraft.lines[0].understanding.source,"catalog");
+    assert.equal(db.database.prepare("SELECT canonical_name FROM product_understandings WHERE id='bad'").get().canonical_name,"Wrong Juice","old evidence is not destructively rewritten");
+  }finally{globalThis.fetch=originalFetch;db.close();}
+});
+
+test("candidate migration is additive idempotent and enforces household isolation keys",()=>{
+  const db=new DatabaseSync(":memory:");
+  try{
+    db.exec("PRAGMA foreign_keys=ON; CREATE TABLE households(id TEXT PRIMARY KEY); INSERT INTO households VALUES('h');");
+    const migration=readFileSync(new URL("../drizzle/0018_knowledge_candidates.sql",import.meta.url),"utf8");
+    db.exec(migration);db.exec(migration);
+    const add=db.prepare("INSERT INTO product_understanding_candidates VALUES(?,?,?,?,?,?,?)");
+    add.run("h","item:1","test","p","s","{}","now");
+    assert.throws(()=>add.run("missing","item:1","test","p","s","{}","now"),/FOREIGN KEY/);
+    assert.throws(()=>add.run("h","item:1","test","p","s","{}","now"),/UNIQUE/);
+    db.exec("DELETE FROM households WHERE id='h'");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM product_understanding_candidates").get().n,0);
+  }finally{db.close();}
 });
 
 test("zero-dollar standalone placeholders cannot become official spending", async () => {

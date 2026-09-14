@@ -111,7 +111,7 @@ test("receipt persistence accepts only interpretation metadata already cached by
   assert.equal(rejected[0].interpretationSource, null);
 });
 
-test("a catalog-known SKU still receives fresh v2 semantic understanding", async () => {
+test("fresh semantic understanding stays pending rather than changing the active catalog", async () => {
   let geminiCalls = 0;
   let persisted = 0;
   const db = {
@@ -153,7 +153,7 @@ test("a catalog-known SKU still receives fresh v2 semantic understanding", async
       return statement;
     },
     async batch(statements) {
-      if (statements.some((statement) => /INSERT INTO product_understandings/i.test(statement.sql))) {
+      if (statements.some((statement) => /INSERT INTO product_understanding_candidates/i.test(statement.sql))) {
         persisted += 1;
       }
       return statements.map(() => ({ success: true, meta: { changes: 1 } }));
@@ -213,8 +213,9 @@ test("a catalog-known SKU still receives fresh v2 semantic understanding", async
     });
     assert.equal(geminiCalls, 1);
     assert.equal(persisted, 1);
-    assert.deepEqual(result.lines[0].understanding?.searchAliases, ["Downy Fresh"]);
-    assert.deepEqual(result.lines[0].understanding?.intentAliases, ["laundry scent booster"]);
+    assert.equal(result.lines[0].understanding?.canonicalName, "UNSTPBL FRSH");
+    assert.equal(result.lines[0].understanding?.source, "catalog");
+    assert.deepEqual(result.lines[0].understanding?.searchAliases, []);
   } finally {
     globalThis.fetch = originalFetch;
   }

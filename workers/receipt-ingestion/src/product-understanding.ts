@@ -1,4 +1,5 @@
 import type { ExtractedReceiptDraft, ExtractedReceiptLine } from "./extraction";
+import { householdKnowledgeProtectedSql, usableModelKnowledgeSql } from "../../../product-knowledge-policy";
 export {
   PRODUCT_UNDERSTANDING_PROMPT_VERSION,
   PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
@@ -44,6 +45,7 @@ type CachedUnderstandingRow = {
 };
 
 type CatalogUnderstandingRow = {
+  household_protected: number;
   costco_item_number: string | null;
   canonical_name: string;
   brand: string | null;
@@ -219,6 +221,13 @@ export function buildProductUnderstandingRequest(
 
 async function ensureProductUnderstandingTable(db: D1Database) {
   await db.batch([
+    db.prepare(`CREATE TABLE IF NOT EXISTS product_understanding_candidates (
+      household_id TEXT NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+      lookup_key TEXT NOT NULL, model TEXT NOT NULL, prompt_version TEXT NOT NULL,
+      schema_version TEXT NOT NULL, proposal_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (household_id, lookup_key, prompt_version, schema_version)
+    )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS product_understandings (
       id TEXT PRIMARY KEY NOT NULL,
       household_id TEXT NOT NULL,
@@ -288,22 +297,30 @@ function fromCachedRow(row: CachedUnderstandingRow): ProductUnderstanding {
 }
 
 async function cachedUnderstandings(db: D1Database, householdId: string) {
-  const [cache, catalog] = await Promise.all([
+  const [cache, catalog, pending] = await Promise.all([
     db.prepare(`SELECT * FROM product_understandings
-      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?
+        AND ${usableModelKnowledgeSql()}`)
       .bind(
         householdId,
         PRODUCT_UNDERSTANDING_PROMPT_VERSION,
         PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
       ).all<CachedUnderstandingRow>(),
-    db.prepare(`SELECT costco_item_number, canonical_name, brand, category
+    db.prepare(`SELECT costco_item_number, canonical_name, brand, category,
+        ${householdKnowledgeProtectedSql()} AS household_protected
       FROM products WHERE household_id = ? AND active = 1 AND costco_item_number IS NOT NULL`)
       .bind(householdId).all<CatalogUnderstandingRow>(),
+    db.prepare(`SELECT lookup_key FROM product_understanding_candidates
+      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+      .bind(householdId, PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION)
+      .all<{ lookup_key: string }>(),
   ]);
+  const blockedKeys = new Set(pending.results.map(row => row.lookup_key));
   const result = new Map(cache.results.map((row) => [row.lookup_key, fromCachedRow(row)]));
   for (const product of catalog.results) {
     if (!product.costco_item_number) continue;
     const lookupKey = `item:${product.costco_item_number}`;
+    if (product.household_protected) blockedKeys.add(lookupKey);
     if (result.has(lookupKey)) continue;
     result.set(lookupKey, {
       lookupKey,
@@ -320,7 +337,7 @@ async function cachedUnderstandings(db: D1Database, householdId: string) {
       model: null,
     });
   }
-  return result;
+  return { result, blockedKeys };
 }
 
 async function requestGeminiUnderstandings({
@@ -359,36 +376,14 @@ async function persistUnderstandings(
   const now = new Date().toISOString();
   const statements = [...understandings.values()].map((understanding) => {
     const line = linesByKey.get(understanding.lookupKey)!;
-    return db.prepare(`INSERT INTO product_understandings (
-      id, household_id, lookup_key, costco_item_number, raw_description,
-      canonical_name, brand, product_family, variant, category_hint,
-      confidence_bps, exact_sku_known, search_aliases_json, intent_aliases_json, provider, model,
-      prompt_version, schema_version, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'gemini', ?, ?, ?, ?, ?)
-    ON CONFLICT(household_id, lookup_key) DO UPDATE SET
-      raw_description = excluded.raw_description,
-      canonical_name = excluded.canonical_name,
-      brand = excluded.brand,
-      product_family = excluded.product_family,
-      variant = excluded.variant,
-      category_hint = excluded.category_hint,
-      confidence_bps = excluded.confidence_bps,
-      exact_sku_known = excluded.exact_sku_known,
-      search_aliases_json = excluded.search_aliases_json,
-      intent_aliases_json = excluded.intent_aliases_json,
-      model = excluded.model,
-      prompt_version = excluded.prompt_version,
-      schema_version = excluded.schema_version,
-      updated_at = excluded.updated_at`)
+    return db.prepare(`INSERT INTO product_understanding_candidates (
+      household_id, lookup_key, model, prompt_version, schema_version, proposal_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(household_id, lookup_key, prompt_version, schema_version) DO NOTHING`)
       .bind(
-        crypto.randomUUID(), householdId, understanding.lookupKey,
-        line.itemNumber, line.rawDescription, understanding.canonicalName,
-        understanding.brand, understanding.productFamily, understanding.variant,
-        understanding.categoryHint, understanding.confidenceBps,
-        understanding.exactSkuKnown ? 1 : 0, JSON.stringify(understanding.searchAliases),
-        JSON.stringify(understanding.intentAliases),
-        understanding.model, PRODUCT_UNDERSTANDING_PROMPT_VERSION,
-        PRODUCT_UNDERSTANDING_SCHEMA_VERSION, now, now,
+        householdId, understanding.lookupKey, understanding.model,
+        PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
+        JSON.stringify({ line: { itemNumber: line.itemNumber, rawDescription: line.rawDescription }, understanding, status: "needs_review" }), now,
       );
   });
   if (statements.length) await db.batch(statements);
@@ -410,14 +405,15 @@ export async function understandReceiptProducts({
   await ensureProductUnderstandingTable(db);
   const candidates = draft.lines.filter((line) => line.netAmountCents >= 0 && line.rawDescription.trim());
   const uniqueLines = new Map(candidates.map((line) => [productUnderstandingLookupKey(line), line]));
-  const understood = await cachedUnderstandings(db, householdId);
+  const { result: understood, blockedKeys } = await cachedUnderstandings(db, householdId);
   const unresolved = [...uniqueLines.entries()]
-    .filter(([lookupKey]) => understood.get(lookupKey)?.source !== "gemini")
+    .filter(([lookupKey]) => !blockedKeys.has(lookupKey) && understood.get(lookupKey)?.source !== "gemini")
     .map(([, line]) => line);
   if (unresolved.length) {
     const generated = await requestGeminiUnderstandings({ apiKey, model, lines: unresolved });
     await persistUnderstandings(db, householdId, uniqueLines, generated);
-    for (const [key, value] of generated) understood.set(key, value);
+    // New model output remains advisory. Never attach it to a receipt draft or
+    // the shared active profile table before evidence review and promotion.
   }
   return {
     ...draft,

@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -805,6 +806,21 @@ export const productAliases = sqliteTable(
     ),
     index("product_aliases_product_idx").on(table.productId),
   ]
+);
+
+// Advisory model output is isolated from all active knowledge consumers.
+export const productUnderstandingCandidates = sqliteTable(
+  "product_understanding_candidates",
+  {
+    householdId: text("household_id").notNull().references(() => households.id, { onDelete: "cascade" }),
+    lookupKey: text("lookup_key").notNull(),
+    model: text("model").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    schemaVersion: text("schema_version").notNull(),
+    proposalJson: text("proposal_json").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.householdId, table.lookupKey, table.promptVersion, table.schemaVersion] })],
 );
 
 export const productUnderstandings = sqliteTable(

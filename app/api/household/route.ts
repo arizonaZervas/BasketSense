@@ -32,6 +32,7 @@ import {
   PRODUCT_UNDERSTANDING_SCHEMA_VERSION,
 } from "../../../product-understanding-contract";
 import { boundedSearchTerms, searchTermsFromJson } from "../../catalog-search";
+import { usableModelKnowledgeSql } from "../../../product-knowledge-policy";
 import {
   classifyReceiptItem,
   type ClassificationStatus,
@@ -2319,6 +2320,7 @@ async function readHouseholdCoreState(
       WHERE knowledge.household_id = ? AND products.active = 1
         AND knowledge.prompt_version = ? AND knowledge.schema_version = ?
         AND knowledge.confidence_bps >= 8000
+        AND ${usableModelKnowledgeSql("knowledge")}
     ) WHERE rank = 1`).bind(context.household.id, PRODUCT_UNDERSTANDING_PROMPT_VERSION, PRODUCT_UNDERSTANDING_SCHEMA_VERSION),
   ];
   const results = await db.batch([
@@ -3189,6 +3191,7 @@ async function catalogMatchForListItem(
              AND products.active = 1
              AND product_understandings.prompt_version = ?
              AND product_understandings.schema_version = ?
+             AND ${usableModelKnowledgeSql()}
            ORDER BY products.updated_at DESC, products.id ASC`
         )
         .bind(
@@ -4921,7 +4924,8 @@ export async function trustedDraftInterpretations(
     .prepare(`SELECT lookup_key, canonical_name, brand, product_family, variant,
                     category_hint, confidence_bps, model
       FROM product_understandings
-      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+      WHERE household_id = ? AND prompt_version = ? AND schema_version = ?
+        AND ${usableModelKnowledgeSql()}`)
     .bind(
       householdId,
       PRODUCT_UNDERSTANDING_PROMPT_VERSION,
@@ -5731,7 +5735,8 @@ async function matchingInputs(
                        category_hint, confidence_bps, exact_sku_known,
                        search_aliases_json, intent_aliases_json, model
         FROM product_understandings
-        WHERE household_id = ? AND prompt_version = ? AND schema_version = ?`)
+        WHERE household_id = ? AND prompt_version = ? AND schema_version = ?
+          AND ${usableModelKnowledgeSql()}`)
       .bind(
         householdId,
         PRODUCT_UNDERSTANDING_PROMPT_VERSION,

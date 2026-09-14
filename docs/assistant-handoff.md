@@ -7,12 +7,47 @@ changing it.
 
 ## Current product state
 
+- 2026-09-13 runtime knowledge safety integration implemented locally, NOT released:
+  new Gemini interpretations go to a separate pending-candidate table; confirmed
+  household products exclude model profiles in search, typed-item resolution,
+  receipt metadata validation/matching and Worker reads. Old unconfirmed profiles
+  remain usable. No candidate promotion UI or recommendation scoring change yet.
+  Additive migration `0018_knowledge_candidates.sql` generated, not applied live.
+  233 tests, scoped lint, Worker typecheck and production build pass; local owner
+  sandbox API integration uses mocked Gemini, not a live browser test. See
+  `docs/backlog/catalog-knowledge-backfill.md` for tradeoffs and rollback. No new
+  provider calls, production data changes, commit or deployment in this slice.
+
+- 2026-09-13 Product Intelligence PI-2 checkpoint: local coverage/backfill CLI
+  implemented, review-only and dry-run by default. Read-only live DB inspection
+  found 312 active primary-household products: 20 ready current profiles, 1
+  uncertain, 291 missing/current version absent (4 stale). Owner sandbox is
+  separate. Owner-approved 12-product Gemini pilot completed: one call,
+  $0.0047646 paid-rate equivalent (owner showed no billing; not a charge),
+  4.658 seconds. Desired retrieval checks rose 11/14 to 13/14, but
+  exclusions fell 6/6 to 4/6. Wrong high-confidence bread/juice and chocolate/chicken
+  identities prohibit activation; all proposals remain local. Evidence precedence
+  and conflict quarantine now implemented in review-only tooling (v2). Live audit
+  found missing confirmed bread/chocolate identities and a contradictory Suja alias.
+  Offline replay: 4 quarantined, 8 needs-review, none activated. Next: audited
+  correction persistence and source-grounded identity review, then separate runtime
+  integration; this is not a deployed matching fix. No production writes,
+  commit or deployment. See `docs/backlog/catalog-knowledge-backfill.md` for exact
+  results, projection limits and private artifacts. Full suite: 230 tests pass;
+  11 new evidence-policy tests; scoped lint passes. No further Gemini calls.
+
 - 2026-09-12 initial Product Intelligence release: Saturday Prep / Review picks
   removed; inline Ideas and Product Memory retained. List and Products share
   bounded search terms from current semantic profiles and household aliases.
   Search is retrieval only, not a change to receipt matching or recommendation
   scoring. See `docs/backlog/product-intelligence-roadmap.md` for coverage gaps
   and the next checkpoints. No migration or new provider calls in this release.
+  Released successfully as Sites 93, source
+  `a0a59ad16f555238f7d4992da4f87649932c4728`; prior release 92 is the rollback.
+  Existing workspace access was preserved. 204 tests, build and scoped lint pass;
+  local mobile/desktop search checks pass. Production errors-only logs were empty
+  after release, but the direct authenticated smoke request returned 401, so a
+  signed-in household browser smoke remains unverified. No access weakening.
 
 - BasketSense is a private, two-person Costco companion: shared list, frozen
   intent, private receipt review, explainable comparison, lightweight feedback,
