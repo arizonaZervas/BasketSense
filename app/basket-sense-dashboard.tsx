@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { monthlyChartScrollTarget } from "./monthly-chart-layout";
 import type {
   DashboardProduct,
   DashboardProductCategory,
@@ -3633,7 +3634,37 @@ function MonthlyBarChart({
   auditThrough: string;
   onSelectMonth: (month: string) => void;
 }) {
-  const max = Math.max(...data.map((month) => month.householdFundedCents));
+  const max = Math.max(1, ...data.map((month) => Math.abs(month.householdFundedCents)));
+  const barsRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState({ previous: false, next: false });
+  const monthKeys = data.map(month => month.key).join(",");
+  const updateScrollState = useCallback(() => {
+    const bars = barsRef.current;
+    if (!bars) return;
+    const previous = bars.scrollLeft > 2;
+    const next = bars.scrollWidth - bars.clientWidth - bars.scrollLeft > 2;
+    setScrollState(current => current.previous === previous && current.next === next ? current : { previous, next });
+  }, []);
+  useEffect(() => {
+    const bars = barsRef.current;
+    if (!bars) return;
+    const reveal = () => {
+      const selectedBar = Array.from(bars.children).find(child => child.getAttribute("data-month") === selectedMonth) as HTMLElement | undefined;
+      bars.scrollLeft = monthlyChartScrollTarget(bars.clientWidth, bars.scrollWidth,
+        selectedBar ? { left: selectedBar.offsetLeft, width: selectedBar.clientWidth } : undefined);
+      updateScrollState();
+    };
+    reveal();
+    const observer = new ResizeObserver(reveal);
+    observer.observe(bars);
+    return () => observer.disconnect();
+  }, [monthKeys, selectedMonth, updateScrollState]);
+  const moveMonths = (direction: number, event: ReactMouseEvent<HTMLButtonElement>) => {
+    const bars = barsRef.current;
+    if (!bars) return;
+    bars.scrollBy({ left: direction * bars.clientWidth,
+      behavior: event.detail === 0 || window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  };
   const total = data.reduce((sum, month) => sum + month.householdFundedCents, 0);
   const transactions = data.reduce((sum, month) => sum + month.transactionCount, 0);
   const selected = data.find((month) => month.key === selectedMonth);
@@ -3645,10 +3676,10 @@ function MonthlyBarChart({
     undefined as DashboardViewData["months"][number] | undefined,
   );
   return (
-    <div className="bar-chart">
+    <div className="bar-chart monthly-spending-chart">
       <div className="chart-scope-actions">
         <div className="chart-scope-copy">
-          <span>{selected ? selected.label : "2026 household-funded"}</span>
+          <span>{selected ? selected.label : `${auditThrough.slice(0, 4)} household-funded`}</span>
           <strong>
             {selected
               ? currency.format(selected.householdFundedCents / 100)
@@ -3669,9 +3700,15 @@ function MonthlyBarChart({
           All months
         </button>
       </div>
+      <div className="month-navigation" hidden={!scrollState.previous && !scrollState.next}>
+        <button type="button" disabled={!scrollState.previous} aria-label="Show earlier months" onClick={event => moveMonths(-1, event)}>← Earlier</button>
+        <button type="button" disabled={!scrollState.next} aria-label="Show later months" onClick={event => moveMonths(1, event)}>Later →</button>
+      </div>
       <div
-        className="bars"
-        style={{ gridTemplateColumns: `repeat(${data.length}, minmax(44px, 1fr))` }}
+        ref={barsRef}
+        onScroll={updateScrollState}
+        className="bars monthly-bars"
+        style={{ "--month-count": Math.max(1, data.length) } as React.CSSProperties}
         aria-label="Choose a spending month"
       >
         {data.map((month) => (
@@ -3679,9 +3716,10 @@ function MonthlyBarChart({
             type="button"
             className={`bar-group ${selectedMonth === month.key ? "active" : ""}`}
             key={month.key}
+            data-month={month.key}
             onClick={() => onSelectMonth(month.key)}
             aria-pressed={selectedMonth === month.key}
-            aria-label={`${month.label}: ${currency.format(month.householdFundedCents / 100)} across ${month.transactionCount} receipt transactions`}
+            aria-label={`${month.label}: ${currency.format(month.householdFundedCents / 100)} across ${month.transactionCount} receipt transactions${month.key === auditThrough.slice(0, 7) ? `, through ${formatShortDate(auditThrough)}` : ""}`}
           >
             <span className="bar-value">
               {compactCurrency.format(month.householdFundedCents / 100)}
@@ -3689,10 +3727,10 @@ function MonthlyBarChart({
             <div className="bar-pair">
               <span
                 className="bar current"
-                style={{ height: `${Math.max(12, (month.householdFundedCents / max) * 100)}%` }}
+                style={{ height: `${Math.abs(month.householdFundedCents) / max * 100}%`, minHeight: month.householdFundedCents === 0 ? 0 : 2 }}
               />
             </div>
-            <span className="bar-label">{month.label}</span>
+            <span className="bar-label">{month.label}<small className="month-partial">{month.key === auditThrough.slice(0, 7) ? "so far" : "\u00a0"}</small></span>
           </button>
         ))}
       </div>

@@ -988,6 +988,68 @@ summary:focus-visible,
   margin-top: 22px;
 }
 
+.monthly-spending-chart {
+  container-type: inline-size;
+}
+
+.monthly-spending-chart .monthly-bars {
+  --visible-months: min(6, var(--month-count));
+  position: relative;
+  grid-auto-flow: column;
+  grid-auto-columns: max(44px, calc((100% - (var(--visible-months) - 1) * 8px) / var(--visible-months)));
+  gap: 8px;
+  padding-inline: 0;
+  scroll-snap-type: x proximity;
+}
+
+.monthly-bars .bar-group {
+  min-width: 0;
+  scroll-snap-align: end;
+}
+
+.monthly-bars .bar-label {
+  font-size: 14px;
+}
+
+.monthly-spending-chart .chart-scope-copy span,
+.monthly-spending-chart .chart-scope-copy small {
+  font-size: 14px;
+}
+
+.month-partial {
+  display: block;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.month-navigation {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.month-navigation[hidden] { display: none; }
+.month-navigation button {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--paper);
+  color: var(--forest);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 160ms ease-out;
+}
+.month-navigation button:disabled { opacity: .45; cursor: default; }
+.monthly-bars .bar-group:focus-visible { outline-offset: -3px; }
+@container (min-width: 600px) {
+  .monthly-spending-chart .monthly-bars {
+    grid-auto-columns: calc((100% - (var(--month-count) - 1) * 8px) / var(--month-count));
+  }
+}
+
 .spend-card .bar-chart {
   display: flex;
   flex: 1;
@@ -4894,8 +4956,8 @@ button.price-point:hover {
     color: #f8f6ef;
     cursor: pointer;
     padding: 5px 13px 5px 5px;
-    box-shadow: 0 12px 30px rgba(9, 24, 16, 0.24);
-    font-size: 12px;
+    box-shadow: 0 2px 8px rgba(9, 24, 16, 0.24);
+    font-size: 14px;
     font-weight: 800;
     letter-spacing: 0.01em;
     transition:
@@ -4904,9 +4966,11 @@ button.price-point:hover {
       background-color 180ms ease;
   }
 
+  @media (hover: hover) and (pointer: fine) {
   .mobile-nav-trigger:hover {
     transform: translateY(-2px);
-    box-shadow: 0 16px 36px rgba(9, 24, 16, 0.3);
+    box-shadow: 0 3px 8px rgba(9, 24, 16, 0.3);
+  }
   }
 
   .mobile-nav-trigger.open {
@@ -5034,10 +5098,12 @@ button.price-point:hover {
       transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
+  @media (hover: hover) and (pointer: fine) {
   .mobile-nav-links button:hover {
     background: rgba(255, 255, 255, 0.08);
     color: #ffffff;
     transform: translateX(2px);
+  }
   }
 
   .mobile-nav-links button.active {
@@ -5085,7 +5151,7 @@ button.price-point:hover {
 @media (max-width: 480px) {
   .mobile-nav-trigger {
     min-height: 46px;
-    padding: 5px;
+    padding: 5px 12px 5px 5px;
   }
 
   .mobile-nav-trigger-glyph {
@@ -5095,7 +5161,7 @@ button.price-point:hover {
   }
 
   .mobile-nav-trigger > span:last-child {
-    display: none;
+    display: inline;
   }
 }
 
